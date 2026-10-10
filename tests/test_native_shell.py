@@ -1,6 +1,6 @@
 """Public ROM-free tests for the deterministic native shell.
 
-Compiles native/shell.c with the system C compiler and checks:
+Builds the native shell through its CMake target and checks:
 - compiled-in mode passes and is byte-deterministic across runs;
 - file mode replays the canonical coin_start experiment (press/release
   dispatch at exact frames, anchors, checkpoint);
@@ -56,20 +56,29 @@ for optional_source in (ROOT / "native" / "fake_ports.c",
 
 class NativeShellTests(unittest.TestCase):
     def compile_shell(self, directory):
-        cc = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
-        self.assertIsNotNone(cc, "no C compiler available")
         binary = pathlib.Path(directory) / "native-shell"
-        compile_proc = subprocess.run(
-            [cc, "-std=c99", "-Wall", "-Wextra",
-             "-I", str(ADSP), "-I", str(MAINCPU),
-             "-I", str(ROOT / "reproduction" / "gsp"), "-I", str(SOUND),
-             "-o", str(binary), *SOURCES, "-lm"],
-            capture_output=True, text=True, check=False,
-        )
-        self.assertEqual(compile_proc.returncode, 0,
-                         f"C compile failed:\n{compile_proc.stderr}")
-        self.assertEqual(compile_proc.stderr, "",
-                         f"C compile warnings:\n{compile_proc.stderr}")
+        build_dir = pathlib.Path("/tmp/opencode/native-shell-python-test-build")
+        cache = build_dir / "CMakeCache.txt"
+        if not cache.exists():
+            configure = subprocess.run(
+                ["cmake", "-S", str(ROOT / "native"), "-B", str(build_dir),
+                 "-DCMAKE_BUILD_TYPE=Debug"],
+                capture_output=True, text=True, check=False)
+            self.assertEqual(configure.returncode, 0,
+                             f"CMake configure failed:\n{configure.stdout}\n{configure.stderr}")
+        build = subprocess.run(
+            ["cmake", "--build", str(build_dir), "--target", "stunrun-native-shell", "-j2"],
+            capture_output=True, text=True, check=False)
+        self.assertEqual(build.returncode, 0,
+                         f"CMake build failed:\n{build.stdout}\n{build.stderr}")
+        shutil.copyfile(build_dir / "stunrun-native-shell", binary)
+        binary.chmod(0o755)
+        # These tests exercise deterministic software output, not SDL/ALSA.
+        # Keep the subprocess on the toolkit-free backend unless a caller has
+        # explicitly selected another backend.
+        os.environ["STUNRUN_BACKEND"] = "null"
+        os.environ["STUNRUN_VIDEO_BACKEND"] = "null"
+        os.environ["STUNRUN_AUDIO_BACKEND"] = "null"
         return binary
 
     def test_shell_passes_and_is_deterministic(self):

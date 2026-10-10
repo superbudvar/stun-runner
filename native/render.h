@@ -83,5 +83,7 @@ int stunrun_render_gsp_visible(stunrun_renderer_t *renderer,
 uint32_t stunrun_render_hash(const stunrun_renderer_t *renderer);
 int stunrun_render_write_ppm(const stunrun_renderer_t *renderer,
                              const char *path);
+int stunrun_render_write_png(const stunrun_renderer_t *renderer,
+                             const char *path);
 
 #endif

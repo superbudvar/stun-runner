@@ -32,6 +32,7 @@ def main() -> int:
     ]
     environment = {**os.environ, "STUNRUN_CHECKPOINT_FRAME": str(args.frames),
                    "STUNRUN_CHECKPOINT_INPUT": args.input,
+                   "STUNRUN_CHECKPOINT_OUTPUT_DIR": str(args.output),
                    "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy")}
     with log.open("w", encoding="utf-8") as handle:
         completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,

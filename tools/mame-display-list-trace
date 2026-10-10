@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""Capture and decode calls to the 68010 display-list compiler."""
+
+import argparse
+import collections
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+
+
+CALL = re.compile(
+    r"M1_GSP_DL_CALL id=(\d+) frame=(\d+) return=([0-9A-Fa-f]+) "
+    r"caller=([0-9A-Fa-f]+) call_size=(\d+) call_opcode=([0-9A-Fa-f]+) "
+    r"stream=([0-9A-Fa-f]+) raw=([0-9A-Fa-f]*)"
+)
+FIFO = re.compile(
+    r"M1_GSP_DL_FIFO id=(\d+) frame=(\d+) pc=([0-9A-Fa-f]+) "
+    r"addr=([0-9A-Fa-f]+) data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+)"
+    r"(?: destination=([0-9A-Fa-f]+))?"
+)
+HOST = re.compile(r"M1_GSP_DL_HOST id=(\d+) hi=([0-9A-Fa-f]+) "
+                  r"lo=([0-9A-Fa-f]+) control=([0-9A-Fa-f]+)")
+DONE = re.compile(
+    r"M1_GSP_DL_DONE frames=(\d+) calls=(\d+) fifo_words=(\d+) "
+    r"calls_truncated=(true|false) fifo_truncated=(true|false)"
+)
+
+
+def decode_stream(stream_address: int, raw: bytes) -> dict:
+    """Decode group boundaries only; preserve raw operands and ROM oddities."""
+    cursor = 0
+    groups = []
+    pending = False
+
+    def take(count: int):
+        nonlocal cursor
+        if cursor + count > len(raw):
+            return None
+        value = raw[cursor:cursor + count]
+        cursor += count
+        return value
+
+    first = take(1)
+    if first is None:
+        return {"status": "truncated", "consumed_bytes": cursor, "groups": groups}
+    if first[0] != 0:
+        return {"status": "complete", "end": "first-byte-nonzero",
+                "first_byte": first[0], "consumed_bytes": cursor, "groups": groups}
+    table = take(16)
+    if table is None:
+        return {"status": "truncated", "consumed_bytes": cursor, "groups": groups}
+
+    while cursor < len(raw):
+        offset = cursor
+        opcode_bytes = take(1)
+        opcode = opcode_bytes[0]
+        pending_before = pending
+        count = None
+        expected = 0
+        end = None
+
+        if opcode == 0x00:
+            family = "table-reload"
+            operands = take(16)
+        elif opcode < 0x40:
+            family = "copy"
+            count = opcode
+            flush = 1 if pending else 0
+            remaining = count - flush
+            operands = take(count)
+            expected = flush + remaining // 2
+            pending = (remaining & 1) != 0
+        elif opcode < 0x80:
+            count = opcode - 0x40
+            family = "end-40" if count == 0 else "table-run"
+            operands = b"" if count == 0 else take(count)
+            expected = count
+            end = "opcode-40" if count == 0 else None
+        elif opcode < 0xC0:
+            count = opcode & 0x3F
+            family = "end-80" if count == 0 else "fill"
+            operands = b"" if count == 0 else take(1)
+            if count == 0:
+                end = "opcode-80"
+            else:
+                flush = 1 if pending else 0
+                remaining = count - flush
+                expected = flush + remaining // 2
+                pending = (remaining & 1) != 0
+        else:
+            count = opcode & 0x3F
+            family = "end-c0" if count == 0 else "table-fill"
+            operands = b"" if count == 0 else take(1)
+            expected = count
+            end = "opcode-c0" if count == 0 else None
+
+        if operands is None:
+            groups.append({"offset": offset, "opcode": opcode, "family": family,
+                           "count": count, "pending_before": pending_before,
+                           "truncated": True})
+            return {"status": "truncated", "table_hex": table.hex().upper(),
+                    "consumed_bytes": cursor, "groups": groups}
+        groups.append({
+            "offset": offset,
+            "address": stream_address + offset,
+            "opcode": opcode,
+            "family": family,
+            "count": count,
+            "operand_hex": operands.hex().upper(),
+            "expected_fifo_words": expected,
+            "pending_before": pending_before,
+            "pending_after": pending,
+        })
+        if end is not None:
+            return {"status": "complete", "end": end,
+                    "table_hex": table.hex().upper(), "consumed_bytes": cursor,
+                    "groups": groups}
+
+    return {"status": "truncated", "table_hex": table.hex().upper(),
+            "consumed_bytes": cursor, "groups": groups}
+
+
+def parse_log(text: str) -> dict:
+    calls = []
+    by_id = {}
+    for match in CALL.finditer(text):
+        raw = bytes.fromhex(match.group(8))
+        call = {
+            "id": int(match.group(1)), "frame": int(match.group(2)),
+            "return_address": int(match.group(3), 16),
+            "caller_pc": int(match.group(4), 16),
+            "call_size": int(match.group(5)),
+            "call_opcode": int(match.group(6), 16),
+            "stream_address": int(match.group(7), 16),
+            "raw_hex": match.group(8).upper(), "fifo_writes": [],
+        }
+        call["decode"] = decode_stream(call["stream_address"], raw)
+        calls.append(call)
+        by_id[call["id"]] = call
+    for match in HOST.finditer(text):
+        call = by_id.get(int(match.group(1)))
+        if call is not None:
+            call["host_address"] = (int(match.group(2), 16) << 16) | int(match.group(3), 16)
+            call["host_control"] = int(match.group(4), 16)
+    for match in FIFO.finditer(text):
+        call_id = int(match.group(1))
+        if call_id not in by_id:
+            continue
+        by_id[call_id]["fifo_writes"].append({
+            "frame": int(match.group(2)), "pc": int(match.group(3), 16),
+            "address": int(match.group(4), 16),
+            "data": int(match.group(5), 16) & 0xFFFF,
+            "mask": int(match.group(6), 16),
+            "destination_latch": int(match.group(7), 16) if match.group(7) else None,
+        })
+    for call in calls:
+        decode = call["decode"]
+        expected = sum(group.get("expected_fifo_words", 0)
+                       for group in decode["groups"])
+        call["fifo_word_count"] = len(call["fifo_writes"])
+        call["expected_fifo_word_count"] = expected
+        call["fifo_count_matches_decode"] = (
+            decode["status"] == "complete" and len(call["fifo_writes"]) == expected)
+    return {"calls": calls, "done": DONE.findall(text)}
+
+
+def export_small_upload(calls: list, output: pathlib.Path) -> dict:
+    """Export oracle words, not an invented decoder or pixel interpretation."""
+    eligible = [c for c in calls if c["fifo_count_matches_decode"]
+                and c["fifo_word_count"] > 0]
+    if not eligible:
+        return {"status": "no-complete-upload"}
+    call = min(eligible, key=lambda c: c["fifo_word_count"])
+    raw = b"".join(w["data"].to_bytes(2, "big") for w in call["fifo_writes"])
+    (output / "small-upload.bin").write_bytes(raw)
+    # Two columns: high and low byte intensity for each successive FIFO word.
+    # This deliberately makes no assumptions about stride, palette or bpp.
+    (output / "small-upload.pgm").write_bytes(
+        f"P5\n2 {len(raw) // 2}\n255\n".encode("ascii") + raw)
+    return {"status": "exported", "call_id": call["id"],
+            "stream_address": call["stream_address"], "byte_count": len(raw),
+            "preview_layout": "2 columns: high byte, low byte; one FIFO word per row",
+            "pixel_format": "unknown"}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("rompath", type=pathlib.Path)
+    parser.add_argument("output", type=pathlib.Path)
+    parser.add_argument("--frames", type=int, default=1800)
+    parser.add_argument("--start-frame", type=int, default=1)
+    parser.add_argument("--end-frame", type=int, default=1800)
+    parser.add_argument("--max-calls", type=int, default=256)
+    parser.add_argument("--raw-bytes", type=int, default=1024)
+    parser.add_argument("--max-fifo-words", type=int, default=16384)
+    parser.add_argument("--input", choices=("none", "drive"), default="drive")
+    parser.add_argument("--mame", default="mame")
+    args = parser.parse_args()
+    if not args.rompath.exists():
+        raise SystemExit(f"ROM path does not exist: {args.rompath}")
+    if not (0 <= args.start_frame <= args.end_frame <= args.frames):
+        parser.error("require 0 <= start-frame <= end-frame <= frames")
+    if min(args.frames, args.max_calls, args.raw_bytes, args.max_fifo_words) <= 0:
+        parser.error("frames and capture limits must be positive")
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    log = args.output / "mame.log"
+    command = [
+        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
+        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
+        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save", "-debug",
+        "-debugger", "none", "-seconds_to_run",
+        str(max(2, (args.frames + 59) // 60 + 1)), "-autoboot_script",
+        str(pathlib.Path(__file__).resolve().parents[1] /
+            "mame/lua/display-list-trace.lua"),
+    ]
+    environment = {
+        **os.environ,
+        "STUNRUN_GSP_DL_TRACE_OUT": str(args.output),
+        "STUNRUN_GSP_DL_TRACE_FRAMES": str(args.frames),
+        "STUNRUN_GSP_DL_TRACE_START": str(args.start_frame),
+        "STUNRUN_GSP_DL_TRACE_END": str(args.end_frame),
+        "STUNRUN_GSP_DL_TRACE_INPUT": args.input,
+        "STUNRUN_GSP_DL_TRACE_MAX_CALLS": str(args.max_calls),
+        "STUNRUN_GSP_DL_TRACE_RAW_BYTES": str(args.raw_bytes),
+        "STUNRUN_GSP_DL_TRACE_MAX_FIFO": str(args.max_fifo_words),
+        "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
+    }
+    with log.open("w", encoding="utf-8") as handle:
+        completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,
+                                   env=environment, check=False)
+    text = log.read_text(encoding="utf-8")
+    parsed = parse_log(text)
+    calls = parsed["calls"]
+    family_counts = collections.Counter(
+        group["family"] for call in calls for group in call["decode"]["groups"])
+    caller_counts = collections.Counter(call["caller_pc"] for call in calls)
+    result = {
+        "schema": "stunrun-gsp-display-list-trace/v1",
+        "frames": args.frames, "capture_start_frame": args.start_frame,
+        "capture_end_frame": args.end_frame, "input": args.input,
+        "raw_bytes_per_call": args.raw_bytes, "returncode": completed.returncode,
+        "call_count": len(calls),
+        "caller_counts": {f"0x{pc:06X}": count for pc, count in caller_counts.items()},
+        "opcode_family_counts": dict(sorted(family_counts.items())),
+        "calls": calls,
+        "small_upload": export_small_upload(calls, args.output),
+        "canonical_log_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+    if parsed["done"]:
+        done = parsed["done"][-1]
+        result["calls_truncated"] = done[3] == "true"
+        result["fifo_truncated"] = done[4] == "true"
+    (args.output / "result.json").write_text(
+        json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    if completed.returncode or not parsed["done"]:
+        raise SystemExit(f"display-list trace failed; see {log}")
+    summary = {key: value for key, value in result.items() if key != "calls"}
+    print(json.dumps(summary, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

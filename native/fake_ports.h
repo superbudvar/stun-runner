@@ -11,6 +11,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* multisync_68k_map: map(0xff8000, 0xffffff).ram()
+ *
+ * The window is 0xFFFFFF - 0xFF8000 + 1 = 0x8000 bytes -- 32 KiB, NOT the
+ * 512 KiB a subagent report claimed.  MAME sizes a bare .ram() device to
+ * end - start + 1, so that is the whole of it.
+ *
+ * The ROM relies on exactly this much: the IRQ5 handler bumps a counter at
+ * 0xff9042 and the extended stack pointer sits at 0xfffffe22, i.e. 0x7e22
+ * bytes into the block.
+ *
+ * Do not "fix" this to 0x80000.  The 68010 bus is 24-bit so it can never
+ * address past 0xffffff, and any dump wider than 0x8000 bytes wraps to
+ * address 0 and reads ROM instead of RAM -- which is how an oracle diff
+ * once reported 376,284 nonzero "RAM" bytes where MAME actually has 4,922. */
 #define STUNRUN_MAIN_RAM_BASE 0xFF8000u
 #define STUNRUN_MAIN_RAM_BYTES 0x8000u
 #define STUNRUN_FAKE_PORT_COUNT 64u
@@ -18,6 +32,7 @@
 
 typedef enum stunrun_port_id {
     STUNRUN_PORT_MAIN_IN0 = 0,
+    STUNRUN_PORT_MAIN_SW1,
     STUNRUN_PORT_MAIN_A800,
     STUNRUN_PORT_AD_STICK_X,
     STUNRUN_PORT_AD_STICK_Y,
@@ -29,7 +44,9 @@ typedef enum stunrun_port_id {
 } stunrun_port_id_t;
 
 typedef struct stunrun_fake_ports {
-    uint8_t main_ram[STUNRUN_MAIN_RAM_BYTES];
+    /* main_ram lives in fake_ports.c's static storage, not inline here: at
+     * 512 KiB it would overflow the stack in shell.c, game_loop_test.c and
+     * opengl_demo.c, which all declare a stunrun_fake_ports_t by value. */
     int32_t values[STUNRUN_PORT_COUNT];
     char named_port[STUNRUN_FAKE_PORT_COUNT][96];
     char named_field[STUNRUN_FAKE_PORT_COUNT][96];
@@ -40,6 +57,9 @@ typedef struct stunrun_fake_ports {
 } stunrun_fake_ports_t;
 
 void stunrun_ports_init(stunrun_fake_ports_t *ports);
+
+/* The 512 KiB 68010 work RAM, for dumps and diffing against the MAME oracle. */
+const uint8_t *stunrun_ports_main_ram(void);
 
 int stunrun_mem_read8(const stunrun_fake_ports_t *ports, uint32_t address,
                       uint8_t *value);

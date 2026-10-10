@@ -109,8 +109,45 @@ emu.register_prestart(function()
     end
 end)
 
+local function write_binary(filename, size, read_fn)
+    local f = io.open(filename, 'wb')
+    if not f then
+        print('[checkpoint] ERROR: cannot write ' .. filename)
+        return false
+    end
+    for i = 0, size - 1 do
+        local b = read_fn(i)
+        f:write(string.char(b))
+    end
+    f:close()
+    print('[checkpoint] dumped ' .. size .. ' bytes -> ' .. filename)
+    return true
+end
+
+local output_dir = os.getenv('STUNRUN_CHECKPOINT_OUTPUT_DIR') or '/tmp'
+
 local function capture()
     local devices = machine.devices
+    local maincpu = devices[':mainpcb:maincpu']
+    local maincpu_space = maincpu and maincpu.spaces and maincpu.spaces['program']
+
+    -- Dump MC68010 RAM (0x000000-0x00FFFF = 64KB)
+    if maincpu_space then
+        write_binary(output_dir .. '/maincpu_ram.bin', 0x10000,
+            function(offset) return maincpu_space:read_u8(offset) end)
+    end
+
+    -- Dump GSP VRAM via bus-mapped address (0x02000000-0x020FFFFF = 1MB)
+    if maincpu_space then
+        write_binary(output_dir .. '/gsp_vram.bin', 0x100000,
+            function(offset) return maincpu_space:read_u8(0x02000000 + offset) end)
+        -- Dump GSP palette RAM (0xF5000000-0xF50003FF = 1KB, 256 × 4-byte entries)
+        write_binary(output_dir .. '/gsp_palette.bin', 0x400,
+            function(offset) return maincpu_space:read_u8(0xF5000000 + offset) end)
+    end
+
+    print('[checkpoint] NOTE: screenshot requires MAME -snap or external capture')
+
     local adsp_program = devices[':mainpcb:adsp'].spaces['program']
     local adsp_nonzero_words = 0
     local adsp_sum32 = 0
@@ -125,6 +162,13 @@ local function capture()
         end
         adsp_sum32 = (adsp_sum32 + value) % 4294967296
     end
+
+    -- Dump ADSP data memory (0x808000-0x80BFFF = 16KB)
+    if maincpu_space then
+        write_binary(output_dir .. '/adsp_data.bin', 0x4000,
+            function(offset) return maincpu_space:read_u8(0x808000 + offset) end)
+    end
+
     local checkpoint = {
         schema = 'stunrun-checkpoint/v1',
         system = machine.system.name,

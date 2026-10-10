@@ -118,3 +118,10 @@ const stunrun_jsa_command_read_t *stunrun_jsa_command_reads(void)
 {
     return kCommandReads;
 }
+
+int stunrun_jsa_peek_command_byte(const stunrun_jsa_latches_t *latches)
+{
+    if (latches == NULL || !latches->command_pending)
+        return STUNRUN_JSA_NO_BYTE;
+    return (int)latches->command_byte;
+}

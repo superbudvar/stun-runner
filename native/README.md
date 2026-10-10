@@ -24,6 +24,26 @@ attribution, and there is no speculative game logic. Output is fully
 deterministic (no addresses, no timing); the public test runs the shell
 twice and requires byte-identical stdout.
 
+### Interactive MC68010 inspection
+
+The normal shell remains bounded at 600 frames. For a live window, set
+`STUNRUN_MC68010=1` and `STUNRUN_LIVE_VIDEO=1`; set `STUNRUN_FRAMES=0` to keep
+running until the SDL window is closed. `STUNRUN_LIVE_VIDEO_FPS` optionally
+limits presentation speed (for example, 30 FPS). From the project source root:
+
+```sh
+STUNRUN_STUNRUN_DIR=roms/stunrun \
+STUNRUN_MC68010=1 STUNRUN_LIVE_VIDEO=1 STUNRUN_LIVE_VIDEO_FPS=30 \
+STUNRUN_FRAMES=0 STUNRUN_AUDIO_BACKEND=null \
+./native/build/stunrun-native-shell
+```
+
+This displays the live 68010-written GSP share, not a complete game picture:
+the TMS34010 GSP does not yet execute the uploaded display list, so the view
+can be sparse or static while the CPU continues running. Positive
+`STUNRUN_FRAMES=N` values and the default 600-frame diagnostic run remain
+bounded.
+
 ## File-driven replay (M4 scaffolding, continued)
 
 With one argv pointing at an `arcade-experiment/v1` JSON file

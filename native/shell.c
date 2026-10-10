@@ -1,3 +1,6 @@
+/* POSIX declarations used by the standalone C99 test build. */
+#define _POSIX_C_SOURCE 200809L
+
 /* Deterministic native shell: M4 replay scaffolding.
  *
  * Agent 2 (Implementer). Two modes:
@@ -39,6 +42,49 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <time.h>
+
+/* Portable recursive mkdir (no fork, no shell). */
+static void mkpath(const char *path, mode_t mode)
+{
+    char tmp[512];
+    size_t len = strlen(path);
+    if (len >= sizeof(tmp)) len = sizeof(tmp) - 1;
+    memcpy(tmp, path, len + 1);
+    for (char *p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            (void)mkdir(tmp, mode);
+            *p = '/';
+        }
+    }
+    (void)mkdir(tmp, mode);
+}
+
+/* SDL2 for window + OpenGL context (video backend) and audio device. */
+#include <SDL2/SDL.h>
+
+/* MC68010 emulator (Musashi).  When STUNRUN_MC68010=1, the shell runs
+ * the real MC68010 ROM instead of the C slice game_loop_step. */
+#include "musashi_cpu.h"
+#include "cpu_override.h"
+
+/* ---- Backend integration ---- */
+/* When STUNRUN_BACKEND is set, the shell runs with live video (+ optional
+ * audio) output via the registered backend.  Value is the backend name, e.g.
+ *   STUNRUN_BACKEND=sdl_opengl   (Linux/macOS/Windows/RPi/Android/Web)
+ *   STUNRUN_BACKEND=vulkan       (Linux/Windows/Android)
+ *   STUNRUN_BACKEND=metal        (macOS/iOS)
+ *   STUNRUN_BACKEND=null         (headless / CI)
+ * Empty or unset: runs in original "scaffold-only" mode (PPM output).
+ *
+ * STUNRUN_AUDIO_BACKEND selects the audio backend separately:
+ *   STUNRUN_AUDIO_BACKEND=sdl_audio
+ *   STUNRUN_AUDIO_BACKEND=null
+ */
+#include "backend/backend.h"
 
 #include "adsp_control_seq.h"
 #include "adsp_init_image.h"
@@ -48,8 +94,10 @@
 #include "road_fifo.h"
 #include "experiment.h"
 #include "jsa_latch.h"
+#include "sound_dispatch.h"
 #include "checkpoint.h"
 #include "render.h"
+#include "gsp_display.h"
 #include "gsp_video.h"
 #include "text_cursor.h"
 #include "text_record.h"
@@ -60,10 +108,116 @@
 static int g_failures = 0;
 static unsigned frame = 0;
 static unsigned g_terminal = 600u;
+static bool g_run_until_quit = false;
+
+/* Monotonic nanosecond clock for frame pacing.  CLOCK_MONOTONIC so a wall
+ * clock adjustment cannot stall or rush the loop. */
+static uint64_t now_ns(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0u;
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
 static const stunrun_exp_event_t *g_events = NULL;
 static unsigned g_event_count = 0;
 static unsigned g_dispatched = 0;
 static unsigned g_pending = 0;
+
+/* Live backends (activated when STUNRUN_VIDEO_BACKEND / STUNRUN_AUDIO_BACKEND are set) */
+static stunrun_backend_pair_t g_backend_pair;
+static bool g_backend_active = false;
+static SDL_Window *g_window = NULL;  /* owned by this module; destroyed on shutdown */
+
+/* JSA II audio dispatcher (OKI6295 ADPCM sample playback). */
+static sound_dispatch_t g_sound_dispatch;
+static bool g_sound_dispatch_active = false;
+
+/* MC68010 instance (Musashi).  Activated when STUNRUN_MC68010=1.
+ * When active, musashi_cpu_run() drives game state instead of game_loop_step(). */
+static musashi_cpu_t *g_cpu = NULL;
+static bool g_mc68010_active = false;
+
+/* STUNRUN_LIVE_VIDEO=1: rasterise and present the GSP share inside the frame
+ * loop, every STUNRUN_LIVE_VIDEO_STRIDE frames, so a running shell shows its
+ * own 68010's work instead of a single post-mortem still.  Requires
+ * STUNRUN_MC68010=1; without a live CPU there is nothing to scan out. */
+static bool g_live_video = false;
+static unsigned g_live_video_stride = 1u;
+static unsigned g_live_video_presented = 0;
+/* STUNRUN_LIVE_VIDEO_FPS caps how fast the loop runs so the window is
+ * watchable.  0 = uncapped, which is what CI and headless runs want.  The
+ * 68010 emulation of a frame is far faster than real time, so without this the
+ * whole 600 frames flash past in well under a second. */
+static unsigned g_live_video_fps = 0u;
+static uint64_t g_live_video_start_ns = 0u;
+
+/* The software framebuffer every render path draws into.  File scope, not
+ * local to run_walk(), because the live-video helpers below need to reach it
+ * from inside the frame loop. */
+static stunrun_renderer_t renderer;
+
+/* Screenshot capture: STUNRUN_CAPTURE_FRAME=N captures PNG at frame N.
+ * STUNRUN_CAPTURE_ALL=1 captures every frame. STUNRUN_CAPTURE_DIR sets
+ * the output directory (default: "capture/"). PNG over PPM via stb_image_write.h. */
+static unsigned g_capture_frame = UINT32_MAX;  /* UINT32_MAX = disabled */
+static bool g_capture_all = false;
+static char g_capture_dir[256] = "capture";
+static char g_dump_dir[256] = {0};
+static char g_trace_window[64] = {0};
+
+/* musashi_cpu_trace() and musashi_cpu_flow_log_*() are debugging aids declared
+ * in musashi_cpu.c rather than the header, so the shell forward-declares them. */
+extern void musashi_cpu_trace(musashi_cpu_t *cpu, unsigned count);
+extern void musashi_cpu_trace_window(musashi_cpu_t *cpu, unsigned count,
+                                     uint32_t lo, uint32_t hi);
+extern void musashi_cpu_flow_log_enable(int enabled);
+extern size_t musashi_cpu_flow_log_write(const char *path);
+extern size_t musashi_cpu_disasm_range(const musashi_cpu_t *cpu,
+                                       uint32_t start, uint32_t end,
+                                       FILE *out);
+
+/* STUNRUN_DISASM=<start:end>:<path> — static disassembly of a ROM range.
+ * Written at shutdown (so it reads the same memory map the CPU saw) but it
+ * never executes anything, so the addresses can be anywhere in the 68010's
+ * 24-bit window. */
+static unsigned long g_disasm_start, g_disasm_end;
+static char g_disasm_path[512] = { 0 };
+
+/* Where STUNRUN_FLOW_LOG asks for the control-flow inventory. */
+static char g_flow_log_path[512] = { 0 };
+static char g_pc_hist_path[512] = { 0 };
+
+/* IRQ5 period in 68010 cycles: 244.14 Hz at an 8 MHz CPU = 32 768 cycles. */
+#define STUNRUN_IRQ5_PERIOD 32768u
+
+/* Cycles the 68010 gets per displayed frame.  The multisync screen is
+ * set_raw(5000000*2, 317*2, 0, 256*2, 262, 0, 228) (harddriv.cpp:1864-1869),
+ * i.e. a 10 MHz pixel clock over 634x262 = 60.20180 Hz, while the CPU runs at
+ * HARDDRIV_MASTER_CLOCK/4 = 8 MHz (harddriv.cpp:1463).  8e6 / 60.20180 = 132 886
+ * cycles per frame, so just over four IRQ5 periods elapse per frame. */
+#define STUNRUN_FRAME_CYCLES 132886u
+
+/* CPU cycles in one raster line.  634 dots at 10 MHz, CPU at 8 MHz:
+ * 634 * 8 / 10 = 507.2.  The frame loop runs in slices this long so the
+ * emulated raster advances while the CPU executes; see the comment at the
+ * slice loop for the vblank handshake at 0x13f2 that depends on it. */
+#define STUNRUN_LINE_CYCLES 507u
+
+/* Boot-trace length, set from STUNRUN_TRACE.  0 disables tracing. */
+static unsigned g_trace_count = 0;
+static FILE *g_pclog_fp = NULL;
+
+/* STUNRUN_PCLOG=<path>: one "frame pc cycles" line per frame.  Comparing this
+ * against the same series from MAME answers "behind or stuck" in one look,
+ * which no single end-of-run PC can do. */
+static void pclog_open(void)
+{
+    const char *path = getenv("STUNRUN_PCLOG");
+    if (path && path[0])
+        g_pclog_fp = fopen(path, "w");
+}
 
 /* Generic replay boundary only: this is not game state. */
 typedef struct shell_input_latch {
@@ -231,6 +385,133 @@ static int parse_fixture_bases(const char *text, uint32_t *bases,
             return 0;
     }
     return index == count && *cursor == '\0';
+}
+
+/* Read an entire file into a fresh buffer. Returns 0 on failure. */
+static int read_whole_file(const char *path, uint8_t **out, size_t *out_len)
+{
+    FILE *f;
+    long size;
+    uint8_t *buf;
+
+    *out = NULL;
+    *out_len = 0;
+    if (path == NULL || path[0] == '\0') {
+        return 0;
+    }
+    f = fopen(path, "rb");
+    if (f == NULL) {
+        return 0;
+    }
+    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) <= 0 ||
+        fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return 0;
+    }
+    buf = (uint8_t *)malloc((size_t)size);
+    if (buf == NULL) {
+        fclose(f);
+        return 0;
+    }
+    if (fread(buf, 1u, (size_t)size, f) != (size_t)size) {
+        free(buf);
+        fclose(f);
+        return 0;
+    }
+    fclose(f);
+    *out = buf;
+    *out_len = (size_t)size;
+    return 1;
+}
+
+/* The two palette planes are `pens` consecutive little-endian 16-bit entries
+ * each -- not two interleaved halves of one array. Reading them interleaved
+ * yields 1024 plausible-looking but wrong colours. */
+static int read_palette_planes(const char *low_path, const char *high_path,
+                               uint16_t *lo, uint16_t *hi)
+{
+    uint8_t *lo_bytes = NULL, *hi_bytes = NULL;
+    size_t lo_len = 0, hi_len = 0;
+    size_t i;
+
+    if (!read_whole_file(low_path, &lo_bytes, &lo_len) ||
+        !read_whole_file(high_path, &hi_bytes, &hi_len)) {
+        free(lo_bytes);
+        free(hi_bytes);
+        return 0;
+    }
+    if (lo_len < STUNRUN_GSP_PALETTE_ENTRIES * 2u ||
+        hi_len < STUNRUN_GSP_PALETTE_ENTRIES * 2u) {
+        free(lo_bytes);
+        free(hi_bytes);
+        return 0;
+    }
+    for (i = 0; i < STUNRUN_GSP_PALETTE_ENTRIES; ++i) {
+        lo[i] = (uint16_t)(lo_bytes[i * 2u] | (lo_bytes[i * 2u + 1u] << 8));
+        hi[i] = (uint16_t)(hi_bytes[i * 2u] | (hi_bytes[i * 2u + 1u] << 8));
+    }
+    free(lo_bytes);
+    free(hi_bytes);
+    return 1;
+}
+
+/* ── Live GSP video ──────────────────────────────────────────────────────
+ *
+ * Scan out the GSP board share that OUR OWN 68010 has already written, and
+ * present it.  The `gsp-tms34010-display` path further down reuses the same
+ * rasteriser but can only read MAME dump FILES, so it can never show our own
+ * work.  This is the path that can.
+ *
+ * Caveats, stated plainly:
+ *   - Nothing here interprets the GSP.  We have no TMS34010, so nothing
+ *     EXECUTES the display list the 68010 uploads, and the region of VRAM the
+ *     GSP would draw (share rows 0x3c-0x77 at frame 600) stays empty here.
+ *     What shows up is the 68010's own direct VRAM and 2bpp writes.
+ *   - The display registers are the frame-600 measurements from
+ *     stunrun_gsp_display_frame600_regs().  DPYADR/DPYSTRT/DPYTAP are set by
+ *     the GSP from its own microcode, which we do not run, so there is no way
+ *     to observe them move.  They are effectively constant across the title
+ *     sequence, so the geometry is right even though it is not tracked.
+ *   - Not synchronised. The caller decides where a frame boundary is; a
+ *     partially-built frame is a legitimate thing to see here.
+ *
+ * Returns 0 on success, -1 if there is no live CPU or no VRAM to read. */
+static int render_live_gsp_frame(void)
+{
+    musashi_gsp_memory_t mem;
+    stunrun_gsp_display_regs_t dregs;
+
+    if (g_cpu == NULL || musashi_cpu_gsp_memory(g_cpu, &mem) != 0)
+        return -1;
+    stunrun_gsp_display_frame600_regs(&dregs);
+    /* stunrun_gsp_display_render returns 0 on SUCCESS and -1 on error. */
+    return stunrun_gsp_display_render(&renderer, mem.vram,
+                                      MUSASHI_GSP_VRAM_WORDS,
+                                      mem.pal_lo, mem.pal_hi,
+                                      STUNRUN_GSP_PALETTE_ENTRIES, &dregs);
+}
+
+/* Upload the renderer to the video backend and show it.
+ *
+ * No palette is uploaded here.  Every path that reaches this helper has
+ * already resolved colours to RGB888 pixels, so the backend has nothing left
+ * to expand; the legacy `gsp-visible-state` mode, which does hand the backend
+ * an indexed image, presents on its own path further down. */
+static void present_to_backend(void)
+{
+    stunrun_video_frame_t vf;
+
+    if (!g_backend_active || g_backend_pair.video.user == NULL)
+        return;
+    stunrun_video_frame_init(&vf, STUNRUN_RENDER_WIDTH, STUNRUN_RENDER_HEIGHT,
+                            STUNRUN_RENDER_WIDTH * 3, /* stride in bytes */
+                            STUNRUN_VIDEO_FORMAT_RGB888,
+                            renderer.pixels);
+    if (g_backend_pair.video.upload == NULL ||
+        !g_backend_pair.video.upload(g_backend_pair.video.user, &vf))
+        return;
+    if (g_backend_pair.video.present)
+        g_backend_pair.video.present(g_backend_pair.video.user);
 }
 
 static int render_text_fixture(stunrun_renderer_t *renderer,
@@ -490,7 +771,6 @@ static int run_walk(void)
 {
     static uint32_t image[STUNRUN_ADSP_INIT_STATE_WORDS];
     static uint16_t dm[STUNRUN_ADSP_DM_SIZE];
-    static stunrun_renderer_t renderer;
     stunrun_gsp_video_state_t video;
     const char *render_path;
     stunrun_jsa_latches_t latches;
@@ -513,14 +793,431 @@ static int run_walk(void)
     const char *gsp_text_record_path = getenv("STUNRUN_GSP_TEXT_RECORD_BIN");
     const char *road_strip_fixture = getenv("STUNRUN_ROAD_STRIP_FIXTURE");
     const char *render_mode = "blank-scaffold";
+
+    /* Screenshot capture env vars: STUNRUN_CAPTURE_FRAME=N, STUNRUN_CAPTURE_ALL=1, STUNRUN_CAPTURE_DIR=path */
+    {
+        const char *cf = getenv("STUNRUN_CAPTURE_FRAME");
+        if (cf && cf[0]) {
+            g_capture_frame = (unsigned)atoi(cf);
+            printf("DEBUG: STUNRUN_CAPTURE_FRAME='%s' -> %u\n", cf, g_capture_frame);
+        }
+        if (getenv("STUNRUN_CAPTURE_ALL")) {
+            g_capture_all = true;
+            printf("DEBUG: STUNRUN_CAPTURE_ALL set\n");
+        }
+        const char *cd = getenv("STUNRUN_CAPTURE_DIR");
+        if (cd && cd[0]) {
+            size_t len = strlen(cd);
+            if (len >= sizeof(g_capture_dir)) len = sizeof(g_capture_dir) - 1;
+            memcpy(g_capture_dir, cd, len);
+            g_capture_dir[len] = '\0';
+            printf("DEBUG: STUNRUN_CAPTURE_DIR='%s'\n", g_capture_dir);
+        }
+        const char *ff = getenv("STUNRUN_FRAMES");
+        if (ff && ff[0]) {
+            /* Zero is the opt-in interactive mode: run until SDL_QUIT.  Keep
+             * the bounded default and positive frame-count behavior for
+             * deterministic boot traces and tests. */
+            unsigned requested = (unsigned)strtoul(ff, NULL, 0);
+            if (requested == 0u) {
+                g_run_until_quit = true;
+                printf("DEBUG: STUNRUN_FRAMES='%s' -> run-until-window-close\n",
+                       ff);
+            } else {
+                g_terminal = requested;
+                printf("DEBUG: STUNRUN_FRAMES='%s' -> terminal=%u\n",
+                       ff, g_terminal);
+            }
+        }
+        const char *dd = getenv("STUNRUN_DUMP_DIR");
+        if (dd && dd[0]) {
+            size_t len = strlen(dd);
+            if (len >= sizeof(g_dump_dir)) len = sizeof(g_dump_dir) - 1;
+            memcpy(g_dump_dir, dd, len);
+            g_dump_dir[len] = '\0';
+            printf("DEBUG: STUNRUN_DUMP_DIR='%s'\n", g_dump_dir);
+        }
+        const char *tw = getenv("STUNRUN_TRACE_WINDOW");
+        if (tw && tw[0]) {
+            size_t len = strlen(tw);
+            if (len >= sizeof(g_trace_window))
+                len = sizeof(g_trace_window) - 1;
+            memcpy(g_trace_window, tw, len);
+            g_trace_window[len] = '\0';
+        }
+        const char *tr = getenv("STUNRUN_TRACE");
+        if (tr && tr[0]) g_trace_count = (unsigned)atoi(tr);
+        const char *fl = getenv("STUNRUN_FLOW_LOG");
+        if (fl && fl[0]) {
+            size_t len = strlen(fl);
+            if (len >= sizeof(g_flow_log_path))
+                len = sizeof(g_flow_log_path) - 1;
+            memcpy(g_flow_log_path, fl, len);
+            g_flow_log_path[len] = '\0';
+        }
+        const char *ph = getenv("STUNRUN_PC_HIST");
+        if (ph && ph[0]) {
+            size_t len = strlen(ph);
+            if (len >= sizeof(g_pc_hist_path))
+                len = sizeof(g_pc_hist_path) - 1;
+            memcpy(g_pc_hist_path, ph, len);
+            g_pc_hist_path[len] = '\0';
+            musashi_cpu_flow_log_enable(1);
+        }
+        pclog_open();
+        const char *ds = getenv("STUNRUN_DISASM");
+        if (ds && ds[0]) {
+            unsigned long s = 0, e = 0;
+            int p = 0;
+            if (sscanf(ds, "%lx:%lx:%n", &s, &e, &p) >= 2 && p > 0) {
+                g_disasm_start = s;
+                g_disasm_end = e;
+                const char *path = ds + p;
+                size_t len = strlen(path);
+                if (len >= sizeof(g_disasm_path))
+                    len = sizeof(g_disasm_path) - 1;
+                memcpy(g_disasm_path, path, len);
+                g_disasm_path[len] = '\0';
+            } else {
+                printf("DEBUG: STUNRUN_DISASM wants <start:end>:<path>, got "
+                       "'%s'\n", ds);
+            }
+        }
+    }
     uint16_t geometry_table[STUNRUN_GEOM_MARCH_WORDS];
 
     stunrun_jsa_latches_init(&latches);
     stunrun_ports_init(&ports);
+    {
+        /* Input-port overrides.  The DIP defaults are transcribed from
+         * INPUT_PORTS_START(stunrun), but the ones that steer the boot path
+         * (IN0 bit5 = service/self-test, IN0 bit0 = diagnostic jumper) are
+         * easy to get wrong, and a wrong guess sends the 68010 down a 35-frame
+         * VRAM fill that MAME never executes.  Let the environment settle the
+         * question by brute force instead of by more static reasoning:
+         *   STUNRUN_IN0=<hex>   STUNRUN_SW1=<hex>   STUNRUN_A800=<hex>  */
+        static const struct { const char *env; stunrun_port_id_t id; } ov[] = {
+            { "STUNRUN_IN0", STUNRUN_PORT_MAIN_IN0 },
+            { "STUNRUN_SW1", STUNRUN_PORT_MAIN_SW1 },
+            { "STUNRUN_A800", STUNRUN_PORT_MAIN_A800 },
+        };
+        size_t i;
+        for (i = 0; i < sizeof(ov) / sizeof(ov[0]); i++) {
+            const char *v = getenv(ov[i].env);
+            if (v && v[0]) {
+                unsigned long raw = strtoul(v, NULL, 0);
+                stunrun_port_write(&ports, ov[i].id, (uint16_t)raw);
+                printf("DEBUG: %s -> 0x%04lX\n", ov[i].env, raw);
+            }
+        }
+    }
     stunrun_game_loop_init(&game_loop, &ports);
     stunrun_adsp_control_tally_init(&tally);
     stunrun_render_init(&renderer);
     stunrun_gsp_video_init(&video);
+
+    /* Optional live backends: activated when STUNRUN_VIDEO_BACKEND or
+     * STUNRUN_AUDIO_BACKEND are set (or auto-detected if not specified).
+     * In backend mode the renderer writes to an internal RGB888 buffer
+     * that is uploaded to the GPU each frame via the backend v-table.
+     *
+     * SDL_Init must be called before creating any window or audio device.
+     * We init both subsystems regardless of which backends are active so
+     * that audio can still play even when the video backend is headless. */
+    {
+        const char *vid_name = getenv("STUNRUN_VIDEO_BACKEND");
+        const char *aud_name = getenv("STUNRUN_AUDIO_BACKEND");
+        int want_video = !vid_name || (vid_name[0] != '\0' && strcmp(vid_name, "0") != 0);
+        int want_audio = !aud_name || (aud_name[0] != '\0' && strcmp(aud_name, "0") != 0);
+
+        if (want_video || want_audio) {
+            /* Initialise SDL video + audio subsystems once.  Both are needed
+             * for the SDL2 audio backend even if no window is created. */
+            if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
+                fprintf(stderr, "shell: SDL_Init failed: %s\n", SDL_GetError());
+            } else {
+                printf("shell: sdl=init video=%d audio=%d\n",
+                       want_video ? 1 : 0, want_audio ? 1 : 0);
+            }
+
+            /* Pre-load env names so pair_init can pick them up */
+            if (vid_name && vid_name[0] != '\0' && strcmp(vid_name, "0") != 0)
+                setenv("STUNRUN_VIDEO_BACKEND", vid_name, 1);
+            if (aud_name && aud_name[0] != '\0' && strcmp(aud_name, "0") != 0)
+                setenv("STUNRUN_AUDIO_BACKEND", aud_name, 1);
+
+            /* If a video backend is needed, create a window for it.
+             * The null backend does not need a window (pass NULL). */
+            g_window = NULL;
+            if (want_video) {
+                const char *auto_vid = getenv("STUNRUN_VIDEO_BACKEND");
+                if (!auto_vid || strcmp(auto_vid, "null") != 0) {
+                    /* We only ever upload a texture and blit a fullscreen quad,
+                     * so ask for no depth or stencil and let the driver choose a
+                     * default visual.
+                     *
+                     * The GL context request is best-effort and DEGRADES IN
+                     * THREE STEPS, because it is not portable:
+                     *   1. GL 2.1 compatibility profile -- what GLEW wants.
+                     *   2. No version or profile constraint -- drivers that
+                     *      expose only core profiles, and Mesa's GLX path,
+                     *      reject a compatibility request with an X error
+                     *      that SDL surfaces as a bare `BadValue` on
+                     *      X_CreateWindow, which is exactly what this used to
+                     *      do on a stock X server.
+                     *   3. No GL at all -- SDL software surface. The sdl_opengl
+                     *      backend will then report no context and fall back
+                     *      rather than taking the whole shell down.
+                     * GLEW probes extensions at run time, so a 3.3 core
+                     * context satisfies everything sdl_video.c asks for. */
+                    static const char *const window_flags[] = {
+                        "sdl_opengl_gl21_compat", "sdl_opengl_default",
+                        "sdl_software"
+                    };
+                    size_t step;
+                    for (step = 0; step < sizeof(window_flags) / sizeof(*window_flags);
+                         ++step) {
+                        Uint32 flags = SDL_WINDOW_RESIZABLE;
+                        if (strcmp(window_flags[step], "sdl_software") != 0) {
+                            SDL_GL_ResetAttributes();
+                            SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+                            SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
+                            SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+                            if (strcmp(window_flags[step],
+                                       "sdl_opengl_gl21_compat") == 0) {
+                                SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+                                SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+                                SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
+                                    SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+                            }
+                            flags |= SDL_WINDOW_OPENGL;
+                        }
+                        g_window = SDL_CreateWindow(
+                            "STUN Runner",
+                            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                            (int)STUNRUN_RENDER_WIDTH * 2,
+                            (int)STUNRUN_RENDER_HEIGHT * 2,
+                            flags);
+                        if (g_window) break;
+                        if (step + 1u < sizeof(window_flags) / sizeof(*window_flags))
+                            fprintf(stderr,
+                                    "shell: SDL_CreateWindow(%s) failed (%s); "
+                                    "relaxing GL request\n",
+                                    window_flags[step], SDL_GetError());
+                    }
+                    if (!g_window) {
+                        fprintf(stderr,
+                                "shell: SDL_CreateWindow failed for every "
+                                "attempt: %s\n", SDL_GetError());
+                    } else {
+                        fprintf(stderr, "shell: window=%zu backend=%s\n",
+                                step + 1, window_flags[step]);
+                    }
+                }
+            }
+
+            memset(&g_backend_pair, 0, sizeof(g_backend_pair));
+            if (stunrun_backend_pair_init(&g_backend_pair,
+                    g_window,   /* window_ctx — NULL for headless */
+                    STUNRUN_RENDER_WIDTH, STUNRUN_RENDER_HEIGHT,
+                    g_window ? (uint32_t)(STUNRUN_RENDER_WIDTH * 2)
+                             : STUNRUN_RENDER_WIDTH,
+                    g_window ? (uint32_t)(STUNRUN_RENDER_HEIGHT * 2)
+                             : STUNRUN_RENDER_HEIGHT,
+                    48000)) {
+                g_backend_active = true;
+                printf("shell: backend=active video=%s audio=%s window=%s\n",
+                       g_backend_pair.video.name
+                           ? g_backend_pair.video.name : "(auto)",
+                       g_backend_pair.audio.name
+                           ? g_backend_pair.audio.name : "(auto)",
+                       g_window ? "created" : "headless");
+
+                /* JSA II audio: load OKI6295 ROM and initialise the dispatcher.
+                 * The ROM is the concatenation of all four jsa:oki1 files.
+                 * STUNRUN_JSA_OKI_ROM can be a colon-separated list of up to 4
+                 * paths; if not set, defaults to the standard ROM location. */
+                {
+                    const char *oki_paths_env = getenv("STUNRUN_JSA_OKI_ROM");
+                    char oki_paths[4][260];
+                    int oki_count = 0;
+                    /* Default: try the standard ROM names in the stunrun/ directory
+                     * relative to STUNRUN_STUNRUN_DIR or the current directory. */
+                    const char *base = getenv("STUNRUN_STUNRUN_DIR");
+                    if (!base) base = ".";
+
+                    if (oki_paths_env && oki_paths_env[0]) {
+                        /* Colon-separated list. */
+                        char copy[1024];
+                        if (strlen(oki_paths_env) < sizeof(copy)) {
+                            strcpy(copy, oki_paths_env);
+                            char *tok = strtok(copy, ":");
+                            while (tok && oki_count < 4) {
+                                strncpy(oki_paths[oki_count], tok, sizeof(oki_paths[0]) - 1);
+                                oki_paths[oki_count][sizeof(oki_paths[0]) - 1] = '\0';
+                                oki_count++;
+                                tok = strtok(NULL, ":");
+                            }
+                        }
+                    } else {
+                        /* Fall back to the standard four ROM filenames. */
+                        const char *defaults[] = {
+                            "136070-2124.1fh",
+                            "136070-2125.1ef",
+                            "136070-2126.1de",
+                            "136070-2127.1cd",
+                        };
+                        for (int i = 0; i < 4 && oki_count < 4; i++) {
+                            snprintf(oki_paths[oki_count], sizeof(oki_paths[0]),
+                                     "%s/%s", base, defaults[i]);
+                            oki_count++;
+                        }
+                    }
+
+                    /* Load all OKI ROM files into one contiguous 256 KB buffer. */
+                    uint8_t *oki_rom = NULL;
+                    uint32_t oki_rom_size = 0;
+                    if (oki_count > 0) {
+                        oki_rom = (uint8_t *)malloc((size_t)oki_count * 65536);
+                        if (oki_rom) {
+                            memset(oki_rom, 0, (size_t)oki_count * 65536);
+                            oki_rom_size = (uint32_t)oki_count * 65536;
+                            for (int i = 0; i < oki_count; i++) {
+                                FILE *f = fopen(oki_paths[i], "rb");
+                                if (f) {
+                                    size_t got = fread(oki_rom + (size_t)i * 65536,
+                                                       1, 65536, f);
+                                    printf("shell: oki-rom[%d] path=%s loaded=%zu\n",
+                                           i, oki_paths[i], got);
+                                    fclose(f);
+                                } else {
+                                    printf("shell: oki-rom[%d] path=%s not-found\n",
+                                           i, oki_paths[i]);
+                                }
+                            }
+                        }
+                    }
+
+                    if (oki_rom && oki_rom_size > 0) {
+                        if (sound_dispatch_init(&g_sound_dispatch,
+                                g_backend_pair.audio.name ? &g_backend_pair.audio : NULL,
+                                g_backend_pair.audio.user,
+                                oki_rom, oki_rom_size)) {
+                            g_sound_dispatch_active = true;
+                            printf("shell: sound-dispatch=active oki-rom-size=%u\n",
+                                   oki_rom_size);
+
+                            /* Optional audio-path probe. This deliberately
+                             * starts one real ROM-mapped effect directly at
+                             * the sound dispatcher, bypassing the MC68010
+                             * producer so SDL/backend PCM output can be
+                             * checked even when game boot has not reached its
+                             * sound-command queue. It is opt-in and does not
+                             * change normal gameplay. */
+                            const char *probe_env =
+                                getenv("STUNRUN_AUDIO_PROBE_COMMAND");
+                            if (probe_env && probe_env[0]) {
+                                char *end = NULL;
+                                long command = strtol(probe_env, &end, 0);
+                                if (end != probe_env && *end == '\0' &&
+                                    command >= 0 && command <= 0x6C) {
+                                    sound_dispatch_send_command(
+                                        &g_sound_dispatch, (uint8_t)command);
+                                    printf("shell: audio-probe=command-0x%02lX "
+                                           "(bypasses MC68010 producer)\n",
+                                           command);
+                                } else {
+                                    fprintf(stderr,
+                                            "shell: invalid STUNRUN_AUDIO_PROBE_COMMAND '%s' "
+                                            "(expected 0..0x6C)\n",
+                                            probe_env);
+                                }
+                            }
+                        } else {
+                            free(oki_rom);
+                            printf("shell: sound-dispatch=init-failed\n");
+                        }
+                    } else {
+                        free(oki_rom);
+                        printf("shell: oki-rom=not-loaded\n");
+                    }
+                }
+            } else {
+                printf("shell: backend=init-failed\n");
+            }
+        }
+    }
+
+    /* MC68010: boot the real ROM when STUNRUN_MC68010=1.
+     * The ROM dir defaults to STUNRUN_STUNRUN_DIR or ".". */
+    {
+        const char *mc68010_env = getenv("STUNRUN_MC68010");
+        if (mc68010_env && strcmp(mc68010_env, "0") != 0) {
+            const char *rom_dir = getenv("STUNRUN_STUNRUN_DIR");
+            const char *lv = getenv("STUNRUN_LIVE_VIDEO");
+            const char *lvs = getenv("STUNRUN_LIVE_VIDEO_STRIDE");
+            const char *lvf = getenv("STUNRUN_LIVE_VIDEO_FPS");
+            if (!rom_dir) rom_dir = ".";
+            if (lv && lv[0] && strcmp(lv, "0") != 0) {
+                g_live_video = true;
+                g_live_video_stride = 1u;
+                if (lvs && lvs[0]) {
+                    long s = strtol(lvs, NULL, 0);
+                    if (s > 0) g_live_video_stride = (unsigned)s;
+                }
+                if (lvf && lvf[0]) {
+                    long f = strtol(lvf, NULL, 0);
+                    if (f > 0) g_live_video_fps = (unsigned)f;
+                }
+            }
+            if (g_pc_hist_path[0])
+                musashi_cpu_set_pc_hist(1);
+            g_cpu = musashi_cpu_create();
+            if (!g_cpu) {
+                printf("shell: mc68010=create-failed\n");
+            } else {
+                /* Init the override table before resetting the CPU so the
+                 * instruction hook is registered before the first instruction. */
+                cpu_override_init();
+                musashi_cpu_set_ports(g_cpu, &ports);
+                /* Bind the LIVE JSA latch block, not a local: a 68010 store
+                 * into $600000-$603FFF reaches stunrun_jsa_main_command_write()
+                 * and is consumed by sound_dispatch_frame() below.  With no
+                 * dispatch (no OKI ROM) we bind NULL, which the transport
+                 * treats as "no latch": stores are dropped, reads return the
+                 * open-bus 0xFF exactly as the pre-slice stub did. */
+                musashi_cpu_set_jsa_latches(
+                    g_cpu, g_sound_dispatch_active
+                               ? &g_sound_dispatch.latches
+                               : NULL);
+                if (musashi_loader_load(g_cpu, rom_dir) == 0) {
+                    musashi_cpu_reset(g_cpu);
+                    g_mc68010_active = true;
+                    printf("shell: mc68010=active rom-dir=%s pc=0x%08X\n",
+                           rom_dir, musashi_cpu_get_pc(g_cpu));
+                    /* STUNRUN_BOOT_TRACE=<n>: single-step the first n
+                     * instructions straight out of reset, before the frame
+                     * loop touches anything.  The boot path is only a few
+                     * thousand instructions before it reaches the 5M-cycle
+                     * VRAM fill, so this is the cheapest way to see where the
+                     * CPU actually goes -- a trace taken at shutdown always
+                     * starts deep inside the fill instead. */
+                    {
+                        const char *bt = getenv("STUNRUN_BOOT_TRACE");
+                        if (bt && bt[0]) {
+                            unsigned n = (unsigned)strtoul(bt, NULL, 0);
+                            printf("shell: boot trace %u instructions:\n", n);
+                            musashi_cpu_trace(g_cpu, n);
+                        }
+                    }
+                } else {
+                    printf("shell: mc68010=rom-load-failed\n");
+                    musashi_cpu_destroy(g_cpu);
+                    g_cpu = NULL;
+                }
+            }
+        }
+    }
 
     if (geometry_table_path != NULL) {
         unsigned passes;
@@ -555,10 +1252,94 @@ static int run_walk(void)
         }
     }
 
-    for (frame = 0; frame <= g_terminal; frame++) {
+    for (frame = 0; g_run_until_quit || frame <= g_terminal; frame++) {
         dispatch_inputs(&ports);
-        if (frame != 0u)
+
+        /* Run the MC68010 (real ROM) or the C slices (reconstructed logic).
+         * STUNRUN_MC68010=1 activates Musashi emulation.
+         * At 8 MHz / 60 fps ≈ 133 333 cycles per frame.  We run a
+         * conservative 80 000 cycles here; if the MC68010 hits an
+         * unmapped MMIO region it returns 0xFF/0xFFFF which the game
+         * should treat as idle/default state. */
+        if (g_mc68010_active && g_cpu) {
+            /* One frame is STUNRUN_FRAME_CYCLES of CPU time, not a single IRQ
+             * period.  Gating the frame on the IRQ period ran 32 768 cycles
+             * per frame, so after 600 frames we had retired 19 660 800 cycles
+             * where MAME retires ~80 M — roughly 4x behind, which is why the
+             * dump showed the CPU still inside the boot VRAM-fill loop. */
+
+            /* IRQ5: the board's periodic interrupt.
+             *
+             * harddriv.cpp:1465 wires m_maincpu->set_periodic_int to
+             * hd68k_irq_gen at HARDDRIV_MASTER_CLOCK/16/16/16/16/2 = 244.14 Hz,
+             * which asserts level 5.  At 8 MHz that is one interrupt every
+             * 32 768 cycles, i.e. about four times per frame.  The 68010
+             * parks in a wait loop until this arrives, so without it the boot
+             * never gets past the early RAM-stack setup.  Tick it every period
+             * for the whole frame rather than once per frame. */
+            /* Slice the frame one raster line at a time.  The dot clock that
+             * feeds port0_status() is only advanced by musashi_cpu_run(), so a
+             * whole-frame chunk froze hpos/vpos for the whole frame.  The ROM
+             * gates on /VSYNCB changing state at 0x13f2:
+             *   0013f2: btst #$2, $60c001.l / 0013fa: beq $13f2
+             *   0013fc: btst #$2, $60c001.l / 001404: bne $13fc
+             * and with a frozen raster the first loop spins forever.  One line
+             * is 634 dots at 10 MHz against an 8 MHz CPU, i.e.
+             * 634 * 4 / 5 = 507.2 cycles. */
+            uint32_t remaining = STUNRUN_FRAME_CYCLES;
+            while (remaining > 0u) {
+                uint32_t until_irq = musashi_cpu_gsp_cycles_until_irq(
+                    g_cpu, STUNRUN_IRQ5_PERIOD);
+                uint32_t chunk = STUNRUN_LINE_CYCLES;
+                if (until_irq < chunk)
+                    chunk = until_irq;
+                if (chunk == 0u)
+                    chunk = 1u;
+                if (chunk > remaining)
+                    chunk = remaining;
+                musashi_cpu_run(g_cpu, (int)chunk);
+                remaining -= chunk;
+                if (until_irq <= STUNRUN_LINE_CYCLES)
+                    musashi_cpu_set_irq(g_cpu, 5);
+            }
+            if (g_pclog_fp)
+                fprintf(g_pclog_fp, "%u 0x%08lX %lu %zu\n", frame,
+                        (unsigned long)musashi_cpu_get_pc(g_cpu),
+                        (unsigned long)musashi_cpu_total_cycles(g_cpu),
+                        musashi_cpu_gsp_write_count(g_cpu));
+        } else if (frame != 0u) {
             stunrun_game_loop_step(&game_loop);
+        }
+
+        /* Pump window events and dispatch pending sound commands each frame.
+         * SDL_PollEvent is non-blocking; it returns 0 when the event queue
+         * is empty.  Window resize events are forwarded to the video backend
+         * so it can update its viewport / texture dimensions.  SDL_QUIT
+         * terminates the walk early (sets g_terminal to the current frame). */
+        if (g_backend_active) {
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_WINDOWEVENT &&
+                    e.window.event == SDL_WINDOWEVENT_RESIZED) {
+                    if (g_backend_pair.video.on_resize &&
+                        g_backend_pair.video.user) {
+                        g_backend_pair.video.on_resize(
+                            g_backend_pair.video.user,
+                            (uint32_t)e.window.data1,
+                            (uint32_t)e.window.data2);
+                    }
+                } else if (e.type == SDL_QUIT) {
+                    g_run_until_quit = false;
+                    g_terminal = frame;
+                }
+            }
+            /* Dispatch JSA II commands to the OKI6295 emulator and enqueue PCM
+             * samples to the audio backend each frame.  sound_dispatch_frame
+             * handles its own command-peek (non-clearing), so no separate
+             * peek call is needed here. */
+            if (g_sound_dispatch_active)
+                (void)sound_dispatch_frame(&g_sound_dispatch);
+        }
         if (frame == 1) {
             /* Startup response: 6502 writes 0xFF, main IRQ4 fires,
              * handler reads 0x600000, IRQ4 clears. */
@@ -627,6 +1408,77 @@ static int run_walk(void)
             printf("shell: frame=600 control-tally=match "
                    "title-counts=match fifo-block=match\n");
         }
+
+        /* Live video: scan out the GSP share the 68010 just wrote and present
+         * it.  This is the only path that puts our OWN work on screen -- the
+         * gsp-tms34010-display path below reads MAME dump files.  Strided so
+         * 600 frames do not all rasterise when a coarse cadence is enough. */
+        if (g_live_video && g_cpu != NULL &&
+            (frame % g_live_video_stride) == 0) {
+            if (render_live_gsp_frame() == 0) {
+                g_live_video_presented++;
+                render_mode = "live-gsp-share";
+                present_to_backend();
+            } else if (frame == 0) {
+                printf("shell: live-video=unavailable\n");
+                g_live_video = false;
+            }
+        }
+
+        /* Frame pacing.  Emulating a frame costs far less than 1/60 s, so
+         * without a cap the window is unwatchable.  Measured from the first
+         * paced frame, not from process start, so the time spent loading ROMs
+         * and building backends does not count against the budget. */
+        if (g_live_video && g_live_video_fps > 0u && frame > 0u) {
+            uint64_t budget_ns = 1000000000ull / g_live_video_fps;
+            if (g_live_video_start_ns == 0u)
+                g_live_video_start_ns = now_ns();
+            uint64_t target = g_live_video_start_ns + budget_ns * frame;
+            uint64_t now = now_ns();
+            if (target > now) {
+                uint64_t wait_ns = target - now;
+                /* SDL_Delay is millisecond-granular, so only sleep once the
+                 * remainder is worth a syscall; otherwise busy-yield. */
+                if (wait_ns >= 2000000ull)
+                    SDL_Delay((unsigned)((wait_ns + 999999ull) / 1000000ull));
+                while (now_ns() < target)
+                    ;
+            }
+        }
+
+        /* Per-frame capture: PNG via stb_image_write.h.
+         * Runs inside the loop so `frame` is correct (not loop-exit +1).
+         * Only fires when STUNRUN_CAPTURE_FRAME=<N> matches current frame. */
+        if (g_capture_frame != UINT32_MAX && frame == g_capture_frame) {
+            /* Render the frame that was just simulated into the backend,
+             * then capture it.  The renderer writes to renderer.pixels. */
+            if (g_live_video && g_cpu != NULL)
+                render_live_gsp_frame();
+            if (g_backend_active) {
+                if (g_backend_pair.video.set_palette && render_mode != NULL &&
+                    strcmp(render_mode, "gsp-visible-state") == 0) {
+                    stunrun_video_palette_t vp;
+                    stunrun_video_palette_init(&vp, 256, video.palette_rgb);
+                    g_backend_pair.video.set_palette(
+                        g_backend_pair.video.user, &vp);
+                }
+                if (g_backend_pair.video.present)
+                    g_backend_pair.video.present(g_backend_pair.video.user);
+            }
+            {
+                char path[512];
+                int n = snprintf(path, sizeof(path), "%s/frame_%04u.png",
+                                 g_capture_dir, frame);
+                if (n > 0 && n < (int)sizeof(path)) {
+                    mkpath(g_capture_dir, 0755);
+                    if (stunrun_render_write_png(&renderer, path))
+                        printf("shell: capture frame=%u path=%s\n", frame, path);
+                    else
+                        printf("shell: capture frame=%u path=%s FAILED\n",
+                               frame, path);
+                }
+            }
+        }
     }
 
     if (g_terminal != 600u)
@@ -669,6 +1521,10 @@ static int run_walk(void)
         int has_road_strip = road_strip_fixture != NULL &&
                              strcmp(road_strip_fixture, "1") == 0;
         int has_any_text = has_text_table || has_text_words || has_text_records;
+        const char *gsp_display_flag = getenv("STUNRUN_GSP_DISPLAY");
+        int use_gsp_display = gsp_display_flag != NULL &&
+                              strcmp(gsp_display_flag, "0") != 0 &&
+                              has_vram && has_low && has_high;
         if (has_road_strip &&
             (has_vram || has_rgb || has_low || has_high || has_any_text)) {
             printf("shell: road-strip fixture excludes other render inputs\n");
@@ -703,6 +1559,45 @@ static int run_walk(void)
             } else {
                 render_mode = "gsp-text-cursor-fixture";
             }
+        } else if (use_gsp_display) {
+            /* The verified TMS34010 display path: 512 KiB share, 1024 pens,
+             * row base (rowaddr << 10) masked to the share, DPYADR advancing
+             * once per visible line. Reproduces MAME's own frame output when
+             * fed a board dump the real GSP produced. This path reads pixels
+             * that are ALREADY in VRAM -- the drawing is the TMS34010 core,
+             * which does not exist yet. */
+            uint16_t lo[STUNRUN_GSP_PALETTE_ENTRIES];
+            uint16_t hi[STUNRUN_GSP_PALETTE_ENTRIES];
+            uint8_t *vram_bytes = NULL;
+            size_t vram_bytes_len = 0;
+            stunrun_gsp_display_regs_t dregs;
+
+            if (!read_whole_file(gsp_vram_path, &vram_bytes, &vram_bytes_len) ||
+                vram_bytes_len < STUNRUN_GSP_VRAM_WORDS * 2u) {
+                printf("shell: gsp-display needs a >=%u byte VRAM share (%s)\n",
+                       (unsigned)(STUNRUN_GSP_VRAM_WORDS * 2u),
+                       gsp_vram_path ? gsp_vram_path : "(unset)");
+                free(vram_bytes);
+                g_failures++;
+            } else if (!read_palette_planes(gsp_palette_low_path,
+                                            gsp_palette_high_path, lo, hi)) {
+                printf("shell: gsp-display palette load=error\n");
+                free(vram_bytes);
+                g_failures++;
+            } else {
+                stunrun_gsp_display_frame600_regs(&dregs);
+                if (stunrun_gsp_display_render(&renderer,
+                                               (const uint16_t *)(const void *)vram_bytes,
+                                               vram_bytes_len / 2u, lo, hi,
+                                               STUNRUN_GSP_PALETTE_ENTRIES,
+                                               &dregs) != 0) {
+                    printf("shell: gsp-display render=error\n");
+                    g_failures++;
+                } else {
+                    render_mode = "gsp-tms34010-display";
+                }
+                free(vram_bytes);
+            }
         } else if (!has_vram || (has_rgb && (has_low || has_high)) ||
             (!has_rgb && (has_low != has_high))) {
             if (has_vram || has_rgb || has_low || has_high) {
@@ -736,9 +1631,134 @@ static int run_walk(void)
             printf("shell: render-output path=%s status=written\n", render_path);
         }
     }
+    /* Window trace (STUNRUN_TRACE_WINDOW=lo:hi): same walk, but only prints
+     * instructions landing in [lo,hi).  The boot code is dominated by
+     * 230k-iteration fill loops, so an unfiltered trace is useless here. */
+    if (g_trace_window[0] && g_cpu) {
+        unsigned long lo = strtoul(g_trace_window, NULL, 0);
+        const char *colon = strchr(g_trace_window, ':');
+        unsigned long hi = colon ? strtoul(colon + 1, NULL, 0) : (lo + 0x100u);
+        printf("shell: trace window %lx..%lx\n", lo, hi);
+        musashi_cpu_trace_window(g_cpu, g_trace_count ? g_trace_count : 200u,
+                                 (uint32_t)lo, (uint32_t)hi);
+    }
+
+    /* Boot trace (STUNRUN_TRACE=N): disassemble N instructions from the
+     * current PC before the state dump, so we can see exactly where the
+     * 68010 is sitting when the walk ends. */
+    if (g_trace_count > 0u && g_cpu && !g_trace_window[0]) {
+        printf("shell: trace %u instructions from PC=0x%08X\n",
+               g_trace_count, musashi_cpu_get_pc(g_cpu));
+        musashi_cpu_trace(g_cpu, g_trace_count);
+    }
+
+    /* Static disassembly (STUNRUN_DISASM=<start:end>:<path>).  Runs before
+     * the flow log because both are pure reads of the same memory map. */
+    if (g_disasm_path[0] && g_cpu) {
+        FILE *df = fopen(g_disasm_path, "w");
+        if (df) {
+            fprintf(df, "; stunrunner MC68010 disassembly %06lx-%06lx\n",
+                    g_disasm_start, g_disasm_end);
+            size_t n = musashi_cpu_disasm_range(g_cpu, (uint32_t)g_disasm_start,
+                                                (uint32_t)g_disasm_end, df);
+            fclose(df);
+            printf("shell: disasm %06lx-%06lx -> %s (%zu instructions)\n",
+                   g_disasm_start, g_disasm_end, g_disasm_path, n);
+        } else {
+            printf("shell: disasm FAILED (cannot write %s)\n",
+                   g_disasm_path);
+            g_failures++;
+        }
+    }
+
+    /* Control-flow inventory (STUNRUN_FLOW_LOG=<path>): write the set of
+     * distinct call / branch / return targets the 68010 reached.  With no
+     * symbols in the ROM, the distinct call targets are the closest thing to
+     * a function list we can get, and they tell us which addresses are worth
+     * disassembling next. */
+    if (g_pc_hist_path[0]) {
+        musashi_cpu_write_pc_histogram(g_cpu, g_pc_hist_path);
+        printf("shell: pc histogram=%s\n", g_pc_hist_path);
+    }
+    if (g_flow_log_path[0] && g_cpu) {
+        size_t edges = musashi_cpu_flow_log_write(g_flow_log_path);
+        printf("shell: flow log=%s edges=%zu\n", g_flow_log_path, edges);
+    }
+
+    /* Machine-state dump (STUNRUN_DUMP_DIR).  Dumps main RAM, the GSP host
+     * write log, and every GSP memory region the 68010 wrote to, so the
+     * display list can be decoded offline.  Runs once, after the walk
+     * finishes, so the state is whatever the terminal frame left behind.
+     * An unset STUNRUN_DUMP_DIR means "do not dump", not "dump into the empty
+     * path" — the latter failed the run on every invocation without it. */
+    if (g_dump_dir[0] != '\0' && g_cpu) {
+        if (musashi_cpu_dump_state(g_cpu, g_dump_dir) == 0) {
+            musashi_gsp_region_counts_t counts;
+            musashi_cpu_gsp_region_counts(g_cpu, &counts);
+            printf("shell: dump dir=%s gsp_writes=%zu vram=%u vram2bpp=%u "
+                   "pal_lo=%u pal_hi=%u control=%u unmapped=%u\n",
+                   g_dump_dir, musashi_cpu_gsp_write_count(g_cpu),
+                   counts.vram, counts.vram_2bpp, counts.pal_lo,
+                   counts.pal_hi, counts.control, counts.unmapped);
+        } else {
+            printf("shell: dump dir=%s FAILED\n", g_dump_dir);
+            g_failures++;
+        }
+    }
+
+    if (g_live_video_presented > 0) {
+        printf("shell: live-video frames-presented=%u stride=%u "
+               "source=live-gsp-share\n",
+               g_live_video_presented, g_live_video_stride);
+    }
+
     printf("render frame=%u width=%u height=%u hash=0x%08X mode=%s\n",
            renderer.frame, STUNRUN_RENDER_WIDTH, STUNRUN_RENDER_HEIGHT,
            (unsigned)stunrun_render_hash(&renderer), render_mode);
+
+    /* Screenshot capture for g_capture_all: dump every rendered frame.
+     * Per-frame capture (STUNRUN_CAPTURE_FRAME=N) is handled inside the
+     * per-frame loop above so `frame` is accurate. */
+    if (g_capture_all) {
+        char path[512];
+        int n = snprintf(path, sizeof(path), "%s/frame_%04u.png",
+                         g_capture_dir, frame);
+        if (n > 0 && n < (int)sizeof(path)) {
+            mkpath(g_capture_dir, 0755);
+            if (stunrun_render_write_png(&renderer, path))
+                printf("shell: capture frame=%u path=%s\n", frame, path);
+            else
+                printf("shell: capture frame=%u path=%s FAILED\n",
+                       frame, path);
+        }
+    }
+
+    /* Live backend present: upload the completed frame and show it.
+     * The renderer writes directly to renderer.pixels (RGB888, 512×240).
+     * video.palette_rgb is only valid when video state was loaded (gsp-visible-state). */
+    if (g_backend_active && g_backend_pair.video.user) {
+        stunrun_video_frame_t vf;
+        stunrun_video_frame_init(&vf, STUNRUN_RENDER_WIDTH, STUNRUN_RENDER_HEIGHT,
+                                STUNRUN_RENDER_WIDTH * 3,  /* stride in bytes */
+                                STUNRUN_VIDEO_FORMAT_RGB888,
+                                renderer.pixels);
+
+        if (g_backend_pair.video.upload &&
+            g_backend_pair.video.upload(g_backend_pair.video.user, &vf)) {
+            /* Palette is only valid for gsp-visible-state; for road-strip/text
+             * fixtures the palette is all-zeros which is harmless. */
+            if (g_backend_pair.video.set_palette &&
+                render_mode != NULL &&
+                strcmp(render_mode, "gsp-visible-state") == 0) {
+                stunrun_video_palette_t vp;
+                stunrun_video_palette_init(&vp, 256, video.palette_rgb);
+                g_backend_pair.video.set_palette(
+                    g_backend_pair.video.user, &vp);
+            }
+            if (g_backend_pair.video.present)
+                g_backend_pair.video.present(g_backend_pair.video.user);
+        }
+    }
     printf("game-loop frame=%u ticks=%u steering=%d trajectory=0x%04X "
            "motion-delta=%d\n",
            game_loop.frame, (unsigned)game_loop.global_tick,
@@ -758,6 +1778,34 @@ static int run_walk(void)
            latches.irq4_asserted ? 1 : 0);
     emit_model_checkpoint(image, STUNRUN_ADSP_INIT_STATE_WORDS);
     stunrun_gsp_video_free(&video);
+
+    /* Shut down backends, destroy window, and shut down SDL after the final frame */
+    if (g_cpu) {
+        musashi_cpu_destroy(g_cpu);
+        g_cpu = NULL;
+        g_mc68010_active = false;
+    }
+    if (g_sound_dispatch_active) {
+        printf("shell: sound-dispatch stats frames=%llu commands=%llu "
+               "oki-bytes=%llu samples-enqueued=%llu sample-rate=%u\n",
+               (unsigned long long)g_sound_dispatch.frames_dispatched,
+               (unsigned long long)g_sound_dispatch.commands_dispatched,
+               (unsigned long long)g_sound_dispatch.oki_bytes_written,
+               (unsigned long long)g_sound_dispatch.samples_enqueued,
+               (unsigned)oki6295_sample_rate(&g_sound_dispatch.oki));
+        sound_dispatch_shutdown(&g_sound_dispatch);
+        g_sound_dispatch_active = false;
+    }
+    if (g_backend_active) {
+        stunrun_backend_pair_shutdown(&g_backend_pair);
+        g_backend_active = false;
+    }
+    if (g_window) {
+        SDL_DestroyWindow(g_window);
+        g_window = NULL;
+    }
+    SDL_Quit();
+
     if (g_failures == 0)
         printf("RESULT PASS\n");
     else

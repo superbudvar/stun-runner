@@ -11,6 +11,7 @@ Do not begin broad disassembly, implementation, or verification from raw ROMs al
 3. `PROCESS.md` — role boundaries and experimental method
 4. `PROJECT.md` — target-specific goals and architecture
 5. `QUESTIONS.md` — unresolved cross-agent requests
+6. `BUGS.md` — defects in the **original** game and in MAME, as opposed to ours
 
 Then read the contracts relevant to the task:
 
@@ -114,6 +115,15 @@ Treat the original game under pinned MAME as the behavioral oracle and interact 
 
 If an emulator interaction will be repeated, turn it into a harness capability, selector, fixture, experiment, or assertion instead of leaving it as a manual agent ritual.
 
+The harness is mandatory for repeatable tests and investigations: use the
+existing scripted runners rather than launching ad-hoc MAME commands. Extend
+`MAME_HARNESS.md`, `mame/`, `mame_harness/`, or `tools/` when a new test needs
+an input mode, selector, checkpoint, assertion, trace, snapshot, or failure
+artifact. Python MAME runners must use `mame_harness/process.py` so MAME and
+its descendants are reaped on timeout, interruption, or failure. Interactive
+runs must use explicit windowed mode (`-window`), not fullscreen; headless
+runs remain the default for automated captures.
+
 All waits must be bounded. Timeouts must produce useful diagnostics.
 
 ---
@@ -136,6 +146,60 @@ When a useful observation procedure will recur, contribute reusable harness/conf
 
 ---
 
+# Reverse-engineering findings protocol (mandatory)
+
+Two records must be written **during** an investigation, not reconstructed afterwards. An investigation that ends in a fix but leaves no record has not finished.
+
+## 1. Original-code defects go in `BUGS.md`
+
+`BUGS.md` records facts about the **1989 game** and about the **MAME driver**. It
+does not record mistakes we made. If you find any of the following, add an entry
+before you close the investigation:
+
+- a ROM routine that does something surprising, off-by-one, or self-referential;
+- ROM data that contradicts the obvious reading (asymmetric write order, skewed ramp);
+- hardware the ROM addresses in a way the board does not honour;
+- a MAME driver defect or gap that shaped how we could observe the machine.
+
+Use the template in that file and fill every field, including `Confidence`. Keep
+ROM-code, ROM-data, hardware-abuse and curiosity in their own sections, and keep MAME
+defects in the separate MAME section — they behave differently and upstreaming only
+applies to the latter.
+
+**Keep our own misunderstandings out of it.** "We misread the map and thought RAM was
+512 KiB" belongs in `../docs/mc68010-boot-findings.md`, which is our running log of
+wrong turns and their refutations. The line between the two is: does the original code
+or the emulator do the surprising thing, or did we?
+
+## 2. Assembly findings go in `../docs/mc68010-boot-findings.md`
+
+Every disassembly read during debugging is conversion material. The C++ port replaces
+routines, so the disassembly must outlive the debugging session. When you read a
+routine, append it with:
+
+- the ROM address range and the ROM file it came from;
+- the transcription in mnemonic form, verbatim;
+- the semantics you inferred, and **which parts are inference**;
+- anything ambiguous, with the alternative readings spelled out;
+- the C slice that implements it, once one exists.
+
+## 3. Transcribe into a tested C slice
+
+A read disassembly is not a deliverable. Each routine above should have a
+`native/<name>.{h,c}` + `native/<name>_test.c` pair, registered as a CTest in
+`native/CMakeLists.txt`, asserting the **observable output** — the FIFO word stream,
+the marker writes, the resulting memory — rather than just "it ran".
+
+When the disassembly is ambiguous, **keep the unambiguous part faithful and implement
+the ambiguous part as a documented choice**. Say so in a comment at the decision site
+and in the findings doc. Do not silently pick one reading.
+
+The two existing examples are the pattern: `native/gsp_boot.{h,c}` (19 boot routines,
+asserting the exact GSP FIFO word sequence) and `native/ram_march.{h,c}` (five RAM-march
+variants, asserting watchdog cadence, marker words and fault injection).
+
+---
+
 # Implementer instructions
 
 Do not treat successful disassembly as proof of a usable reproduction toolchain.
@@ -154,6 +218,9 @@ Do not build toolchains for optional processors that Step 0/runtime inventory sh
 When semantics are uncertain, preserve literal mechanism rather than inventing intent.
 
 Use established fixtures and the shared replay/checkpoint schema. Do not redefine oracle expectations to make implementation pass.
+
+When implementing a routine, if the original code does something that looks like a bug,
+**reproduce it** and add an entry to `BUGS.md` citing the slice. Do not improve it.
 
 ---
 
@@ -201,3 +268,83 @@ An explicit `UNKNOWN` or `ASSUMPTION CONFLICT` is a valid and useful result.
 Leave persistent evidence, commands, tests, selectors, fixtures, harness capabilities, driver-mining updates, and concise project-state changes in the repository.
 
 Do not rely on hidden agent context or previous chat history for facts another agent will need.
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:46cd31e7 -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
+
+## Agent Context Profiles
+
+The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
+
+- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
+- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
+- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
+
+## Session Completion
+
+This protocol applies when ending a Beads implementation workflow. It is subordinate to explicit user, repository, and orchestrator instructions.
+
+1. **File issues for remaining work** - Create beads for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **Handle git/sync by active profile**:
+   ```bash
+   # Conservative/minimal/default: report status and proposed commands; wait for approval.
+   git status
+
+   # Team-maintainer opt-in only, unless current instructions forbid it:
+   git pull --rebase
+   bd dolt push
+   git push
+   git status
+   ```
+5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
+
+**Critical rules:**
+- Explicit user or orchestrator instructions override this Beads block.
+- Do not commit or push without clear authority from the active profile or the current user request.
+- If a required sync or push is blocked, stop and report the exact command and error.
+<!-- END BEADS INTEGRATION -->
+
+<!-- BEGIN BEADS CODEX SETUP: generated by bd setup codex -->
+## Beads Issue Tracker
+
+Use Beads (`bd`) for durable task tracking in repositories that include it. Use the `beads` skill at `.agents/skills/beads/SKILL.md` (project install) or `~/.agents/skills/beads/SKILL.md` (global install) for Beads workflow guidance, then use the `bd` CLI for issue operations.
+
+### Quick Reference
+
+```bash
+bd ready                # Find available work
+bd show <id>            # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>           # Complete work
+bd prime                # Refresh Beads context
+```
+
+### Rules
+
+- Use `bd` for all task tracking; do not create markdown TODO lists.
+- Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
+- Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
+
+**Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
+<!-- END BEADS CODEX SETUP -->

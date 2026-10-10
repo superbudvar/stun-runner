@@ -158,6 +158,16 @@ typedef struct stunrun_jsa_command_read {
 
 const stunrun_jsa_command_read_t *stunrun_jsa_command_reads(void);
 
+/* ---- Sound command dispatch for live audio backends ---- */
+
+/* Return the most recently latched 6502 command byte WITHOUT clearing the
+ * pending flag.  This allows the audio backend to observe every command the
+ * 68010 sent without interfering with the replay latch model.
+ *
+ * Returns the byte value (0-255) if a command is pending, or
+ * STUNRUN_JSA_NO_BYTE if no command is pending. */
+int stunrun_jsa_peek_command_byte(const stunrun_jsa_latches_t *latches);
+
 #ifdef __cplusplus
 }
 #endif

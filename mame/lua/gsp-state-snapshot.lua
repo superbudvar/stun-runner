@@ -9,6 +9,7 @@ local target_text = os.getenv('STUNRUN_GSP_STATE_TARGETS') or '600,1800'
 local input_mode = os.getenv('STUNRUN_GSP_STATE_INPUT') or 'none'
 local detail = os.getenv('STUNRUN_GSP_STATE_DETAIL') == '1'
 local screen_output = os.getenv('STUNRUN_GSP_STATE_SCREEN') or ''
+local screen_dir = os.getenv('STUNRUN_GSP_STATE_SCREEN_DIR') or ''
 local frame = 0
 local targets = {}
 for value in string.gmatch(target_text, '[^,]+') do targets[tonumber(value)] = true end
@@ -23,7 +24,13 @@ local sw_off_prefix = {
     {port = ':mainpcb:SW1', field = 'SW1:7', action = 'set', value = 1},
     {port = ':mainpcb:SW1', field = 'SW1:8', action = 'set', value = 1}
 }
-local events = input_mode == 'late_drive' and {
+local service_prefix = {
+    {port = ':mainpcb:IN0', field = 'Service Mode', action = 'set', value = 0}
+}
+local events = (input_mode == 'service' or input_mode == 'service_probe') and {
+    {frame = 1, port = ':mainpcb:IN0', field = 'Service Mode', action = 'set', value = 0},
+    {frame = 100, port = ':mainpcb:IN0', field = 'Service Mode', action = 'set', value = 0}
+} or input_mode == 'late_drive' and {
     {frame = 650, port = ':mainpcb:IN0', field = 'Coin 1', action = 'press'},
     {frame = 680, port = ':mainpcb:IN0', field = 'Coin 1', action = 'release'},
     {frame = 750, port = ':mainpcb:a80000', field = '1 Player Start', action = 'press'},
@@ -79,7 +86,17 @@ local function apply_event(event)
     end
 end
 
-if input_mode == 'sw_off_prestart' or input_mode == 'drive' or input_mode == 'late' or input_mode == 'late_drive' then
+local function assert_service_switch()
+    -- PORT_SERVICE is an active-low bit.  Writing the raw port is necessary
+    -- here: the game samples the switch during reset, before a frame event can
+    -- reliably change the ioport field's live value.
+    local port = assert(machine.ioport.ports[':mainpcb:IN0'])
+    port:write(port:read() & 0xdf)
+end
+
+if input_mode == 'service' or input_mode == 'service_probe' then
+    emu.register_prestart(assert_service_switch)
+elseif input_mode == 'sw_off_prestart' or input_mode == 'drive' or input_mode == 'late' or input_mode == 'late_drive' then
     emu.register_prestart(function()
         for _, event in ipairs(sw_off_prefix) do apply_event(event) end
     end)
@@ -146,6 +163,12 @@ local function snapshot()
         local screen = assert(machine.screens[':mainpcb:screen'], 'screen not found')
         assert(screen:snapshot(screen_output) == nil, 'screen snapshot failed')
         print('M1_GSP_SCREEN frame=' .. frame .. ' path=' .. screen_output)
+    end
+    if screen_dir ~= '' then
+        local screen = assert(machine.screens[':mainpcb:screen'], 'screen not found')
+        local path = string.format('%s/frame-%06d.png', screen_dir, frame)
+        assert(screen:snapshot(path) == nil, 'screen snapshot failed')
+        print('M1_GSP_SCREEN frame=' .. frame .. ' path=' .. path)
     end
     if detail then
         print(string.format('M1_GSP_CONTROL frame=%d lo=%s hi=%s', frame,

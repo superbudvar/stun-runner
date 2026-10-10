@@ -313,3 +313,21 @@ int stunrun_render_write_ppm(const stunrun_renderer_t *renderer,
         return 0;
     return 1;
 }
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "../third_party/stb/stb_image_write.h"
+
+int stunrun_render_write_png(const stunrun_renderer_t *renderer,
+                             const char *path)
+{
+    if (renderer == NULL || path == NULL)
+        return 0;
+    /* stb_image_write: stride_in_bytes = width * channels */
+    int ok = stbi_write_png(path,
+                             (int)STUNRUN_RENDER_WIDTH,
+                             (int)STUNRUN_RENDER_HEIGHT,
+                             (int)STUNRUN_RENDER_CHANNELS,
+                             renderer->pixels,
+                             (int)(STUNRUN_RENDER_WIDTH * STUNRUN_RENDER_CHANNELS));
+    return ok ? 1 : 0;
+}

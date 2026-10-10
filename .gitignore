@@ -1,0 +1,49 @@
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
+
+# Local builds, test output, and emulator state
+build/
+Testing/
+capture/
+snap/
+nvram/
+cfg/*.cfg
+*.log
+nohup.out
+error.log
+mame-ref
+
+# Commercial ROMs and locally reconstructed ROM images
+roms/stunrun/
+roms/extracted/
+stunrun/
+stunrun-flat.bin
+stunrun.7z
+stunrun.zip
+
+# Local reverse-engineering databases and IDE state
+ghidra_stunrunner/
+*.gpr
+*.rep/
+.agents/scratch/
+.claude/
+.codex/
+.cursor/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# One-off local comparison images and compiled helper binaries
+diff.png
+tools/diff.png
+tools/test_frames/
+native/debug_bytes
+native/musashi_loader
+native/rom_peek
+tools/frame_diff

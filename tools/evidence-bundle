@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Create and validate immutable, provenance-bearing evidence bundles."""
+
+import argparse
+import hashlib
+import json
+import pathlib
+import sys
+from datetime import datetime, timezone
+
+
+SCHEMA = "stunrun-evidence-bundle/v1"
+
+
+def digest(path: pathlib.Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def artifact_spec(value: str) -> tuple[str, str]:
+    path, separator, role = value.partition("=")
+    if not separator or not path or not role:
+        raise argparse.ArgumentTypeError("ARTIFACT must be PATH=ROLE")
+    return path, role
+
+
+def create(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+    artifacts = []
+    for raw_path, role in args.artifact:
+        path = (root / raw_path).resolve()
+        if not path.is_file():
+            raise SystemExit(f"artifact does not exist: {raw_path}")
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError as error:
+            raise SystemExit(f"artifact is outside root: {raw_path}") from error
+        artifacts.append({
+            "path": relative,
+            "role": role,
+            "size": path.stat().st_size,
+            "sha256": digest(path),
+        })
+    bundle = {
+        "schema": SCHEMA,
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "source": {
+            "kind": args.source_kind,
+            "id": args.source_id,
+            "mame": args.mame,
+            "rom_manifest": args.rom_manifest,
+        },
+        "claims": [
+            {"text": text, "confidence": args.confidence}
+            for text in args.claim
+        ],
+        "artifacts": artifacts,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"schema": SCHEMA, "artifacts": len(artifacts),
+                      "output": str(args.output)}))
+    return 0
+
+
+def validate(args: argparse.Namespace) -> int:
+    bundle = json.loads(args.bundle.read_text(encoding="utf-8"))
+    if bundle.get("schema") != SCHEMA:
+        raise SystemExit(f"unsupported evidence bundle schema: {bundle.get('schema')}")
+    failures = []
+    for artifact in bundle.get("artifacts", []):
+        path = args.root / artifact["path"]
+        if not path.is_file():
+            failures.append(f"missing: {artifact['path']}")
+            continue
+        actual_size = path.stat().st_size
+        actual_hash = digest(path)
+        if actual_size != artifact["size"]:
+            failures.append(f"size changed: {artifact['path']}")
+        if actual_hash != artifact["sha256"]:
+            failures.append(f"hash changed: {artifact['path']}")
+    if failures:
+        print("\n".join(failures), file=sys.stderr)
+        return 1
+    print(json.dumps({"schema": SCHEMA, "valid": True,
+                      "artifacts": len(bundle.get("artifacts", []))}))
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    make = subparsers.add_parser("create")
+    make.add_argument("output", type=pathlib.Path)
+    make.add_argument("--root", type=pathlib.Path, default=pathlib.Path.cwd())
+    make.add_argument("--source-kind", required=True)
+    make.add_argument("--source-id", required=True)
+    make.add_argument("--mame")
+    make.add_argument("--rom-manifest")
+    make.add_argument("--confidence", choices=("KNOWN", "LIKELY", "SPECULATIVE", "UNKNOWN"), default="UNKNOWN")
+    make.add_argument("--claim", action="append", default=[])
+    make.add_argument("--artifact", type=artifact_spec, action="append", default=[], metavar="PATH=ROLE")
+    make.set_defaults(function=create)
+    check = subparsers.add_parser("validate")
+    check.add_argument("bundle", type=pathlib.Path)
+    check.add_argument("--root", type=pathlib.Path, default=pathlib.Path.cwd())
+    check.set_defaults(function=validate)
+    args = parser.parse_args()
+    return args.function(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

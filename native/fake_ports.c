@@ -3,6 +3,15 @@
 
 #include <string.h>
 
+/* See the note on stunrun_fake_ports_t: the 512 KiB work RAM is static so the
+ * struct stays small enough to live on a caller's stack. */
+static uint8_t main_ram[STUNRUN_MAIN_RAM_BYTES];
+
+const uint8_t *stunrun_ports_main_ram(void)
+{
+    return main_ram;
+}
+
 static int valid_range(uint32_t address, size_t width)
 {
     uint32_t offset;
@@ -18,6 +27,37 @@ void stunrun_ports_init(stunrun_fake_ports_t *ports)
     if (ports == NULL)
         return;
     memset(ports, 0, sizeof(*ports));
+    memset(main_ram, 0, sizeof(main_ram));
+    /* Idle-machine values transcribed from MAME's own block for this game:
+     * INPUT_PORTS_START(stunrun) at mame-ref/src/mame/atari/harddriv.cpp:1084.
+     * Do NOT use INPUT_PORTS_START(harddriv) at :789 - different defaults.
+     *   IN0 (:1097-1108): bit0 diagnostic jumper on, bit1 /HBLANK, bit2 /VSYNCB
+     *   active low, bit3 12-bit EOC, bit4 8-bit ADC EOC, bit5 PORT_SERVICE
+     *   active low, bit6 /COIN2, bit7 /COIN1 active low.  hblank/vblank are
+     *   re-derived from the video dot clock in port0_status() so the idle
+     *   halves are set here and left alone.
+     *   Bit 5 must read SET (0xE7, not 0xC7).  The ROM tests it at 0x254:
+     *     clear -> 0x2a0 -> 0x506c -> 0x548e, a second 230400-word copy of
+     *             the VRAM fill, which MAME's per-frame PC log never shows.
+     *     set   -> 0x264 jsr $3f8 -> bsr $67a (the 900x256 fill) -> jsr $636
+     *             (the 2bpp fill) -> 0x29e jmp (A1) to 0x212ae, the real boot.
+     *   MAME's PC at frame 1 is 0x69C, inside the 0x67a fill, so bit 5 reads
+     *   SET; frames 32-36 are 0x66A, the 0x636 fill's loop.  See
+     *   docs/mc68010-boot-findings.md.
+     *   SW1 (:1110-1121): every DIP is PORT_DIPNAME(mask, 0x00, ...) so all
+     *   eight default to 0 -> 0x00.  This is the byte the ROM reads first at
+     *   0x9010 (move.b $60c000.l on a big-endian bus takes the high byte), and
+     *   0x00 is what makes it skip the self-test dispatch table.
+     *   a80000 (:1123-1127): bit0 BUTTON1, bit1 BUTTON2, bit2 IPT_START1,
+     *   rest IPT_UNUSED.  MAME's PORT_BIT(mask, IP_ACTIVE_LOW, IPT_UNUSED)
+     *   uses IP_ACTIVE_LOW as the field's default value, so the unused high
+     *   bits idle high.  Keep bits 0-2 clear to preserve the existing boot
+     *   path (btst #$2,$a80001 at 0x50e8 takes jmp $0f94 into the game), while
+     *   setting the unused bits to their MAME default.  In particular bit 15
+     *   gates the sound-command enqueue at 0x023eb0. */
+    ports->values[STUNRUN_PORT_MAIN_IN0] = 0xE7;
+    ports->values[STUNRUN_PORT_MAIN_SW1] = 0x00;
+    ports->values[STUNRUN_PORT_MAIN_A800] = 0xFFF8;
     ports->values[STUNRUN_PORT_AD_STICK_X] = 128;
     ports->values[STUNRUN_PORT_AD_STICK_Y] = 128;
 }
@@ -27,7 +67,7 @@ int stunrun_mem_read8(const stunrun_fake_ports_t *ports, uint32_t address,
 {
     if (ports == NULL || value == NULL || !valid_range(address, 1u))
         return 0;
-    *value = ports->main_ram[address - STUNRUN_MAIN_RAM_BASE];
+    *value = main_ram[address - STUNRUN_MAIN_RAM_BASE];
     return 1;
 }
 
@@ -36,7 +76,7 @@ int stunrun_mem_write8(stunrun_fake_ports_t *ports, uint32_t address,
 {
     if (ports == NULL || !valid_range(address, 1u))
         return 0;
-    ports->main_ram[address - STUNRUN_MAIN_RAM_BASE] = value;
+    main_ram[address - STUNRUN_MAIN_RAM_BASE] = value;
     return 1;
 }
 
