@@ -75,6 +75,7 @@ class DisplayListTraceTests(unittest.TestCase):
             "stack=12345678ABCDEF00\n"
             "M1_GSP_DL_CONSUMER frame=600 pc=FFF48C20\n"
             "M1_GSP_DL_CONSUMER_STATUS status=observed\n"
+            "M1_GSP_STATE frame=600 pc=FFF45320 st=00200010\n"
             "M1_GSP_DL_DONE frames=600 calls=1 fifo_words=1 "
             "calls_truncated=false fifo_truncated=false output=/tmp/x\n"
         )
@@ -89,6 +90,7 @@ class DisplayListTraceTests(unittest.TestCase):
         self.assertEqual(call["entry_state"]["d4"], 5)
         self.assertEqual(call["entry_state"]["stack_hex"], "12345678ABCDEF00")
         self.assertEqual(parsed["consumer_capture_status"], "observed")
+        self.assertEqual(parsed["gsp_state_samples"][0]["pc"], 0xFFF45320)
         self.assertEqual(call["consumer_evidence"]["status"], "observed-same-frame")
         self.assertIn("ownership is unknown", call["consumer_evidence"]["meaning"])
 

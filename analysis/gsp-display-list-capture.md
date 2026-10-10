@@ -105,3 +105,25 @@ pointer, consistent with the existing display-list entry contract. The
 remaining stack words are preserved evidence only; they have not been given
 argument names. This is enough to reproduce the exact source/destination
 pairing without inventing a texture or glyph structure.
+
+## Late-drive GSP execution
+
+The first consumer tap did not fire, but that is an instrumentation limitation,
+not evidence that the GSP was idle. The trace now records bounded per-frame
+GSP state samples. In a `late_drive` run covering frames 600–1200, 512 samples
+showed active PCs including:
+
+```text
+$FFF41060  sentinel dispatch       88 samples
+$FFF41650  dispatch/worker path    55 samples
+$FFF454E0  known FILL XY writer   89 samples
+$FFF414C0  worker path             47 samples
+```
+
+The result is preserved at
+`reference/experiments/stunrun/display-list-gsp-state-late-1200/result.json`.
+This establishes that the GSP executes the known rasterizer path during
+late-drive gameplay. The next correlation should tap GSP VRAM writes and pair
+their GSP state/PC landmarks with the preceding MC68010 host writes; the
+unavailable execute-tap callback must not be treated as evidence that no
+consumer exists.

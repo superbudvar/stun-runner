@@ -1,0 +1,27 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "display-list-gsp-state-late-1200",
+  "command": "./tools/mame-display-list-trace roms /tmp/opencode/display-list-gsp-state-late-1200 --mame /mnt/build/mame-ref/mame --frames 1200 --start-frame 600 --end-frame 1200 --input late_drive --max-calls 32 --max-fifo-words 8192 --raw-bytes 128",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "artifacts": [
+    {
+      "path": "result.json",
+      "size": 40930,
+      "sha256": "8e7ca5d55ea0b69f3422c7fa7394b82e398fc6caef7ad481f4bc59f86cf25ca5"
+    }
+  ],
+  "limitations": [
+    "GSP execute tap produced no callbacks; per-frame state samples are retained instead.",
+    "No FIFO-to-consumer ownership claim is made."
+  ],
+  "observed_pcs": {
+    "0xFFF41060": 88,
+    "0xFFF41650": 55,
+    "0xFFF454E0": 89,
+    "0xFFF414C0": 47
+  },
+  "mame_log_sha256": "19422384496854118c0f4ab02830abda7da79958879db0bca0ca51edbaa8e5d7"
+}

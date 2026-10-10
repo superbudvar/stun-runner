@@ -11,6 +11,7 @@ local max_calls = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_CALLS') or '256')
 local raw_bytes = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_RAW_BYTES') or '1024')
 local max_fifo_words = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_FIFO') or '16384')
 local max_consumer_events = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_CONSUMER') or '256')
+local max_gsp_exec_events = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_GSP_EXEC') or '512')
 local frame = 0
 local calls = {}
 local active_call
@@ -21,6 +22,8 @@ local call_tap
 local fifo_tap
 local consumer_events = {}
 local consumer_capture_status = 'unavailable'
+local gsp_exec_events = {}
+local gsp_state_samples = {}
 
 local sw_off_prefix = {
     {port = ':mainpcb:SW1', field = 'SW1:1', value = 1},
@@ -32,7 +35,16 @@ local sw_off_prefix = {
     {port = ':mainpcb:SW1', field = 'SW1:7', value = 1},
     {port = ':mainpcb:SW1', field = 'SW1:8', value = 1}
 }
-local events = input_mode == 'drive' and {
+local events = input_mode == 'late_drive' and {
+    {frame = 650, port = ':mainpcb:IN0', field = 'Coin 1', value = 0},
+    {frame = 680, port = ':mainpcb:IN0', field = 'Coin 1', value = 1},
+    {frame = 750, port = ':mainpcb:a80000', field = '1 Player Start', value = 0},
+    {frame = 780, port = ':mainpcb:a80000', field = '1 Player Start', value = 1},
+    {frame = 900, port = ':mainpcb:8BADC.0', field = 'AD Stick X', value = 220},
+    {frame = 900, port = ':mainpcb:a80000', field = 'P1 Button 1', value = 0},
+    {frame = 1500, port = ':mainpcb:8BADC.0', field = 'AD Stick X', value = 128},
+    {frame = 1500, port = ':mainpcb:a80000', field = 'P1 Button 1', value = 1}
+} or input_mode == 'drive' and {
     {frame = 120, port = ':mainpcb:IN0', field = 'Coin 1', value = 0},
     {frame = 122, port = ':mainpcb:IN0', field = 'Coin 1', value = 1},
     {frame = 300, port = ':mainpcb:a80000', field = '1 Player Start', value = 0},
@@ -51,7 +63,7 @@ local function apply_event(event)
     field:set_value(event.value)
 end
 
-if input_mode == 'drive' then
+if input_mode == 'drive' or input_mode == 'late_drive' then
     emu.register_prestart(function()
         for _, event in ipairs(sw_off_prefix) do apply_event(event) end
     end)
@@ -192,6 +204,22 @@ local function install_taps()
                         frame = frame, pc = 0xfff48c20
                     }
                 end
+        end)
+        -- TMS34010 debugger PC values are reported in the `$FFFxxxxx`
+        -- address view, while some MAME builds expose execute-tap addresses
+        -- through the logical space's full range. Use a bounded callback over
+        -- the whole space and retain only the first configured landmarks.
+        gsp_space:install_execute_tap(0x00000000, 0xffffffff,
+            'stunrun_gsp_execution_landmarks', function()
+                if #gsp_exec_events < max_gsp_exec_events and
+                    frame >= capture_start and frame <= capture_end then
+                    local state = gsp.state
+                    local pc_state = state['CURPC'] or state['PC']
+                    gsp_exec_events[#gsp_exec_events + 1] = {
+                        frame = frame,
+                        pc = pc_state and pc_state.value or 0
+                    }
+                end
             end)
     end
 end
@@ -202,6 +230,18 @@ emu.register_frame_done(function()
     while next_event <= #events and events[next_event].frame == frame do
         apply_event(events[next_event])
         next_event = next_event + 1
+    end
+    local gsp_device = machine.devices[':mainpcb:gsp']
+    if gsp_device ~= nil and frame >= capture_start and
+        frame <= capture_end and #gsp_state_samples < max_gsp_exec_events then
+        local state = gsp_device.state
+        local pc_state = state['CURPC'] or state['PC']
+        local st_state = state['ST']
+        gsp_state_samples[#gsp_state_samples + 1] = {
+            frame = frame,
+            pc = pc_state and pc_state.value or 0,
+            st = st_state and st_state.value or 0
+        }
     end
     if frame >= limit then
         for _, call in ipairs(calls) do
@@ -225,6 +265,14 @@ emu.register_frame_done(function()
         for _, event in ipairs(consumer_events) do
             print(string.format('M1_GSP_DL_CONSUMER frame=%d pc=%08X',
                 event.frame, event.pc))
+        end
+        for _, event in ipairs(gsp_exec_events) do
+            print(string.format('M1_GSP_EXEC frame=%d pc=%08X',
+                event.frame, event.pc))
+        end
+        for _, sample in ipairs(gsp_state_samples) do
+            print(string.format('M1_GSP_STATE frame=%d pc=%08X st=%08X',
+                sample.frame, sample.pc, sample.st))
         end
         print('M1_GSP_DL_CONSUMER_STATUS status=' .. consumer_capture_status)
         print(string.format(
