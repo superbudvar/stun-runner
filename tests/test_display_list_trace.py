@@ -40,6 +40,10 @@ class DisplayListTraceTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("--raw-bytes", proc.stdout)
 
+    def test_service_f2_selector_is_available(self):
+        self.assertIn('"service_f2"', TOOL.read_text())
+        self.assertIn("Service Mode", LUA.read_text())
+
     def test_decodes_group_boundaries_and_pending_state(self):
         table = bytes(range(16))
         raw = b"\x00" + table + b"\x03\xAA\xBB\xCC\x82\x55\xC2\x6F\x40"

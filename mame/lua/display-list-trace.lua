@@ -37,7 +37,10 @@ local sw_off_prefix = {
     {port = ':mainpcb:SW1', field = 'SW1:7', value = 1},
     {port = ':mainpcb:SW1', field = 'SW1:8', value = 1}
 }
-local events = input_mode == 'late_drive' and {
+local events = input_mode == 'service_f2' and {
+    {frame = 60, port = ':mainpcb:IN0', field = 'Service Mode', value = 0},
+    {frame = 120, port = ':mainpcb:IN0', field = 'Service Mode', value = 1}
+} or input_mode == 'late_drive' and {
     {frame = 650, port = ':mainpcb:IN0', field = 'Coin 1', value = 0},
     {frame = 680, port = ':mainpcb:IN0', field = 'Coin 1', value = 1},
     {frame = 750, port = ':mainpcb:a80000', field = '1 Player Start', value = 0},
@@ -65,7 +68,7 @@ local function apply_event(event)
     field:set_value(event.value)
 end
 
-if input_mode == 'drive' or input_mode == 'late_drive' then
+if input_mode == 'drive' or input_mode == 'late_drive' or input_mode == 'service_f2' then
     emu.register_prestart(function()
         for _, event in ipairs(sw_off_prefix) do apply_event(event) end
     end)

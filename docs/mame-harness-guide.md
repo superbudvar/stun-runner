@@ -358,7 +358,7 @@ All scripts use `os.getenv()` for configuration. Variables are divided into cate
 | `STUNRUN_GSP_DL_TRACE_OUT` | Output path | `/tmp/gsp_dl_trace` |
 | `STUNRUN_GSP_DL_TRACE_FRAMES` | Max frames | `1800` |
 | `STUNRUN_GSP_DL_TRACE_START` / `_END` | Inclusive capture window | `500` / `1800` |
-| `STUNRUN_GSP_DL_TRACE_INPUT` | Input preset (`none` or `drive`) | `drive` |
+| `STUNRUN_GSP_DL_TRACE_INPUT` | Input preset (`none`, `drive`, `late_drive`, or `service_f2`) | `drive` |
 | `STUNRUN_GSP_DL_TRACE_MAX_CALLS` | Maximum `0x225E4` entries | `256` |
 | `STUNRUN_GSP_DL_TRACE_RAW_BYTES` | Bounded stream snapshot per call | `1024` |
 | `STUNRUN_GSP_DL_TRACE_MAX_FIFO` | Maximum attributed FIFO words | `16384` |
@@ -408,6 +408,9 @@ end
 - `course_sweep`, `course_coin2`, `course_preface_left`, `course_preface_right` — course-hunting sequences
 - `weapon_probe`, `collision_probe_*`, `damage_probe_sweep` — gameplay probes
 - `service_probe` — enters service mode at frame 100
+- `service_f2` — presses the logical `Service Mode` field at frame 60 and
+  releases it at frame 120; used by the display-list trace to capture the
+  service transition without raw-port writes
 
 ---
 
