@@ -154,3 +154,18 @@ that `$225E4` output is geometry. Required evidence before freezing that seam:
 2. identify the GSP consumer and record fields;
 3. establish where transform, depth ordering, lighting, and clipping occur;
 4. replay one oracle block through a software decoder and compare visible output.
+
+## 2026-10-10 display-list capture check
+
+The existing `tools/mame-display-list-trace` harness was run against the
+pinned rev-6 set with `--input drive`, frames 850–1200, and a 2,048-byte raw
+window per candidate call. It exited successfully but captured zero calls and
+zero FIFO words. The canonical MAME log SHA-256 is
+`28993b8f23594bffddee7c7d8cdf6730ea64a3f930497b2170cc11ed146676c6`.
+
+This is not evidence that the display-list path is absent: the same address
+range executes in the native late-drive model, while this MAME selector did
+not reach it. Keep the result as an instrumentation/input-path limitation and
+do not promote it into a geometry conclusion. The GL seam therefore remains
+blocked on a correlated oracle FIFO capture or a validated GSP consumer
+record format.
