@@ -1,0 +1,25 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "gsp-vram-window-101",
+  "command": "./tools/mame-memory-snapshot roms /tmp/opencode/gsp-vram-window-101 --mame /mnt/build/mame-ref/mame --device :mainpcb:gsp --space program --base 0xfff3f000 --count 0x1000 --width 16 --frames 110 --targets 90,101,110 --input drive_hold --nothrottle",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "artifacts": [
+    {
+      "path": "/tmp/opencode/gsp-vram-window-101/snapshot-101.json",
+      "size": 11047,
+      "sha256": "b24a509613d3c8e0d914253144c9a944a7ca51218bdd2e5e03ee4da893b029d0"
+    }
+  ],
+  "summary": {
+    "device": ":mainpcb:gsp",
+    "space": "program",
+    "base": "0xFFF3F000",
+    "count": "0x1000",
+    "frame": 101,
+    "nonzero": 976
+  },
+  "local_capture_directory": "/tmp/opencode/gsp-vram-window-101"
+}

@@ -51,3 +51,26 @@ drive a future replay decoder, but not to create a trustworthy GL mesh. The
 indexed scanout path is therefore the current renderer boundary; geometry
 rendering must wait for a consumer-correlated record decode or an equivalent
 oracle comparison.
+
+## Destination-window check
+
+The same frame was sampled through the scripted memory-snapshot harness at
+GSP program-space address `$FFF3F000`, covering `$1000` values. At frame 90
+the window was zero; at frame 101 it contained 976 nonzero values and at
+frame 110 it still contained 976. The frame-101 snapshot is preserved under
+`reference/experiments/stunrun/gsp-vram-window-101/`.
+
+The nonzero runs include the destinations observed for the two complete
+uploads:
+
+```text
+$FFF3FB20  — call 5 destination
+$FFF3FD80  — call 4 destination
+```
+
+This establishes that those uploads land in the GSP mapped shared-memory
+window during the same early display phase. It does **not** establish whether
+the data is a glyph, sprite, texture, command buffer, or geometry; the
+semantic role remains UNKNOWN. It does, however, rule out treating these two
+small uploads as FIFO-only records and makes them useful candidates for a
+future indexed/2bpp texture decoder.
