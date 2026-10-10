@@ -88,3 +88,20 @@ and a text-rendering phase. It does not yet prove that calls `$02D7A4` and
 font data, a text command, or an intermediate tile record, and the GSP/scanout
 consumer has not been correlated. The existing `$234B6` 2bpp row expander is
 therefore a candidate comparison implementation, not a decoded format.
+
+## Entry-state capture
+
+The bounded trace also preserves the MC68010 entry state for each `$225E4`
+display-list call. The two frame-101 calls are:
+
+```text
+caller  frame  stream    host destination  entry stack (first 16 bytes)
+$2D7A4  101    $09841C  $FFF3FD80        0002D7A60009841C00097F4B00094D09
+$2D7B6  101    $098457  $FFF3FB20        0002D7B8000984570009841C00097F4B
+```
+
+The first longword is the return address and the next longword is the stream
+pointer, consistent with the existing display-list entry contract. The
+remaining stack words are preserved evidence only; they have not been given
+argument names. This is enough to reproduce the exact source/destination
+pairing without inventing a texture or glyph structure.

@@ -33,6 +33,10 @@ DONE = re.compile(
 )
 CONSUMER = re.compile(r"M1_GSP_DL_CONSUMER frame=(\d+) pc=([0-9A-Fa-f]+)")
 CONSUMER_STATUS = re.compile(r"M1_GSP_DL_CONSUMER_STATUS status=([a-z]+)")
+ENTRY = re.compile(
+    r"M1_GSP_DL_ENTRY id=(\d+) sp=([0-9A-Fa-f]+) a6=([0-9A-Fa-f]+) "
+    r"d0=([0-9A-Fa-f]+) d1=([0-9A-Fa-f]+) d2=([0-9A-Fa-f]+) "
+    r"d3=([0-9A-Fa-f]+) d4=([0-9A-Fa-f]+) stack=([0-9A-Fa-f]*)")
 
 
 def decode_stream(stream_address: int, raw: bytes) -> dict:
@@ -161,7 +165,20 @@ def parse_log(text: str) -> dict:
             "data": int(match.group(5), 16) & 0xFFFF,
             "mask": int(match.group(6), 16),
             "destination_latch": int(match.group(7), 16) if match.group(7) else None,
-        })
+            })
+    for match in ENTRY.finditer(text):
+        call = by_id.get(int(match.group(1)))
+        if call is not None:
+            call["entry_state"] = {
+                "sp": int(match.group(2), 16),
+                "a6": int(match.group(3), 16),
+                "d0": int(match.group(4), 16),
+                "d1": int(match.group(5), 16),
+                "d2": int(match.group(6), 16),
+                "d3": int(match.group(7), 16),
+                "d4": int(match.group(8), 16),
+                "stack_hex": match.group(9).upper(),
+            }
     consumer_events = [{"frame": int(match.group(1)), "pc": int(match.group(2), 16)}
                        for match in CONSUMER.finditer(text)]
     for call in calls:

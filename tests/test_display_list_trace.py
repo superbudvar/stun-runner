@@ -70,6 +70,9 @@ class DisplayListTraceTests(unittest.TestCase):
             f"call_size=6 call_opcode=4EB9 stream=00FF9200 raw={raw}\n"
             "M1_GSP_DL_FIFO id=1 frame=600 pc=000226F8 addr=00C0000C "
             "data=00005555 mask=0000FFFF\n"
+            "M1_GSP_DL_ENTRY id=1 sp=00FF8000 a6=00FF8100 d0=00000001 "
+            "d1=00000002 d2=00000003 d3=00000004 d4=00000005 "
+            "stack=12345678ABCDEF00\n"
             "M1_GSP_DL_CONSUMER frame=600 pc=FFF48C20\n"
             "M1_GSP_DL_CONSUMER_STATUS status=observed\n"
             "M1_GSP_DL_DONE frames=600 calls=1 fifo_words=1 "
@@ -83,6 +86,8 @@ class DisplayListTraceTests(unittest.TestCase):
         self.assertTrue(call["fifo_count_matches_decode"])
         self.assertEqual(call["raw_fifo_words"], [0x5555])
         self.assertEqual(call["raw_fifo_hex"], "5555")
+        self.assertEqual(call["entry_state"]["d4"], 5)
+        self.assertEqual(call["entry_state"]["stack_hex"], "12345678ABCDEF00")
         self.assertEqual(parsed["consumer_capture_status"], "observed")
         self.assertEqual(call["consumer_evidence"]["status"], "observed-same-frame")
         self.assertIn("ownership is unknown", call["consumer_evidence"]["meaning"])

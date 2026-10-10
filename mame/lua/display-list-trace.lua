@@ -65,6 +65,11 @@ local function raw_hex(space, address)
     return table.concat(bytes)
 end
 
+local function state_value(state, name)
+    local item = state[name]
+    return item and item.value or 0
+end
+
 local function infer_callsite(space, return_address)
     local opcode
 
@@ -128,6 +133,17 @@ local function install_taps()
                 call_opcode = call_opcode,
                 stream = stream,
                 raw = raw_hex(space, stream),
+                -- Preserve the entry contract before the display-list helper
+                -- consumes the stack. These are observations, not decoded
+                -- argument names or geometry semantics.
+                stack = stack,
+                stack_hex = raw_hex(space, stack),
+                a6 = state_value(cpu.state, 'A6'),
+                d0 = state_value(cpu.state, 'D0'),
+                d1 = state_value(cpu.state, 'D1'),
+                d2 = state_value(cpu.state, 'D2'),
+                d3 = state_value(cpu.state, 'D3'),
+                d4 = state_value(cpu.state, 'D4'),
                 fifo = {}
             }
             candidate = call
@@ -193,6 +209,10 @@ emu.register_frame_done(function()
                 'M1_GSP_DL_CALL id=%d frame=%d return=%08X caller=%08X call_size=%d call_opcode=%04X stream=%08X raw=%s',
                 call.id, call.frame, call.return_address, call.caller,
                 call.call_size, call.call_opcode, call.stream, call.raw))
+            print(string.format(
+                'M1_GSP_DL_ENTRY id=%d sp=%08X a6=%08X d0=%08X d1=%08X d2=%08X d3=%08X d4=%08X stack=%s',
+                call.id, call.stack, call.a6, call.d0, call.d1, call.d2,
+                call.d3, call.d4, call.stack_hex))
             print(string.format('M1_GSP_DL_HOST id=%d hi=%04X lo=%04X control=%04X',
                 call.id, call.host_hi, call.host_lo, call.host_control))
             for _, word in ipairs(call.fifo) do
