@@ -1,0 +1,145 @@
+{
+  "schema": "stunrun-gsp-state-snapshot-result/v1",
+  "frames": 600,
+  "targets": "1,60,120,240,360,480,600",
+  "input": "none",
+  "load_state": null,
+  "nothrottle": true,
+  "returncode": 0,
+  "snapshots": [
+    {
+      "frame": 1,
+      "pc": 0,
+      "st": 16,
+      "control_lo_sum32": 0,
+      "control_hi_sum32": 524280,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 0,
+      "display": {
+        "dpyadr": 64691,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/tmp/opencode/stunrun-oracle-normal/screens/frame-000001.png"
+    },
+    {
+      "frame": 60,
+      "pc": 0,
+      "st": 16,
+      "control_lo_sum32": 0,
+      "control_hi_sum32": 524280,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 0,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/tmp/opencode/stunrun-oracle-normal/screens/frame-000060.png"
+    },
+    {
+      "frame": 120,
+      "pc": 0,
+      "st": 16,
+      "control_lo_sum32": 524280,
+      "control_hi_sum32": 0,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 4935166,
+      "display": {
+        "dpyadr": 64575,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/tmp/opencode/stunrun-oracle-normal/screens/frame-000120.png"
+    },
+    {
+      "frame": 240,
+      "pc": 4294186576,
+      "st": 2097168,
+      "control_lo_sum32": 63736,
+      "control_hi_sum32": 809248,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 15806684,
+      "display": {
+        "dpyadr": 63612,
+        "dpytap": 0,
+        "dpystart": 64572,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61444,
+        "fine_scroll": 7
+      },
+      "screen": "/tmp/opencode/stunrun-oracle-normal/screens/frame-000240.png"
+    },
+    {
+      "frame": 360,
+      "pc": 4294186624,
+      "st": 2097168,
+      "control_lo_sum32": 63736,
+      "control_hi_sum32": 809248,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 15806684,
+      "display": {
+        "dpyadr": 63612,
+        "dpytap": 0,
+        "dpystart": 64572,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61444,
+        "fine_scroll": 7
+      },
+      "screen": "/tmp/opencode/stunrun-oracle-normal/screens/frame-000360.png"
+    },
+    {
+      "frame": 480,
+      "pc": 4294186624,
+      "st": 2097168,
+      "control_lo_sum32": 63736,
+      "control_hi_sum32": 809248,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 15806684,
+      "display": {
+        "dpyadr": 63612,
+        "dpytap": 0,
+        "dpystart": 64572,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61444,
+        "fine_scroll": 7
+      },
+      "screen": "/tmp/opencode/stunrun-oracle-normal/screens/frame-000480.png"
+    },
+    {
+      "frame": 600,
+      "pc": 4294185072,
+      "st": 538968080,
+      "control_lo_sum32": 37008,
+      "control_hi_sum32": 809216,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 8490604,
+      "display": {
+        "dpyadr": 63612,
+        "dpytap": 0,
+        "dpystart": 64572,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61444,
+        "fine_scroll": 7
+      },
+      "screen": "/tmp/opencode/stunrun-oracle-normal/screens/frame-000600.png"
+    }
+  ],
+  "canonical_log_sha256": "a831092c16603f3d9b4b4458a86013d49b692b7a6e8df6b024b658e9d2d9f0e5"
+}

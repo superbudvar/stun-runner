@@ -36,6 +36,26 @@ class PublicToolTests(unittest.TestCase):
             self.assertEqual(manifest["roms"][0]["filename"], "a.bin")
             self.assertEqual(manifest["roms"][0]["size"], 2)
 
+    def test_analyze_musashi_gsp_writes_groups_callers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            log = temp / "gsp_host_writes.bin"
+            output = temp / "summary.json"
+            log.write_bytes(b"".join([
+                struct.pack("<IH2xI", 0xFF896040, 0xDFDF, 0x25E8),
+                struct.pack("<IH2xI", 0xFF896050, 0x0000, 0x25E8),
+                struct.pack("<IH2xI", 0xC00000, 0x1234, 0x2D762),
+            ]))
+            self.run_tool("analyze-musashi-gsp-writes", log, "-o", output)
+            report = json.loads(output.read_text())
+            self.assertEqual(report["schema"],
+                             "stunrun-musashi-gsp-write-summary/v1")
+            writer = report["writers"]["0x25E8"]
+            self.assertEqual(writer["event_count"], 2)
+            self.assertEqual(writer["regions"], {"vram": 2})
+            self.assertEqual(writer["common_address_strides"][0],
+                             {"stride": 16, "count": 1})
+
     def test_analyze_gsp_vram_write_trace_groups_writers(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = pathlib.Path(temp)
@@ -532,6 +552,9 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn("input_mode == 'fork_hold_left'", lua)
         self.assertIn("input_mode == 'fork_hold_right'", lua)
         self.assertIn("input_mode == 'fork_center'", lua)
+        self.assertIn("field:set_value() takes", lua)
+        self.assertIn("frame = 60, port = ':mainpcb:IN0', field = 'Service Mode', action = 'press'", lua)
+        self.assertIn("frame = 120, port = ':mainpcb:IN0', field = 'Service Mode', action = 'release'", lua)
         self.assertIn("STUNRUN_GSP_STATE_SCREEN", lua)
         self.assertIn("screen:snapshot", lua)
         self.assertIn("fine_scroll", lua)
@@ -671,6 +694,7 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn('"--delay-seconds"', wrapper)
         self.assertIn("STUNRUN_RAM_TRACE_DELAY_FRAME", lua)
         self.assertIn("STUNRUN_RAM_TRACE_DELAY_SECONDS", lua)
+        self.assertIn("input_mode == 'service_f2'", lua)
 
     def test_ram_read_trace_exposes_pc_filter(self):
         wrapper = (ROOT / "tools" / "mame-ram-read-trace").read_text(

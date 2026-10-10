@@ -1,0 +1,24 @@
+{
+  "schema": "stunrun-reference-experiment/v1",
+  "experiment": "frame120-maincpu-text-trace",
+  "authority": "controlled-replay",
+  "rom_set": "stunrun rev 6",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "command": "./tools/mame-trace roms /tmp/opencode/stunrun-maincpu-trace-120 :mainpcb:maincpu 120 /mnt/build/mame-ref/mame none 1",
+  "artifacts": [
+    {
+      "path": "maincpu-68010.trace",
+      "bytes": 42671285,
+      "sha256": "1853e66a271cb357a03221e3c64bcc92385ab81b9430299a370b9c325f58a905"
+    },
+    {
+      "path": "mame.log",
+      "bytes": 424,
+      "sha256": "c98f1f8ddd7265773fa161bdf57efabc9cf760ec8a13b0462b0855c54b34527a"
+    }
+  ],
+  "notes": "Raw MC68010 instruction trace through frame 120; identifies caller $508A and text writer $25E8."
+}

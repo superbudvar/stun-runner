@@ -21,7 +21,7 @@ mame-ref
 # Commercial ROMs and locally reconstructed ROM images
 roms/stunrun/
 roms/extracted/
-stunrun/
+/stunrun/
 stunrun-flat.bin
 stunrun.7z
 stunrun.zip
@@ -47,3 +47,6 @@ native/debug_bytes
 native/musashi_loader
 native/rom_peek
 tools/frame_diff
+
+# Raw harness logs are reference evidence when stored under reference/.
+!reference/**/*.log

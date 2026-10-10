@@ -45,6 +45,10 @@ add_executable(stunrun-fake-ports-test fake_ports.c fake_ports_test.c)
 target_include_directories(stunrun-fake-ports-test PRIVATE .)
 set_target_properties(stunrun-fake-ports-test PROPERTIES C_STANDARD 99)
 add_test(NAME fake-ports-slice-c COMMAND stunrun-fake-ports-test)
+add_executable(stunrun-mc68010-text-writer-test
+  mc68010_text_writer.c mc68010_text_writer_test.c)
+set_target_properties(stunrun-mc68010-text-writer-test PROPERTIES C_STANDARD 99)
+add_test(NAME mc68010-text-writer-slice-c COMMAND stunrun-mc68010-text-writer-test)
 add_test(NAME adsp-init-slice-c COMMAND stunrun-adsp-init-slice-test)
 add_test(NAME adsp-control-slice-c COMMAND stunrun-adsp-control-slice-test)
 add_test(NAME adsp-upload-slice-c COMMAND stunrun-adsp-upload-slice-test)
@@ -128,7 +132,7 @@ add_executable(stunrun-native-shell
   fake_ports.c
   musashi_cpu.c
   jsa_transport.c
-  gsp_display_list.c
+  gsp_display_list.cpp
   gsp_vram_clear.c
   musashi_loader.c
   cpu_override.c
@@ -170,6 +174,20 @@ add_test(NAME native-shell COMMAND stunrun-native-shell)
 add_executable(stunrun-gsp-vram-clear-test gsp_vram_clear.c gsp_vram_clear_test.c)
 set_target_properties(stunrun-gsp-vram-clear-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-vram-clear-slice-c COMMAND stunrun-gsp-vram-clear-test)
+
+add_executable(stunrun-gsp-word-pair-test gsp_word_pair.c gsp_word_pair_test.c)
+set_target_properties(stunrun-gsp-word-pair-test PROPERTIES C_STANDARD 99)
+add_test(NAME gsp-word-pair-slice-c COMMAND stunrun-gsp-word-pair-test)
+
+add_executable(stunrun-gsp-2bpp-glyph-test gsp_2bpp_glyph.c gsp_2bpp_glyph_test.c)
+set_target_properties(stunrun-gsp-2bpp-glyph-test PROPERTIES C_STANDARD 99)
+add_test(NAME gsp-2bpp-glyph-slice-c COMMAND stunrun-gsp-2bpp-glyph-test)
+
+add_executable(stunrun-geometry-fifo-emitter-test
+  geometry_fifo_emitter.cpp geometry_fifo_emitter_test.cpp)
+set_target_properties(stunrun-geometry-fifo-emitter-test PROPERTIES
+  CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+add_test(NAME geometry-fifo-emitter-cpp COMMAND stunrun-geometry-fifo-emitter-test)
 
 # Exercise the complete real-ROM OKI -> PCM -> SDL2 backend path when both the
 # SDL2 backend and local ROM set are available. Dummy audio keeps this headless.
@@ -350,6 +368,8 @@ add_test(NAME experiment-parser-c COMMAND stunrun-experiment-parser-test)
 # shell: parse, frame dispatch, anchors, and checkpoint must all hold.
 add_test(NAME native-shell-coin-start
   COMMAND stunrun-native-shell ${CMAKE_CURRENT_SOURCE_DIR}/../experiments/stunrun/coin_start.json)
+set_tests_properties(native-shell-coin-start PROPERTIES
+  ENVIRONMENT "STUNRUN_BACKEND=null;STUNRUN_VIDEO_BACKEND=null;STUNRUN_AUDIO_BACKEND=null")
 # stunrun-checkpoint/v1 emitter contract (golden comparison lives in
 # tests/test_checkpoint_golden.py against the M1 oracle fixture).
 add_executable(stunrun-checkpoint-test
@@ -515,6 +535,16 @@ add_executable(stunrun-gsp-boot-slice-test
 set_target_properties(stunrun-gsp-boot-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-boot-slice-c COMMAND stunrun-gsp-boot-slice-test)
 
+# MC68010 diagnostic/GSP handshake transcription (ROM 0x004F82-0x00506A).
+# The test asserts the host-address sequence, marker initialization and the
+# 16-word diagnostic copy; the opaque subroutines remain callback seams.
+add_executable(stunrun-gsp-diagnostic-poll-slice-test
+  gsp_diagnostic_poll.c
+  gsp_diagnostic_poll_test.c)
+set_target_properties(stunrun-gsp-diagnostic-poll-slice-test PROPERTIES C_STANDARD 99)
+add_test(NAME gsp-diagnostic-poll-slice-c
+  COMMAND stunrun-gsp-diagnostic-poll-slice-test)
+
 # --- ram_march slice -------------------------------------------------------
 # STUN Runner's factory RAM test, transcribed from MC68010 ROM at 0x59D8-0x5EB8
 # into native/ram_march.c.  The ROM reports pass/fail to the GSP FIFO as
@@ -538,7 +568,7 @@ add_test(NAME ram-march-slice-c COMMAND stunrun-ram-march-slice-test)
 # gsp_boot slice.  The separate integration test below wires this seam to the
 # canonical Musashi host-port and work-RAM model.
 add_executable(stunrun-gsp-display-list-slice-test
-  gsp_display_list.c
+  gsp_display_list.cpp
   gsp_display_list_test.c)
 set_target_properties(stunrun-gsp-display-list-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-display-list-slice-c COMMAND stunrun-gsp-display-list-slice-test)
@@ -547,13 +577,13 @@ add_test(NAME gsp-display-list-slice-c COMMAND stunrun-gsp-display-list-slice-te
 # Deliberately not installed as live CPU overrides: callee word parity and
 # MAME validation of trailing state writes are separate acceptance boundaries.
 add_executable(stunrun-gsp-upload-callers-slice-test
-  gsp_upload_callers.c
+  gsp_upload_callers.cpp
   gsp_upload_callers_test.c)
 set_target_properties(stunrun-gsp-upload-callers-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-upload-callers-slice-c COMMAND stunrun-gsp-upload-callers-slice-test)
 
 add_executable(stunrun-gsp-display-list-musashi-test
-  gsp_display_list.c
+  gsp_display_list.cpp
   jsa_transport.c
   ../reproduction/sound/jsa_latch.c
   gsp_display_list_musashi_test.c
@@ -576,7 +606,7 @@ add_test(NAME gsp-display-list-musashi-c
   COMMAND stunrun-gsp-display-list-musashi-test)
 
 add_executable(stunrun-gsp-upload-callers-musashi-test
-  gsp_upload_callers.c
+  gsp_upload_callers.cpp
   jsa_transport.c
   ../reproduction/sound/jsa_latch.c
   gsp_upload_callers_musashi_test.c

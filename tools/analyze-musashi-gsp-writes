@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Group the native MC68010 GSP host-write log by caller PC."""
+
+import argparse
+import collections
+import json
+import pathlib
+import struct
+
+RECORD = struct.Struct("<IH2xI")
+
+
+def classify(address):
+    if 0xFF800000 <= address <= 0xFFFFFFFF:
+        return "vram"
+    if 0x02000000 <= address < 0x02100000:
+        return "2bpp"
+    if 0xF5000000 <= address < 0xF5001000:
+        return "palette-lo"
+    if 0xF5800000 <= address < 0xF5801000:
+        return "palette-hi"
+    if 0xF4000000 <= address < 0xF4800100:
+        return "control-lo"
+    if 0xF4800000 <= address < 0xF5000100:
+        return "control-hi"
+    return "other"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("log", type=pathlib.Path)
+    parser.add_argument("-o", "--output", type=pathlib.Path)
+    args = parser.parse_args()
+    raw = args.log.read_bytes()
+    if len(raw) % RECORD.size:
+        raise SystemExit(f"{args.log}: size is not a multiple of {RECORD.size}")
+    by_pc = collections.defaultdict(list)
+    for offset in range(0, len(raw), RECORD.size):
+        address, data, pc = RECORD.unpack_from(raw, offset)
+        by_pc[pc].append((address, data))
+    writers = {}
+    for pc, events in sorted(by_pc.items()):
+        addresses = [address for address, _ in events]
+        regions = collections.Counter(classify(address) for address in addresses)
+        strides = collections.Counter(
+            b - a for a, b in zip(addresses, addresses[1:])
+        )
+        writers[f"0x{pc:X}"] = {
+            "pc": pc,
+            "event_count": len(events),
+            "address_min": min(addresses),
+            "address_max": max(addresses),
+            "unique_address_count": len(set(addresses)),
+            "regions": dict(sorted(regions.items())),
+            "common_address_strides": [
+                {"stride": stride, "count": count}
+                for stride, count in strides.most_common(8)
+            ],
+        }
+    result = {
+        "schema": "stunrun-musashi-gsp-write-summary/v1",
+        "record_schema": "<IH2xI: address, data, pc",
+        "record_count": len(raw) // RECORD.size,
+        "writers": writers,
+    }
+    encoded = json.dumps(result, indent=2) + "\n"
+    if args.output:
+        args.output.write_text(encoded, encoding="utf-8")
+    else:
+        print(encoded, end="")
+
+
+if __name__ == "__main__":
+    main()

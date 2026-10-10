@@ -56,9 +56,9 @@ struct stunrun_jsa_latches;
  * index with (offset/2)^1 before dispatching):
  *
  *   0xC00000  TMS34010_HOST_ADDRESS_H   HSTADRH  upper 16 bits of address
- *   0xC00002  TMS34010_HOST_ADDRESS_L   HSTADRL  lower 16 bits of address
- *   0xC00004  TMS34010_HOST_CONTROL     HSTCTL
- *   0xC00006  TMS34010_HOST_DATA        HSTDAT   the data port itself
+ *   0xC00004  TMS34010_HOST_ADDRESS_L   HSTADRL  lower 16 bits of address
+ *   0xC00008  TMS34010_HOST_CONTROL     HSTCTL
+ *   0xC0000C  TMS34010_HOST_DATA        HSTDAT   the data port itself
  *
  * Every display-list word the 68010 produces is a HSTDAT write.  We model the
  * address latches and the target memory so those writes are observable; the

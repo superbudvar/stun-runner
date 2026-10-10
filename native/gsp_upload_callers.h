@@ -3,6 +3,10 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /* 68010 caller-side effects only. All callbacks must be supplied. ROM pointers
  * are read through the seam, not replaced by the currently observed assets.
  * compile invokes the existing $225E4 operation; transfer represents $2247A,
@@ -25,5 +29,9 @@ void stunrun_gsp_upload_chunks(stunrun_gsp_upload_callers_t *io,
                                uint32_t address, uint32_t length); /* $2D80E */
 void stunrun_gsp_upload_emit_byte(stunrun_gsp_upload_callers_t *io,
                                   uint32_t value); /* $2D858 */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

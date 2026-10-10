@@ -8,7 +8,11 @@ import json
 import os
 import pathlib
 import re
+import sys
 import subprocess
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import run_mame
 
 
 CALL = re.compile(
@@ -230,8 +234,9 @@ def main() -> int:
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
     with log.open("w", encoding="utf-8") as handle:
-        completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,
-                                   env=environment, check=False)
+        completed = run_mame(command, stdout=handle, stderr=subprocess.STDOUT,
+                             env=environment,
+                             timeout=max(30, args.frames / 10 + 30))
     text = log.read_text(encoding="utf-8")
     parsed = parse_log(text)
     calls = parsed["calls"]

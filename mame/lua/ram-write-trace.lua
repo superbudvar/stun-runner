@@ -107,6 +107,9 @@ local input_events = input_mode == 'fork_button2_sweep' and {
     {frame = 1460, port = ':mainpcb:a80000', field = 'P1 Button 1', action = 'release'},
     {frame = 1550, port = ':mainpcb:a80000', field = 'P1 Button 2', action = 'press'},
     {frame = 1610, port = ':mainpcb:a80000', field = 'P1 Button 2', action = 'release'}
+} or input_mode == 'service_f2' and {
+    {frame = 60, port = ':mainpcb:IN0', field = 'Service Mode', action = 'press'},
+    {frame = 120, port = ':mainpcb:IN0', field = 'Service Mode', action = 'release'}
 } or input_mode == 'late_drive' and {
     {frame = 650, port = ':mainpcb:IN0', field = 'Coin 1', action = 'press'},
     {frame = 680, port = ':mainpcb:IN0', field = 'Coin 1', action = 'release'},

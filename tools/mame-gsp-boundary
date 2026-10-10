@@ -7,7 +7,11 @@ import json
 import os
 import pathlib
 import re
+import sys
 import subprocess
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import run_mame
 
 
 FIRST = re.compile(
@@ -17,6 +21,12 @@ FIRST = re.compile(
 COMMAND_FIRST = re.compile(
     r"M1_GSP_COMMAND_FIRST frame=(\d+) pc=([0-9A-Fa-f]+) addr=([0-9A-Fa-f]+) "
     r"data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+) post_init=(true|false)"
+)
+EXECUTION_FIRST = re.compile(r"M1_GSP_EXEC_FIRST frame=(\d+) pc=([0-9A-Fa-f]+)")
+PC_SAMPLE = re.compile(r"M1_GSP_PC_SAMPLE frame=(\d+) pc=([0-9A-Fa-f]+)")
+RESET_WRITE = re.compile(
+    r"M1_GSP_RESET_WRITE frame=(\d+) addr=([0-9A-Fa-f]+) "
+    r"data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+)"
 )
 
 
@@ -48,8 +58,9 @@ def main() -> int:
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
     with log.open("w", encoding="utf-8") as handle:
-        completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,
-                                   env={**os.environ, **environment}, check=False)
+        completed = run_mame(command, stdout=handle, stderr=subprocess.STDOUT,
+                             env={**os.environ, **environment},
+                             timeout=max(30, args.frames / 10 + 30))
     text = log.read_text(encoding="utf-8")
     first = [
         {"frame": int(m.group(1)), "pc": int(m.group(2), 16),
@@ -62,6 +73,19 @@ def main() -> int:
          "address": int(m.group(3), 16), "data": int(m.group(4), 16),
          "mask": int(m.group(5), 16), "post_init": m.group(6) == "true"}
         for m in COMMAND_FIRST.finditer(text)
+    ]
+    execution_first = [
+        {"frame": int(m.group(1)), "pc": int(m.group(2), 16)}
+        for m in EXECUTION_FIRST.finditer(text)
+    ]
+    gsp_pc_samples = [
+        {"frame": int(m.group(1)), "pc": int(m.group(2), 16)}
+        for m in PC_SAMPLE.finditer(text)
+    ]
+    reset_writes = [
+        {"frame": int(m.group(1)), "address": int(m.group(2), 16),
+         "data": int(m.group(3), 16), "mask": int(m.group(4), 16)}
+        for m in RESET_WRITE.finditer(text)
     ]
     canonical = re.sub(r"output=[^\n]+", "output=<output>", text)
     result = {
@@ -77,6 +101,9 @@ def main() -> int:
         "distinct_first_pcs": sorted({row["pc"] for row in first}),
         "distinct_command_pcs": sorted({row["pc"] for row in command_first}),
         "post_init_first_writes": sum(1 for row in first if row["post_init"]),
+        "execution_landmarks": execution_first,
+        "gsp_pc_samples": gsp_pc_samples,
+        "reset_writes": reset_writes,
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

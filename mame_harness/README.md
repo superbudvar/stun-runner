@@ -14,8 +14,8 @@ test_oracle_vram.c      C test (loads dumps → render pipeline → PPM)
 
 ## Prerequisites
 
-1. **MAME binary** built at `../mame-ref/mame`
-2. **STUN Runner ROMs** at `../roms/stunrun/` (the MAME `-rompath` is `../roms/`)
+1. **MAME binary** built at `/mnt/build/mame-ref/mame` (or another configured path)
+2. **STUN Runner ROMs** at `roms/stunrun/` (the MAME `-rompath` is `roms/`)
 3. **Python 3**
 4. **C compiler** (for `test_oracle_vram.c`)
 
@@ -44,7 +44,7 @@ State snapshots are headless by default. Use `--windowed` when visual
 interaction or mouse input is required:
 
 ```bash
-./tools/mame-gsp-state-snapshot roms/stunrun /tmp/stunrun-gsp \
+./tools/mame-gsp-state-snapshot roms /tmp/stunrun-gsp \
   --windowed --input none --frames 600 --targets 600
 ```
 
@@ -57,12 +57,12 @@ directory of PNG snapshots. The service input is asserted before reset:
 
 ```bash
 # Normal boot/title/early-attract candidates
-./tools/mame-gsp-state-snapshot roms/stunrun /tmp/stunrun-oracle-normal \
+./tools/mame-gsp-state-snapshot roms /tmp/stunrun-oracle-normal \
   --frames 600 --targets 1,60,120,240,360,480,600 \
   --screen-dir /tmp/stunrun-oracle-normal/screens
 
 # Service/self-test candidates (the service result still requires inspection)
-./tools/mame-gsp-state-snapshot roms/stunrun /tmp/stunrun-oracle-service \
+./tools/mame-gsp-state-snapshot roms /tmp/stunrun-oracle-service \
   --input service --frames 1800 --targets 1,60,120,240,600,900,1200,1800 \
   --screen-dir /tmp/stunrun-oracle-service/screens
 ```

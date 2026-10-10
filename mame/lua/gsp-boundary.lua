@@ -8,6 +8,9 @@ local capture_start_frame = tonumber(os.getenv('STUNRUN_GSP_BOUNDARY_CAPTURE_STA
 local first_limit = 32
 local first = {}
 local command_first = {}
+local execution_first = {}
+local gsp_pc_samples = {}
+local reset_writes = {}
 local sw_off_prefix = {
     {frame = 1, port = ':mainpcb:SW1', field = 'SW1:1', action = 'set', value = 1},
     {frame = 1, port = ':mainpcb:SW1', field = 'SW1:2', action = 'set', value = 1},
@@ -68,6 +71,8 @@ local function install_tap()
     local cpu = manager.machine.devices[':mainpcb:maincpu']
     local space = cpu.spaces['program']
     local pc = cpu.state['CURPC']
+    local gsp = manager.machine.devices[':mainpcb:gsp']
+    local gsp_space = gsp and gsp.spaces['program']
     -- The installed MAME Lua bridge is not stable under a broad, high-rate
     -- device-window tap. The FIFO subrange is the proven stable boundary and
     -- is sufficient to identify runtime submission PCs and ordering.
@@ -88,11 +93,46 @@ local function install_tap()
                 post_init = pc_value > 0x4f4
             }
         end)
+    space:install_write_tap(0x604000, 0x607fff, 'stunrun_gsp_reset_control',
+        function(offset, data, mask)
+            if #reset_writes < first_limit then
+                reset_writes[#reset_writes + 1] = {
+                    frame = frame, address = offset, data = data, mask = mask
+                }
+            end
+        end)
+    -- Host FIFO writes are only one possible submission path.  Record
+    -- execution of the known GSP startup/consumer landmarks independently so
+    -- an empty host-port tap cannot be mistaken for an idle GSP.
+    if gsp_space ~= nil then
+        gsp_space:install_execute_tap(0xfff59920, 0xfff59920,
+            'stunrun_gsp_startup_landmark', function()
+                if frame >= capture_start_frame and #execution_first < first_limit then
+                    execution_first[#execution_first + 1] = {frame = frame, pc = 0xfff59920}
+                end
+            end)
+        gsp_space:install_execute_tap(0xfff48c20, 0xfff48c20,
+            'stunrun_gsp_fifo_consumer_landmark', function()
+                if frame >= capture_start_frame and #execution_first < first_limit then
+                    execution_first[#execution_first + 1] = {frame = frame, pc = 0xfff48c20}
+                end
+            end)
+    end
 end
 
 emu.register_frame_done(function()
     frame = frame + 1
     if frame == 10 then install_tap() end
+    local sample_frame = frame == capture_start_frame or frame == 60 or
+        frame == 120 or frame == 122 or frame == 132 or frame == 136 or
+        frame == 180 or frame == limit
+    if sample_frame then
+        local gsp = manager.machine.devices[':mainpcb:gsp']
+        local state = gsp and gsp.state['CURPC']
+        if state ~= nil then
+            gsp_pc_samples[#gsp_pc_samples + 1] = {frame = frame, pc = state.value}
+        end
+    end
     while next_event <= #events and events[next_event].frame == frame do
         apply_event(events[next_event])
         next_event = next_event + 1
@@ -105,6 +145,16 @@ emu.register_frame_done(function()
         for _, row in ipairs(command_first) do
             print(string.format('M1_GSP_COMMAND_FIRST frame=%d pc=%08X addr=%08X data=%08X mask=%08X post_init=%s',
                 row.frame, row.pc, row.address, row.data, row.mask, tostring(row.post_init)))
+        end
+        for _, row in ipairs(execution_first) do
+            print(string.format('M1_GSP_EXEC_FIRST frame=%d pc=%08X', row.frame, row.pc))
+        end
+        for _, row in ipairs(gsp_pc_samples) do
+            print(string.format('M1_GSP_PC_SAMPLE frame=%d pc=%08X', row.frame, row.pc))
+        end
+        for _, row in ipairs(reset_writes) do
+            print(string.format('M1_GSP_RESET_WRITE frame=%d addr=%08X data=%08X mask=%08X',
+                row.frame, row.address, row.data, row.mask))
         end
         print('M1_GSP_BOUNDARY_DONE frames=' .. frame .. ' output=' .. output)
         manager.machine:exit()

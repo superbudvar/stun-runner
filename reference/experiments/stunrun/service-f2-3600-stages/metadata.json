@@ -1,0 +1,89 @@
+{
+  "schema": "stunrun-reference-experiment/v1",
+  "experiment": "service-f2-3600-staged-screens",
+  "authority": "controlled-replay",
+  "rom_set": "stunrun rev 6",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "command": "./tools/mame-gsp-state-snapshot roms /tmp/opencode/stunrun-service-f2-3600-stages --mame /mnt/build/mame-ref/mame --input service --frames 3600 --targets 120,300,600,900,1200,1500,1800,2100,2400,2700,3000,3300,3600 --screen-dir /tmp/opencode/stunrun-service-f2-3600-stages/screens",
+  "artifacts": [
+    {
+      "path": "mame.log",
+      "bytes": 23213,
+      "sha256": "796e811f6e2475a686bf857a41b5de23484a71b6ebcf220855ae8f39ff5417ae"
+    },
+    {
+      "path": "result.json",
+      "bytes": 6629,
+      "sha256": "ab535ae19dd287facc2e10c473fcea98d5786b1f68ac77db3d52885349ebed93"
+    },
+    {
+      "path": "screens/frame-000120.png",
+      "bytes": 1665,
+      "sha256": "8ad6fc75382f1502ead6f00278e7a9d990b4b24ea7aeae243899e7b690f659d5"
+    },
+    {
+      "path": "screens/frame-000300.png",
+      "bytes": 843,
+      "sha256": "6c754821135a5ed1f5d3e3130f8ba3e126a0ffd6287e8bdbabbf051f21b531ec"
+    },
+    {
+      "path": "screens/frame-000600.png",
+      "bytes": 1384,
+      "sha256": "b9f1f0ccc9b7a34cd34c94da624c64d921c69d824fdf35900200930afe4d3010"
+    },
+    {
+      "path": "screens/frame-000900.png",
+      "bytes": 1385,
+      "sha256": "69499db38bff5b58a394124c1ab3062b37902f7cb7d732432c4580887c5c1f36"
+    },
+    {
+      "path": "screens/frame-001200.png",
+      "bytes": 1384,
+      "sha256": "b0790b2ce2f7261ea5ee80113bd78ad636e89f0994db44d9582248453fca5618"
+    },
+    {
+      "path": "screens/frame-001500.png",
+      "bytes": 1511,
+      "sha256": "6c7a4d00c91a7bdfbb95c0816023c44f07e9f565783cd8364f7238300008248a"
+    },
+    {
+      "path": "screens/frame-001800.png",
+      "bytes": 783,
+      "sha256": "ff0abafd4136775ea9edaba198f74d63c4f32774b45e3158f87e81e333db62ec"
+    },
+    {
+      "path": "screens/frame-002100.png",
+      "bytes": 979,
+      "sha256": "df5f2d61d6e55c20a2cf517d6393a1ac733d44e696e6fdbfb3b4590a1fefb00f"
+    },
+    {
+      "path": "screens/frame-002400.png",
+      "bytes": 979,
+      "sha256": "df5f2d61d6e55c20a2cf517d6393a1ac733d44e696e6fdbfb3b4590a1fefb00f"
+    },
+    {
+      "path": "screens/frame-002700.png",
+      "bytes": 516,
+      "sha256": "33480a9e484faba8828502301a0ee8759b3908e628f23ccb2676d6d1c4b699d0"
+    },
+    {
+      "path": "screens/frame-003000.png",
+      "bytes": 1269,
+      "sha256": "029e1f35ba287ab43de4c64f9458cb89065b2db4e66c44b1dc7a00fb3cfecc0d"
+    },
+    {
+      "path": "screens/frame-003300.png",
+      "bytes": 516,
+      "sha256": "33480a9e484faba8828502301a0ee8759b3908e628f23ccb2676d6d1c4b699d0"
+    },
+    {
+      "path": "screens/frame-003600.png",
+      "bytes": 979,
+      "sha256": "df5f2d61d6e55c20a2cf517d6393a1ac733d44e696e6fdbfb3b4590a1fefb00f"
+    }
+  ],
+  "notes": "Harnessed F2-style service input; headless run; process group reaped. Screens are raw MAME captures."
+}

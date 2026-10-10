@@ -1762,6 +1762,147 @@ CTest `gsp-vram-clear-slice-c`. It models the observable host-port sequence,
 not the absent TMS34010 execution. The attribution data was captured with the
 native shell's GSP host-write dump; each record now includes the MC68010 PC.
 
+### 11.15 MC68010 reversed host-data word pair at `$2FE5E`
+
+The live Musashi trace reached this helper repeatedly during the first frame.
+Its complete transcription is:
+
+```asm
+$2FE5E:  link    A6,#$0
+$2FE62:  lea     ($8,A6),A0
+$2FE66:  addq.l  #2,A0
+$2FE68:  move.w  (A0),$C0000C.l
+$2FE6E:  move.w  ($8,A6),$C0000C.l
+$2FE76:  unlk    A6
+$2FE78:  rts
+```
+
+`$C0000C` is the TMS34010 host-data register. With the usual 68k stack
+layout, `$8(A6)` is the first word argument and `$A(A6)` is the second. The
+routine therefore emits the second word first, then the first word. This is
+confirmed mechanism; the meaning of the pair depends on the caller and is not
+yet identified as text, display-list, or direct-VRAM data. The C slice is
+`native/gsp_word_pair.{h,c}` and its observable order is asserted by
+CTest `gsp-word-pair-slice-c`.
+
+### 11.16 MC68010 2-bpp glyph-row expansion at `$234B6`
+
+The first non-initialization writes that can plausibly carry the diagnostic
+letters are the 2-bpp host writes at `$234CE` and `$234E0`. The relevant ROM
+range is:
+
+```asm
+$234B6:  move.w  (A1)+,D5
+$234B8:  move.w  #$F,D7
+$234BC:  clr.l   D6
+$234BE:  roxl.w  #1,D5
+$234C0:  roxl.l  #2,D6
+$234C2:  dbra    D7,$234BE
+$234C6:  lsr.l   #1,D6
+$234C8:  move.w  D6,$C0000C.l
+$234CE:  swap    D6
+$234D0:  addi.l  #$10,$C00002.l
+$234DA:  move.w  D6,$C0000C.l
+$234E0:  rts
+```
+
+The caller at `$23494` latches a destination and repeatedly advances it by
+`$400`; `$234B6` converts one 16-bit source row into a 32-bit packed value,
+emits its low half, advances the GSP host address by `$10`, and emits the
+swapped high half. The initial X flag is not set in this routine; the C seam
+therefore exposes it rather than silently choosing a caller policy. The tested
+slice is `native/gsp_2bpp_glyph.{h,c}` with CTest
+`gsp-2bpp-glyph-slice-c`. This establishes the glyph transport, but not yet
+the source table's character encoding or the final raster placement.
+
+### 11.17 MC68010 geometry primitive emitter at `$2F470` and caller `$2B7E8`
+
+The pinned static listing gives this FIFO emitter:
+
+```asm
+$2F470: link    A6,#$0
+$2F474: movem.l D2-D3,-(A7)
+$2F478: move.w  ($A,A6),D3
+$2F47C: move.w  ($E,A6),D2
+$2F480: move.w  ($12,A6),D1
+$2F484: moveq   #$0,D0
+$2F486: move.b  ($1B,A6),D0
+$2F48A: addi.l  #$2000,D0
+$2F490: move.w  D0,$C0000C.l
+$2F496: move.w  D3,$C0000C.l
+$2F49C: move.w  D2,$C0000C.l
+$2F4A2: move.w  D1,$C0000C.l
+$2F4A8: move.w  ($16,A6),$C0000C.l
+$2F4B0: movem.l (-$8,A6),D2-D3
+$2F4B6: unlk    A6
+$2F4B8: rts
+```
+
+This emits five halfwords to the GSP FIFO: `$2000 + byte 5`, then the low
+words of arguments 1–4. The field meanings are not known. The caller is:
+
+```asm
+$2B7E8: link    A6,#$0
+$2B7EC: movem.l D2-D4/A2,-(A7)
+$2B7F0: move.l  ($8,A6),D2
+$2B7F4: move.l  ($C,A6),D3
+$2B7F8: move.l  ($10,A6),D4
+$2B7FC: movea.l #$2F470,A2
+$2B802: move.l  D4,-(A7)
+$2B804: move.l  D3,-(A7)
+$2B806: move.l  D2,D1
+$2B808: addi.l  #$80,D1
+$2B80E: move.l  D1,-(A7)
+$2B810: move.l  D3,-(A7)
+$2B812: move.l  D2,-(A7)
+$2B814: jsr     (A2)
+$2B818: move.l  D4,-(A7)
+$2B81A: move.l  D3,D1
+$2B81C: moveq   #$38,D0
+$2B81E: add.l   D0,D1
+$2B822: move.l  D1,-(A7)
+$2B824: move.l  D2,D1
+$2B826: addi.l  #$80,D1
+$2B82C: move.l  D1,-(A7)
+$2B82E: move.l  D3,-(A7)
+$2B830: move.l  D2,D0
+$2B832: addi.l  #$80,D0
+$2B836: move.l  D0,-(A7)
+$2B838: jsr     (A2)
+$2B83A: move.l  D4,-(A7)
+$2B83C: move.l  D3,D1
+$2B83E: moveq   #$38,D0
+$2B840: add.l   D0,D1
+$2B842: move.l  D1,-(A7)
+$2B844: move.l  D2,-(A7)
+$2B846: move.l  D3,D1
+$2B848: moveq   #$38,D0
+$2B84A: add.l   D0,D1
+$2B84C: move.l  D1,-(A7)
+$2B84E: move.l  D2,D0
+$2B850: addi.l  #$80,D0
+$2B856: move.l  D0,-(A7)
+$2B858: jsr     (A2)
+$2B85A: move.l  D4,-(A7)
+$2B85C: move.l  D3,-(A7)
+$2B85E: move.l  D2,-(A7)
+$2B860: move.l  D3,D1
+$2B862: moveq   #$38,D0
+$2B864: add.l   D0,D1
+$2B866: move.l  D1,-(A7)
+$2B868: move.l  D2,-(A7)
+$2B86A: jsr     (A2)
+```
+
+The remaining three calls use the same five-argument order and add `$80` or
+`$38` to D2/D3 as shown by the listing. D1 is a live caller register, not a
+formal argument loaded by `$2B7E8`; therefore the native seam keeps D1
+explicit instead of inventing its meaning. The C++ transcription is
+`native/geometry_fifo_emitter.{hpp,cpp}` and CTest
+`geometry-fifo-emitter-cpp` asserts the complete 20-halfword observable FIFO
+stream. This is a FIFO mechanism finding, not proof that these records are
+text or any particular polygon type.
+
 ## 12. The display path — the picture is in the board share, and the rasteriser is now verified
 
 This section closes the `rowaddr → vram_base` contradiction left open in §11, and
@@ -2195,3 +2336,230 @@ perform.
   end-to-end command `$38` → `sound_dispatch_frame()` → `oki6295_is_playing()` →
   PCM at a stub `stunrun_audio_backend_t` with `sample_rate == 9039` and
   `format == STUNRUN_AUDIO_FORMAT_S16LE_STEREO`.
+
+## 13. Frame-120 text path: `$508A` → `$25E8`
+
+The normal and F2-input runs show the same frame-120 text. A bounded MC68010
+instruction trace through frame 120 (`reference/experiments/stunrun/frame120-maincpu-text-trace/maincpu-68010.trace`)
+shows the caller at `$508A` loading `D0=$47`, setting `A2=$5098`, and jumping to
+`$25E8`; the routine eventually returns through `(A2)` to `$5098`, then
+continues at `$6086`. This is distinct from the previously documented
+ diagnostic-message helper `$2326`.
+
+The caller is verbatim from the trace:
+
+```text
+00508A: move.w  #$47, D0
+00508E: lea     ($5098,PC), A2
+005092: jmp     $25E8.l
+```
+
+The executed `$25E8` setup and glyph loop are verbatim from the same trace:
+
+```text
+0025E8: clr.w   $608000.l
+0025EE: andi.w  #$e7ff, $c00008.l
+0025F6: lea     $10136.l, A0
+0025FC: andi.l  #$ffff, D0
+002602: lsl.l    #2, D0
+002604: movea.l  (A0,D0.l), A0
+002608: clr.w    D7
+00260A: move.b   ($2,A0), D7
+00260E: move.w   D7, D6
+002610: lsl.w    #8, D6
+002614: move.b   ($1,A0), D0
+002618: mulu.w   #$a0, D0
+00261C: lsl.l    #8, D0
+002620: move.b   ($0,A0), D1
+002624: lsl.l    #6, D1
+002626: add.l     D1, D0
+002628: addi.l    #-$800000, D0
+00262E: move.b   ($3,A0), D3
+002632: adda.l    #$4, A0
+002638: move.b   (A0)+, D1
+00263A: subi.b    #$2a, D1
+00263E: andi.l    #$ff, D1
+002644: lsl.w    #4, D1
+002646: lea      $1fbc.l, A1
+00264C: adda.w   D1, A1
+00264E: move.w   #$7, D2
+002652: move.w   #$7, D1
+002656: move.l   D0, $c00002.l
+00265C: move.w   (A1)+, D5
+00265E: btst     #$0, D5
+002662: beq      $266c
+002666: move.w   D7, $c0000c.l
+00266C: btst     #$2, D5
+002670: beq      $267a
+002674: or.w     D6, $c0000c.l
+00267A: addi.l   #$10, $c00002.l
+002684: lsr.w    #4, D5
+002686: dbra     D1, $265e
+00268A: addi.l   #$1000, D0
+002690: dbra     D2, $2652
+002694: subi.l   #$7fc0, D0
+00269A: subq.b   #1, D3
+00269C: bne      $2638
+00269E: jmp      (A2)
+```
+
+For selector `$47`, the reconstructed ROM table at `$10136 + 4*$47` points to
+`$6C53`. The descriptor bytes are `01 0F DF 1E`; the following 30 bytes are
+`PRESS*START*TO*BYPASS*SELFTEST`. `*` is the ROM's space glyph. The descriptor
+computes the first GSP host address as `$FF896040`, selects low colour `$00DF`
+and high colour `$DF00`, and uses font words at
+`$1FBC + 16*(character-$2A)`.
+
+The routine writes an 8×8 glyph per character. Each font word supplies eight
+four-bit nibbles; bit 0 contributes `$00DF`, bit 2 contributes `$DF00`, and the
+resulting word is written through `$C0000C`. `$C00002` advances by `$10` for
+the next pixel and `$1000` for the next row. This is therefore a direct
+MC68010-to-TMS34010 host-port text path into GSP VRAM, not a direct MC68010
+framebuffer store. The observable write sequence is implemented and tested by
+`native/mc68010_text_writer.{h,c}` and
+`native/mc68010_text_writer_test.c` (`mc68010-text-writer-slice-c`).
+
+The current slice deliberately covers only the executed glyph path. The other
+branches in the surrounding `$25E8` routine remain UNKNOWN until a trace
+exercises their command forms.
+
+## 13.1 Service-path GSP RAM initialization and reset release
+
+The service-F2 trace reaches the existing GSP boot entry at `$003F8`. The
+relevant MC68010 transcription is:
+
+```text
+$003F8: movem.l D2-D7/A2-A6,-(A7)
+$003FC: clr.w   $60400C.l
+$00402: bsr     $00370
+$00406: clr.w   $60401C.l
+$0040C: move.w  #$A000,$C00008.l
+...
+$00426: move.w  #$0001,D0
+$0042A: bsr     $0037C
+$0042E: move.w  #$0000,D0
+$00432: bsr     $0037C
+```
+
+The `$60400C/$60401C` writes are the observed function-6 `/GSPRES` control
+writes. The normal no-input run does not execute this entry; the service-F2
+run executes it at frame 66, then again during later diagnostic transitions.
+This attribution is KNOWN from the write trace, while the meaning of every
+subroutine called by `$003F8` is not re-inferred here because the tested
+`native/gsp_boot.{h,c}` slice already transcribes those routines.
+
+The same service run reaches the already converted `$0067A` routine:
+
+```text
+$0067A: ori.w   #$1800,$C00008.l
+$00682: lea     $C0000C.l,A0
+$00688: move.l  #$FF800000,$C00002.l
+$00692: move.w  #$0383,D2
+$00696: move.w  #$00FF,D1
+$0069A: move.w  D0,(A0)
+$0069C: dbra    D1,$0069A
+$006A0: clr.w   $608000.l
+$006A6: dbra    D2,$00696
+$006AA: rts
+```
+
+Its C implementation is `stunrun_gsp_boot_fill_main_vram()` in
+`native/gsp_boot.c:445-466`, with observable FIFO/host-port tests. The
+service trace records PC `$069A` repeatedly and 230,400-word-scale VRAM-fill
+behavior, confirming this is initialization rather than polygon rendering.
+
+The later diagnostic polling path at `$004F82-$00506A` reads GSP RAM through
+the host address `$FFC00000` and `$FFC00020` after invoking `$003F8`; it is a
+candidate for the next GSP-load/handshake investigation. Its semantics remain
+UNKNOWN until the host-port address/data sequence is captured without the
+initial VRAM-clear traffic.
+
+### 13.1 Diagnostic GSP poll and status copy (`$004F82-$00506A`)
+
+The current MAME-generated MC68010 listing for the rev-6 main CPU ROM gives
+the following verbatim transcription:
+
+```text
+$004F82: clr.w   $608000.l
+$004F88: jsr     $003F8.l
+$004F8E: clr.w   $608000.l
+$004F94: moveq   #$8, D1
+$004F96: movea.l #$FF945E, A1
+$004F9C: move.l  #$01010101, (A1)+
+$004FA2: subq.l  #1, D1
+$004FA4: bgt     $004F9C
+$004FA6: jsr     $010932.l
+$004FAC: jsr     $004A48.l
+$004FB2: movea.l #$1, A1
+$004FB8: move.w  #$1D4C, D0
+$004FBC: clr.w   $608000.l
+$004FC2: movea.w A1, A0
+$004FC4: cmpa.w   #$8, A0
+$004FC8: beq     $005016
+$004FCC: move.l  #$0, $FF9042.l
+$004FD6: move.l  $FF9042.l, D1
+$004FDC: clr.w   $608000.l
+$004FE2: cmp.w    D1, D0
+$004FE4: bgt     $004FD6
+$004FE6: move.l  #$FFC00000, $C00002.l
+$004FF0: movea.w $C0000C.l, A1
+$004FF6: cmpa.w   A0, A1
+$004FF8: bgt     $004FB8
+$004FFA: move.b  #$FF, $FF945E.l
+$005002: clr.w   $608000.l
+$005008: jsr     $003F8.l
+$00500E: clr.w   $608000.l
+$005014: rts
+$005016: jsr     $004A48.l
+$00501C: clr.w   $608000.l
+$005022: movea.l #$FFC00020, A2
+$005028: moveq   #$10, D1
+$00502A: movea.l #$FF945E, A1
+$005030: movea.l #$FF9048, A0
+$005036: clr.w   $608000.l
+$00503C: move.l  A2, $C00002.l
+$005042: adda.l  #$10, A2
+$005048: move.w  $C0000C.l, (A0)
+$00504E: move.b  (A0)+, D0
+$005050: move.b  (A0), (A1)+
+$005052: move.b  D0, (A1)+
+$005054: subq.l  #1, D1
+$005056: bgt     $005030
+$005058: clr.w   $608000.l
+$00505E: jsr     $003F8.l
+$005064: clr.w   $608000.l
+$00506A: rts
+```
+
+**Confirmed mechanism.** The routine first calls the existing `$003F8`
+GSP-reset sequence, fills eight longwords at `$FF945E` with `$01010101`,
+then calls two opaque helpers at `$10932` and `$4A48`. It polls the main-CPU
+word at `$FF9042` against timeout value `$1D4C`, selects GSP host address
+`$FFC00000`, and reads a 16-bit value through `$C0000C`. A returned value
+greater than the current counter becomes the next counter; reaching `8`
+selects the status-copy branch. That branch reads sixteen words at
+`$FFC00020`, advancing the host address by `$10` each time, stores each word
+at `$FF9048`, and copies its low then high byte into the `$FF945E` buffer.
+Both exits invoke `$003F8` again. The service trace observed the preceding
+`$0067A` VRAM clear, but did not yet capture this routine's host reads, so the
+relationship between the returned words and GSP readiness is **LIKELY**, not
+yet KNOWN.
+
+**Ambiguity preserved.** `$10932`, `$4A48`, `$FF9042`, `$FF9048`, and
+`$FF945E` have not been assigned game-semantic names. The C slice models the
+selected status-copy path through callbacks and bounds the timeout polling;
+it does not claim those meanings. The fallback marker write at `$FF945E` is
+also preserved literally.
+
+**C slice.** `native/gsp_diagnostic_poll.{h,c}` and
+`native/gsp_diagnostic_poll_test.c` assert the callback ordering, GSP address
+sequence, eight marker writes, and sixteen-word copy. CTest name:
+`gsp-diagnostic-poll-slice-c`.
+
+Static callers found in the same rev-6 listing are `$001CA4`, `$009B80`, and
+`$00AC38`. `$001CA4` is in a diagnostic branch that prints message selector
+`$12` before invoking the poll; `$009B80` invokes it after selectors `$7C`,
+`$74`, and `$7D`, then examines the sixteen words at `$FF945E`; `$00AC38`
+invokes it after selector `$06` and a stopped diagnostic state. These callers
+are **KNOWN xrefs**, but their menu/state semantics remain **UNKNOWN** until
+the corresponding input/dispatch paths are traced.

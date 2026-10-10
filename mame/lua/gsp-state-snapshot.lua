@@ -24,12 +24,11 @@ local sw_off_prefix = {
     {port = ':mainpcb:SW1', field = 'SW1:7', action = 'set', value = 1},
     {port = ':mainpcb:SW1', field = 'SW1:8', action = 'set', value = 1}
 }
-local service_prefix = {
-    {port = ':mainpcb:IN0', field = 'Service Mode', action = 'set', value = 0}
-}
 local events = (input_mode == 'service' or input_mode == 'service_probe') and {
-    {frame = 1, port = ':mainpcb:IN0', field = 'Service Mode', action = 'set', value = 0},
-    {frame = 100, port = ':mainpcb:IN0', field = 'Service Mode', action = 'set', value = 0}
+    -- PORT_SERVICE is active-low electrically, but field:set_value() takes
+    -- the logical input state: 1 is the same as pressing MAME's F2 key.
+    {frame = 60, port = ':mainpcb:IN0', field = 'Service Mode', action = 'press'},
+    {frame = 120, port = ':mainpcb:IN0', field = 'Service Mode', action = 'release'}
 } or input_mode == 'late_drive' and {
     {frame = 650, port = ':mainpcb:IN0', field = 'Coin 1', action = 'press'},
     {frame = 680, port = ':mainpcb:IN0', field = 'Coin 1', action = 'release'},
@@ -86,17 +85,7 @@ local function apply_event(event)
     end
 end
 
-local function assert_service_switch()
-    -- PORT_SERVICE is an active-low bit.  Writing the raw port is necessary
-    -- here: the game samples the switch during reset, before a frame event can
-    -- reliably change the ioport field's live value.
-    local port = assert(machine.ioport.ports[':mainpcb:IN0'])
-    port:write(port:read() & 0xdf)
-end
-
-if input_mode == 'service' or input_mode == 'service_probe' then
-    emu.register_prestart(assert_service_switch)
-elseif input_mode == 'sw_off_prestart' or input_mode == 'drive' or input_mode == 'late' or input_mode == 'late_drive' then
+if input_mode == 'sw_off_prestart' or input_mode == 'drive' or input_mode == 'late' or input_mode == 'late_drive' then
     emu.register_prestart(function()
         for _, event in ipairs(sw_off_prefix) do apply_event(event) end
     end)

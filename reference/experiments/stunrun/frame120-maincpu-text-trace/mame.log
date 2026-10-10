@@ -1,0 +1,4 @@
+ALSA lib /tmp/portage/media-libs/alsa-lib-1.2.14/work/alsa-lib-1.2.14/src/seq/seq_hw.c:540:(snd_seq_hw_open) open /dev/snd/seq failed: No such file or directory
+MAME_TRACE_CONFIG start=1 cpu=:mainpcb:maincpu output=/tmp/opencode/stunrun-maincpu-trace-120/maincpu-68010.trace
+MAME_TRACE_DONE cpu=:mainpcb:maincpu frames=120 output=/tmp/opencode/stunrun-maincpu-trace-120/maincpu-68010.trace
+Average speed: 20.75% (1 seconds)

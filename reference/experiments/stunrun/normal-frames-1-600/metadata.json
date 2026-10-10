@@ -1,0 +1,59 @@
+{
+  "schema": "stunrun-reference-experiment/v1",
+  "experiment": "normal-frames-1-600",
+  "authority": "controlled-replay",
+  "rom_set": "stunrun rev 6",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "command": "./tools/mame-gsp-state-snapshot roms /tmp/opencode/stunrun-oracle-normal --mame /mnt/build/mame-ref/mame --input none --frames 600 --targets 1,60,120,240,360,480,600 --screen-dir /tmp/opencode/stunrun-oracle-normal/screens --nothrottle",
+  "artifacts": [
+    {
+      "path": "mame.log",
+      "bytes": 51683,
+      "sha256": "32f0283bb2ea3f0866b402e9e09352ab821f695cfbf6106466ab6ebab993f4cb"
+    },
+    {
+      "path": "result.json",
+      "bytes": 3613,
+      "sha256": "eae7d5c3fd009f30f52de63a81728b1f56950bd2684f40e2bfd7f32583e166f8"
+    },
+    {
+      "path": "screens/frame-000001.png",
+      "bytes": 514,
+      "sha256": "c0da6a2e9cad78f50f93de3292bd88546308e8312a353f061ff664cfddf3b9af"
+    },
+    {
+      "path": "screens/frame-000060.png",
+      "bytes": 516,
+      "sha256": "33480a9e484faba8828502301a0ee8759b3908e628f23ccb2676d6d1c4b699d0"
+    },
+    {
+      "path": "screens/frame-000120.png",
+      "bytes": 1665,
+      "sha256": "8ad6fc75382f1502ead6f00278e7a9d990b4b24ea7aeae243899e7b690f659d5"
+    },
+    {
+      "path": "screens/frame-000240.png",
+      "bytes": 13462,
+      "sha256": "7e48495c4d7c2867dffd625d0b295a0c50c26fd585d25ffc20bf93fabc853d49"
+    },
+    {
+      "path": "screens/frame-000360.png",
+      "bytes": 13462,
+      "sha256": "7e48495c4d7c2867dffd625d0b295a0c50c26fd585d25ffc20bf93fabc853d49"
+    },
+    {
+      "path": "screens/frame-000480.png",
+      "bytes": 13462,
+      "sha256": "7e48495c4d7c2867dffd625d0b295a0c50c26fd585d25ffc20bf93fabc853d49"
+    },
+    {
+      "path": "screens/frame-000600.png",
+      "bytes": 8655,
+      "sha256": "6d46e033e29b049e55be06aab19afd44042bd5e2f7002f0a9aac9285e37e07f3"
+    }
+  ],
+  "notes": "Headless normal-mode MAME captures; process-group cleanup managed the run."
+}

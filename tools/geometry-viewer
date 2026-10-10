@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Render candidate views of the unresolved road/FIFO word stream as SVG.
+
+This is an exploratory visualizer, not an original-game renderer.  It deliberately
+shows several field/stride interpretations side by side so format hypotheses can
+be compared quickly without promoting any one interpretation to fact.
+"""
+
+import argparse
+import struct
+from pathlib import Path
+
+
+WIDTH, HEIGHT = 360, 280
+
+
+def signed(value):
+    return value - 0x10000 if value & 0x8000 else value
+
+
+def load_words(path, offset, count):
+    data = Path(path).read_bytes()
+    end = offset + count * 2
+    if offset < 0 or end > len(data):
+        raise ValueError(f"input has {len(data)} bytes; need [{offset:#x}, {end:#x})")
+    return list(struct.unpack(f">{count}H", data[offset:end]))
+
+
+def scale_points(points):
+    if not points:
+        return []
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    lo_x, hi_x = min(xs), max(xs)
+    lo_y, hi_y = min(ys), max(ys)
+    span = max(hi_x - lo_x, hi_y - lo_y, 1)
+    margin = 24
+    scale = min((WIDTH - 2 * margin) / span, (HEIGHT - 2 * margin) / span)
+    return [
+        (margin + (x - lo_x) * scale,
+         HEIGHT - margin - (y - lo_y) * scale)
+        for x, y in points
+    ]
+
+
+def panel(title, points, x_offset, color):
+    scaled = scale_points(points)
+    body = []
+    if scaled:
+        coords = " ".join(f"{x_offset + x:.1f},{y + 22:.1f}" for x, y in scaled)
+        body.append(f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="1"/>')
+        body.extend(
+            f'<circle cx="{x_offset + x:.1f}" cy="{y + 22:.1f}" r="1.5" fill="{color}"/>'
+            for x, y in scaled
+        )
+    body.append(f'<text x="{x_offset + 8}" y="16" fill="#ddd">{title}</text>')
+    body.append(f'<rect x="{x_offset}" y="22" width="{WIDTH}" height="{HEIGHT}" fill="none" stroke="#555"/>')
+    return "\n".join(body)
+
+
+def render(words, output):
+    signed_words = [signed(word) for word in words]
+    fifo = signed_words[::2]
+    candidates = [
+        ("table adjacent", list(zip(signed_words[::2], signed_words[1::2])), "#66ccff"),
+        ("table stride-2", list(zip(signed_words[::4], signed_words[2::4])), "#ffcc66"),
+        ("table lanes 1/2", list(zip(signed_words[1::4], signed_words[2::4])), "#ff77aa"),
+        ("FIFO adjacent", list(zip(fifo[::2], fifo[1::2])), "#88ee88"),
+    ]
+    width = WIDTH * 2
+    height = HEIGHT * 2 + 24
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="#111"/>',
+    ]
+    for index, (title, points, color) in enumerate(candidates):
+        x = (index % 2) * WIDTH
+        y = (index // 2) * (HEIGHT + 24)
+        translated = panel(title, points, x, color).replace(' y="', f' y="')
+        parts.append(f'<g transform="translate(0,{y})">{translated}</g>')
+    parts.append(f'<text x="8" y="{height - 6}" fill="#aaa">exploratory only: signed 16-bit word hypotheses</text>')
+    parts.append('</svg>')
+    Path(output).write_text("\n".join(parts), encoding="utf-8")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", help="big-endian word image or reconstructed MC68010 ROM")
+    parser.add_argument("output", help="SVG output path")
+    parser.add_argument("--offset", type=lambda value: int(value, 0), default=0x44630)
+    parser.add_argument("--count", type=int, default=384)
+    args = parser.parse_args()
+    try:
+        words = load_words(args.input, args.offset, args.count)
+        render(words, args.output)
+    except (OSError, ValueError, struct.error) as exc:
+        parser.error(str(exc))
+
+
+if __name__ == "__main__":
+    main()
