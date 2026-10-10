@@ -2573,3 +2573,28 @@ Static callers found in the same rev-6 listing are `$001CA4`, `$009B80`, and
 invokes it after selector `$06` and a stopped diagnostic state. These callers
 are **KNOWN xrefs**, but their menu/state semantics remain **UNKNOWN** until
 the corresponding input/dispatch paths are traced.
+## Correction: native final-PC attribution for the geometry wait loop
+
+The earlier report that the native MC68010 stopped at `$0216` was a
+misreading of the shell's startup PC line, which is printed before the run
+advances. A bounded `STUNRUN_TRACE=120` after 1,200 native frames instead
+showed the live CPU repeatedly executing `$022766` and returning through the
+queue/display-list polling path:
+
+```asm
+$022766: movem.l D2-D6/A2-A3,-(A7)
+$02276E: lea     $C0000C.l,A2
+$02277E: move.l  $FF9BD0.l,D0
+$022784: movea.l D0,A0
+$022786: bne     $0227C0
+$022788: move.w  $FF9BCC.l,D0
+$02278E: beq     $022760
+$022760: movem.l (A7)+,D2-D6/A2-A3
+$022764: rts
+```
+
+The same trace showed callers `$02FC86/$02FC88` repeatedly invoking `$022766`
+and `$02FCAC` clearing `$608000`. In this native run `$FF9BD0` and `$FF9BCC`
+remain empty, so the display-list consumer has no queued source and never
+reaches `$02F470`. This corrects the earlier `$0216` attribution; it does not
+prove that the native model has reached the game's later geometry state.
