@@ -1,0 +1,17 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "gsp-frame101-screen",
+  "command": "./tools/mame-gsp-state-snapshot roms /tmp/opencode/gsp-frame101-screen --mame /mnt/build/mame-ref/mame --frames 110 --targets 101 --input drive --nothrottle --screen-dir /tmp/opencode/gsp-frame101-screen/screens",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "artifacts": [
+    {
+      "path": "/tmp/opencode/gsp-frame101-screen/screens/frame-000101.png",
+      "size": 1665,
+      "sha256": "8ad6fc75382f1502ead6f00278e7a9d990b4b24ea7aeae243899e7b690f659d5"
+    }
+  ],
+  "observation": "Frame 101 displays STUN RUNNER / PROCESSING BACKGROUNDS while the two complete shared-memory upload destinations from the bounded display-list capture are populated."
+}

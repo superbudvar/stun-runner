@@ -74,3 +74,17 @@ the data is a glyph, sprite, texture, command buffer, or geometry; the
 semantic role remains UNKNOWN. It does, however, rule out treating these two
 small uploads as FIFO-only records and makes them useful candidates for a
 future indexed/2bpp texture decoder.
+
+## Frame-101 visual correlation
+
+An independent harness capture at frame 101 with the same `drive` input mode
+shows the visible screen text `STUN RUNNER` and `PROCESSING BACKGROUNDS`.
+The screenshot and provenance are preserved under
+`reference/experiments/stunrun/gsp-frame101-screen/`.
+
+This is a strong temporal correlation between the small shared-memory uploads
+and a text-rendering phase. It does not yet prove that calls `$02D7A4` and
+`$02D7B6` contain the glyph pixels: the display-list compiler may be copying
+font data, a text command, or an intermediate tile record, and the GSP/scanout
+consumer has not been correlated. The existing `$234B6` 2bpp row expander is
+therefore a candidate comparison implementation, not a decoded format.
