@@ -14,7 +14,8 @@ std::vector<std::uint16_t> emit_geometry_primitive(std::uint16_t first,
                                                    std::uint16_t fourth,
                                                    std::uint8_t selector);
 
-/* Literal caller at $2B7E8: four primitive records from D2/D3/D4. */
+/* Literal caller at $2B7E8: four primitive records from D2/D3/D4.  The
+ * argument order follows the callee's stack-frame offsets, not push order. */
 std::vector<std::uint16_t> emit_geometry_quad(std::uint32_t d1,
                                               std::uint32_t d2,
                                               std::uint32_t d3,

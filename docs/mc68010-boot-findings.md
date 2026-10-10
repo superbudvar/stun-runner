@@ -1894,10 +1894,20 @@ $2B868: move.l  D2,-(A7)
 $2B86A: jsr     (A2)
 ```
 
-The remaining three calls use the same five-argument order and add `$80` or
-`$38` to D2/D3 as shown by the listing. D1 is a live caller register, not a
-formal argument loaded by `$2B7E8`; therefore the native seam keeps D1
-explicit instead of inventing its meaning. The C++ transcription is
+Resolving the callee's frame slots against the caller's right-to-left pushes,
+the four records are, in FIFO argument order:
+
+```text
+(D2,       D3,       D2+$80, D3,       D4)
+(D3+$38,  D2+$80,   D3,      D2+$80,  D4)
+(D3+$38,  D2,       D3+$38, D2+$80,  D4)
+(D3,       D2,       D3+$38, D2,      D4)
+```
+
+Each row is passed to `$2F470`, which prepends `$2000 + low_byte(D4)` and
+emits the four low words. D1 is a live caller register, not a formal
+argument loaded by `$2B7E8`; therefore the native seam keeps D1 explicit
+instead of inventing its meaning. The C++ transcription is
 `native/geometry_fifo_emitter.{hpp,cpp}` and CTest
 `geometry-fifo-emitter-cpp` asserts the complete 20-halfword observable FIFO
 stream. This is a FIFO mechanism finding, not proof that these records are

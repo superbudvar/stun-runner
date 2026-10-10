@@ -25,17 +25,17 @@ std::vector<std::uint16_t> emit_geometry_quad(std::uint32_t d1,
         result.insert(result.end(), record.begin(), record.end());
     };
 
-    const auto a = static_cast<std::uint16_t>(d2);
-    const auto b = static_cast<std::uint16_t>(d3);
-    const auto c = static_cast<std::uint16_t>(d4);
-    append(a, b, static_cast<std::uint16_t>(d1), b, c);
-    append(static_cast<std::uint16_t>(d2 + 0x80u), b,
-           static_cast<std::uint16_t>(d2 + 0x80u),
-           static_cast<std::uint16_t>(d3 + 0x38u), c);
-    append(static_cast<std::uint16_t>(d2 + 0x80u),
-           static_cast<std::uint16_t>(d3 + 0x38u), a,
-           static_cast<std::uint16_t>(d3 + 0x38u), c);
-    append(a, static_cast<std::uint16_t>(d3 + 0x38u), a, b, c);
+    const auto x = static_cast<std::uint16_t>(d2);
+    const auto y = static_cast<std::uint16_t>(d3);
+    const auto z = static_cast<std::uint16_t>(d4);
+    const auto x_plus_80 = static_cast<std::uint16_t>(d2 + 0x80u);
+    const auto y_plus_38 = static_cast<std::uint16_t>(d3 + 0x38u);
+    /* The 68010 pushes arguments right-to-left; $2F470 consumes the
+     * resulting frame slots as (arg1,arg2,arg3,arg4,selector). */
+    append(x, y, x_plus_80, y, z);
+    append(y_plus_38, x_plus_80, y, x_plus_80, z);
+    append(y_plus_38, x, y_plus_38, x_plus_80, z);
+    append(y, x, y_plus_38, x, z);
     return result;
 }
 
