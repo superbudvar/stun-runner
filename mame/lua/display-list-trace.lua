@@ -12,6 +12,7 @@ local raw_bytes = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_RAW_BYTES') or '1024'
 local max_fifo_words = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_FIFO') or '16384')
 local max_consumer_events = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_CONSUMER') or '256')
 local max_gsp_exec_events = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_GSP_EXEC') or '512')
+local max_gsp_writes = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_GSP_WRITES') or '2048')
 local frame = 0
 local calls = {}
 local active_call
@@ -24,6 +25,7 @@ local consumer_events = {}
 local consumer_capture_status = 'unavailable'
 local gsp_exec_events = {}
 local gsp_state_samples = {}
+local gsp_writes = {}
 
 local sw_off_prefix = {
     {port = ':mainpcb:SW1', field = 'SW1:1', value = 1},
@@ -221,6 +223,21 @@ local function install_taps()
                     }
                 end
             end)
+        gsp_space:install_write_tap(0xff000000, 0xffffffff,
+            'stunrun_gsp_shared_write_landmarks', function(offset, data, mask)
+                if #gsp_writes < max_gsp_writes and
+                    frame >= capture_start and frame <= capture_end then
+                    local state = gsp.state
+                    local pc_state = state['CURPC'] or state['PC']
+                    gsp_writes[#gsp_writes + 1] = {
+                        frame = frame,
+                        pc = pc_state and pc_state.value or 0,
+                        address = offset,
+                        data = data,
+                        mask = mask
+                    }
+                end
+            end)
     end
 end
 
@@ -273,6 +290,11 @@ emu.register_frame_done(function()
         for _, sample in ipairs(gsp_state_samples) do
             print(string.format('M1_GSP_STATE frame=%d pc=%08X st=%08X',
                 sample.frame, sample.pc, sample.st))
+        end
+        for _, write in ipairs(gsp_writes) do
+            print(string.format(
+                'M1_GSP_WRITE frame=%d pc=%08X addr=%08X data=%08X mask=%08X',
+                write.frame, write.pc, write.address, write.data, write.mask))
         end
         print('M1_GSP_DL_CONSUMER_STATUS status=' .. consumer_capture_status)
         print(string.format(

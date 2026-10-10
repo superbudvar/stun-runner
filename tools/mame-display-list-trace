@@ -36,6 +36,9 @@ CONSUMER_STATUS = re.compile(r"M1_GSP_DL_CONSUMER_STATUS status=([a-z]+)")
 GSP_EXEC = re.compile(r"M1_GSP_EXEC frame=(\d+) pc=([0-9A-Fa-f]+)")
 GSP_STATE = re.compile(
     r"M1_GSP_STATE frame=(\d+) pc=([0-9A-Fa-f]+) st=([0-9A-Fa-f]+)")
+GSP_WRITE = re.compile(
+    r"M1_GSP_WRITE frame=(\d+) pc=([0-9A-Fa-f]+) addr=([0-9A-Fa-f]+) "
+    r"data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+)")
 ENTRY = re.compile(
     r"M1_GSP_DL_ENTRY id=(\d+) sp=([0-9A-Fa-f]+) a6=([0-9A-Fa-f]+) "
     r"d0=([0-9A-Fa-f]+) d1=([0-9A-Fa-f]+) d2=([0-9A-Fa-f]+) "
@@ -190,6 +193,12 @@ def parse_log(text: str) -> dict:
                           "pc": int(match.group(2), 16),
                           "st": int(match.group(3), 16)}
                          for match in GSP_STATE.finditer(text)]
+    gsp_writes = [{"frame": int(match.group(1)),
+                   "pc": int(match.group(2), 16),
+                   "address": int(match.group(3), 16),
+                   "data": int(match.group(4), 16),
+                   "mask": int(match.group(5), 16)}
+                  for match in GSP_WRITE.finditer(text)]
     for call in calls:
         decode = call["decode"]
         expected = sum(group.get("expected_fifo_words", 0)
@@ -214,6 +223,7 @@ def parse_log(text: str) -> dict:
             "consumer_events": consumer_events,
             "gsp_exec_events": gsp_exec_events,
             "gsp_state_samples": gsp_state_samples,
+            "gsp_writes": gsp_writes,
             "consumer_capture_status": consumer_status}
 
 
@@ -301,6 +311,7 @@ def main() -> int:
         "max_calls": args.max_calls, "max_fifo_words": args.max_fifo_words,
         "max_consumer_events": int(os.environ.get("STUNRUN_GSP_DL_TRACE_MAX_CONSUMER", "256")),
         "max_gsp_exec_events": int(os.environ.get("STUNRUN_GSP_DL_TRACE_MAX_GSP_EXEC", "512")),
+        "max_gsp_writes": int(os.environ.get("STUNRUN_GSP_DL_TRACE_MAX_GSP_WRITES", "2048")),
         "call_count": len(calls),
         "caller_counts": {f"0x{pc:06X}": count for pc, count in caller_counts.items()},
         "opcode_family_counts": dict(sorted(family_counts.items())),
@@ -308,6 +319,7 @@ def main() -> int:
         "consumer_events": parsed["consumer_events"],
         "gsp_exec_events": parsed["gsp_exec_events"],
         "gsp_state_samples": parsed["gsp_state_samples"],
+        "gsp_writes": parsed["gsp_writes"],
         "consumer_capture_status": parsed["consumer_capture_status"],
         "artifacts": artifacts,
         "small_upload": small_upload,
