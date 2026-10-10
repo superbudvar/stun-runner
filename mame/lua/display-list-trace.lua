@@ -10,6 +10,7 @@ local input_mode = os.getenv('STUNRUN_GSP_DL_TRACE_INPUT') or 'drive'
 local max_calls = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_CALLS') or '256')
 local raw_bytes = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_RAW_BYTES') or '1024')
 local max_fifo_words = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_FIFO') or '16384')
+local max_consumer_events = tonumber(os.getenv('STUNRUN_GSP_DL_TRACE_MAX_CONSUMER') or '256')
 local frame = 0
 local calls = {}
 local active_call
@@ -18,6 +19,8 @@ local execution_tap
 local fifo_count = 0
 local call_tap
 local fifo_tap
+local consumer_events = {}
+local consumer_capture_status = 'unavailable'
 
 local sw_off_prefix = {
     {port = ':mainpcb:SW1', field = 'SW1:1', value = 1},
@@ -157,6 +160,24 @@ local function install_taps()
             }
             fifo_count = fifo_count + 1
         end)
+
+    -- This is execution evidence only.  The GSP runs asynchronously, so an
+    -- execution at this address does not by itself prove which host call fed
+    -- it; the Python side preserves that distinction when correlating frames.
+    local gsp = machine.devices[':mainpcb:gsp']
+    local gsp_space = gsp and gsp.spaces['program']
+    if gsp_space ~= nil then
+        consumer_capture_status = 'observed'
+        gsp_space:install_execute_tap(0xfff48c20, 0xfff48c20,
+            'stunrun_gsp_fifo_consumer', function()
+                if #consumer_events < max_consumer_events and
+                    frame >= capture_start and frame <= capture_end then
+                    consumer_events[#consumer_events + 1] = {
+                        frame = frame, pc = 0xfff48c20
+                    }
+                end
+            end)
+    end
 end
 
 emu.register_frame_done(function()
@@ -181,6 +202,11 @@ emu.register_frame_done(function()
                     word.destination))
             end
         end
+        for _, event in ipairs(consumer_events) do
+            print(string.format('M1_GSP_DL_CONSUMER frame=%d pc=%08X',
+                event.frame, event.pc))
+        end
+        print('M1_GSP_DL_CONSUMER_STATUS status=' .. consumer_capture_status)
         print(string.format(
             'M1_GSP_DL_DONE frames=%d calls=%d fifo_words=%d calls_truncated=%s fifo_truncated=%s output=%s',
             frame, #calls, fifo_count, tostring(#calls >= max_calls),

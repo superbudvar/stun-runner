@@ -518,10 +518,21 @@ two columns (high/low byte), one FIFO word per row. It is not a decoded game
 bitmap: palette, pixel format, stride and destination semantics remain unknown.
 No export is made if no complete count-matched call is available.
 
+Each call also contains `raw_fifo_words` and `raw_fifo_hex`, preserving the
+captured 16-bit FIFO payload without assigning a format. The trace installs a
+bounded execute tap at the observed GSP consumer selector `0xFFF48C20` and
+exports `consumer_events` plus `consumer_capture_status`. A same-frame event is
+only execution evidence; it does **not** prove FIFO ownership or field
+semantics. If the GSP selector is unavailable, the status remains `unknown`.
+The result records the configured call/FIFO/consumer limits and bounded
+artifact names.
+
 ```
 M1_GSP_DL_CALL id=N frame=N return=XXXXXXXX caller=XXXXXXXX call_size=N call_opcode=XXXX stream=XXXXXXXX raw=...
 M1_GSP_DL_HOST id=N hi=XXXX lo=XXXX control=XXXX
 M1_GSP_DL_FIFO id=N frame=N pc=XXXXXXXX addr=XXXXXXXX data=XXXXXXXX mask=XXXXXXXX destination=XXXXXXXX
+M1_GSP_DL_CONSUMER frame=N pc=FFF48C20
+M1_GSP_DL_CONSUMER_STATUS status=observed|unavailable
 M1_GSP_DL_DONE frames=N calls=N fifo_words=N calls_truncated=false fifo_truncated=false ...
 ```
 

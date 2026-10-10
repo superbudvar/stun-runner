@@ -170,6 +170,8 @@ target_include_directories(stunrun-native-shell PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/stb)
 set_target_properties(stunrun-native-shell PROPERTIES C_STANDARD 99)
 add_test(NAME native-shell COMMAND stunrun-native-shell)
+set_tests_properties(native-shell PROPERTIES
+  ENVIRONMENT "STUNRUN_BACKEND=null;STUNRUN_VIDEO_BACKEND=null;STUNRUN_AUDIO_BACKEND=null")
 
 add_executable(stunrun-gsp-vram-clear-test gsp_vram_clear.c gsp_vram_clear_test.c)
 set_target_properties(stunrun-gsp-vram-clear-test PROPERTIES C_STANDARD 99)

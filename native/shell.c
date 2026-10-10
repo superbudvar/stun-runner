@@ -158,6 +158,17 @@ static uint64_t g_live_video_start_ns = 0u;
  * from inside the frame loop. */
 static stunrun_renderer_t renderer;
 
+/* The confirmed frame-600 display is also retained as indexed pixels for the
+ * video backend.  The software renderer remains the source for screenshots
+ * and hashes; this second buffer lets an OpenGL backend consume the board's
+ * indexed VRAM/palette state through video.h without inventing GSP geometry. */
+static uint8_t g_gsp_indexed_pixels[STUNRUN_RENDER_WIDTH * STUNRUN_RENDER_HEIGHT];
+/* Keep all four palette banks because gsp_display_build_palette() deliberately
+ * decodes the complete 1024-entry board palette.  The indexed backend below
+ * consumes the first 256 entries (the confirmed frame-600 bank). */
+static uint8_t g_gsp_palette_rgb[STUNRUN_GSP_PALETTE_ENTRIES * 3u];
+static bool g_gsp_indexed_backend_frame = false;
+
 /* Screenshot capture: STUNRUN_CAPTURE_FRAME=N captures PNG at frame N.
  * STUNRUN_CAPTURE_ALL=1 captures every frame. STUNRUN_CAPTURE_DIR sets
  * the output directory (default: "capture/"). PNG over PPM via stb_image_write.h. */
@@ -915,6 +926,7 @@ static int run_walk(void)
     stunrun_adsp_control_tally_init(&tally);
     stunrun_render_init(&renderer);
     stunrun_gsp_video_init(&video);
+    g_gsp_indexed_backend_frame = false;
 
     /* Optional live backends: activated when STUNRUN_VIDEO_BACKEND or
      * STUNRUN_AUDIO_BACKEND are set (or auto-detected if not specified).
@@ -1595,6 +1607,42 @@ static int run_walk(void)
                     g_failures++;
                 } else {
                     render_mode = "gsp-tms34010-display";
+
+                    /* The backend palette contract is one 256-entry bank.
+                     * Frame 600 selects bank zero, so the confirmed scanout
+                     * can be passed as 8bpp indices without assigning meaning
+                     * to any other GSP palette-bank behaviour.  Keep the RGB
+                     * renderer above as the fallback for future captures that
+                     * select another bank or exceed the seam's 8bpp contract. */
+                    if (dregs.palbank == 0u) {
+                        static uint16_t pens[STUNRUN_RENDER_WIDTH *
+                                              STUNRUN_RENDER_HEIGHT];
+                        size_t pixel_count = STUNRUN_RENDER_WIDTH *
+                                              STUNRUN_RENDER_HEIGHT;
+                        size_t pixel;
+                        int indexed_ok =
+                            stunrun_gsp_display_rasterise(
+                                pens, pixel_count,
+                                (const uint16_t *)(const void *)vram_bytes,
+                                vram_bytes_len / 2u, &dregs) == 0 &&
+                            stunrun_gsp_display_build_palette(
+                                lo, hi, STUNRUN_GSP_PALETTE_ENTRIES,
+                                g_gsp_palette_rgb,
+                                sizeof(g_gsp_palette_rgb)) == 0;
+                        if (indexed_ok) {
+                            for (pixel = 0u; pixel < pixel_count; ++pixel) {
+                                if (pens[pixel] > 0xFFu) {
+                                    indexed_ok = 0;
+                                    break;
+                                }
+                                g_gsp_indexed_pixels[pixel] =
+                                    (uint8_t)pens[pixel];
+                            }
+                        }
+                        g_gsp_indexed_backend_frame = indexed_ok != 0;
+                        printf("shell: gsp-display indexed-scanout=%s\n",
+                               indexed_ok ? "enabled" : "fallback-rgb");
+                    }
                 }
                 free(vram_bytes);
             }
@@ -1733,28 +1781,43 @@ static int run_walk(void)
         }
     }
 
-    /* Live backend present: upload the completed frame and show it.
-     * The renderer writes directly to renderer.pixels (RGB888, 512×240).
-     * video.palette_rgb is only valid when video state was loaded (gsp-visible-state). */
+    /* Live backend present: upload the completed frame and show it.  The
+     * renderer writes RGB888, but the confirmed GSP display path can instead
+     * pass its indexed 512×240 scanout plus palette through video.h. */
     if (g_backend_active && g_backend_pair.video.user) {
         stunrun_video_frame_t vf;
-        stunrun_video_frame_init(&vf, STUNRUN_RENDER_WIDTH, STUNRUN_RENDER_HEIGHT,
-                                STUNRUN_RENDER_WIDTH * 3,  /* stride in bytes */
-                                STUNRUN_VIDEO_FORMAT_RGB888,
-                                renderer.pixels);
+        int indexed_scanout =
+            g_gsp_indexed_backend_frame && render_mode != NULL &&
+            strcmp(render_mode, "gsp-tms34010-display") == 0;
+
+        if (g_backend_pair.video.set_palette && indexed_scanout) {
+            stunrun_video_palette_t vp;
+            stunrun_video_palette_init(&vp, 256, g_gsp_palette_rgb);
+            g_backend_pair.video.set_palette(g_backend_pair.video.user, &vp);
+        } else if (g_backend_pair.video.set_palette &&
+                   render_mode != NULL &&
+                   strcmp(render_mode, "gsp-visible-state") == 0) {
+            /* Palette is only valid for gsp-visible-state; for road-strip/text
+             * fixtures the palette is all-zeros which is harmless. */
+            stunrun_video_palette_t vp;
+            stunrun_video_palette_init(&vp, 256, video.palette_rgb);
+            g_backend_pair.video.set_palette(g_backend_pair.video.user, &vp);
+        }
+
+        if (indexed_scanout) {
+            stunrun_video_frame_init_paletted_8bpp(
+                &vf, g_gsp_indexed_pixels, STUNRUN_RENDER_WIDTH,
+                STUNRUN_RENDER_HEIGHT, renderer.frame);
+        } else {
+            stunrun_video_frame_init(&vf, STUNRUN_RENDER_WIDTH,
+                                    STUNRUN_RENDER_HEIGHT,
+                                    STUNRUN_RENDER_WIDTH * 3,
+                                    STUNRUN_VIDEO_FORMAT_RGB888,
+                                    renderer.pixels);
+        }
 
         if (g_backend_pair.video.upload &&
             g_backend_pair.video.upload(g_backend_pair.video.user, &vf)) {
-            /* Palette is only valid for gsp-visible-state; for road-strip/text
-             * fixtures the palette is all-zeros which is harmless. */
-            if (g_backend_pair.video.set_palette &&
-                render_mode != NULL &&
-                strcmp(render_mode, "gsp-visible-state") == 0) {
-                stunrun_video_palette_t vp;
-                stunrun_video_palette_init(&vp, 256, video.palette_rgb);
-                g_backend_pair.video.set_palette(
-                    g_backend_pair.video.user, &vp);
-            }
             if (g_backend_pair.video.present)
                 g_backend_pair.video.present(g_backend_pair.video.user);
         }

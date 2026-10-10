@@ -70,6 +70,8 @@ class DisplayListTraceTests(unittest.TestCase):
             f"call_size=6 call_opcode=4EB9 stream=00FF9200 raw={raw}\n"
             "M1_GSP_DL_FIFO id=1 frame=600 pc=000226F8 addr=00C0000C "
             "data=00005555 mask=0000FFFF\n"
+            "M1_GSP_DL_CONSUMER frame=600 pc=FFF48C20\n"
+            "M1_GSP_DL_CONSUMER_STATUS status=observed\n"
             "M1_GSP_DL_DONE frames=600 calls=1 fifo_words=1 "
             "calls_truncated=false fifo_truncated=false output=/tmp/x\n"
         )
@@ -79,6 +81,26 @@ class DisplayListTraceTests(unittest.TestCase):
         self.assertEqual(call["call_opcode"], 0x4EB9)
         self.assertEqual(call["fifo_writes"][0]["data"], 0x5555)
         self.assertTrue(call["fifo_count_matches_decode"])
+        self.assertEqual(call["raw_fifo_words"], [0x5555])
+        self.assertEqual(call["raw_fifo_hex"], "5555")
+        self.assertEqual(parsed["consumer_capture_status"], "observed")
+        self.assertEqual(call["consumer_evidence"]["status"], "observed-same-frame")
+        self.assertIn("ownership is unknown", call["consumer_evidence"]["meaning"])
+
+    def test_preserves_unknown_consumer_selector(self):
+        parsed = self.tool.parse_log(
+            "M1_GSP_DL_CALL id=1 frame=4 return=10 caller=0 call_size=0 "
+            "call_opcode=0 stream=100 raw=\n"
+            "M1_GSP_DL_DONE frames=4 calls=1 fifo_words=0 "
+            "calls_truncated=false fifo_truncated=false\n")
+        self.assertEqual(parsed["consumer_capture_status"], "unknown")
+        self.assertEqual(parsed["calls"][0]["consumer_evidence"]["status"],
+                         "not-observed-same-frame")
+
+    def test_maps_unavailable_consumer_selector_to_unknown(self):
+        parsed = self.tool.parse_log(
+            "M1_GSP_DL_CONSUMER_STATUS status=unavailable\n")
+        self.assertEqual(parsed["consumer_capture_status"], "unknown")
 
     def test_exports_exact_oracle_bytes_and_preview(self):
         calls = [{"id": 7, "stream_address": 0x9841C,
