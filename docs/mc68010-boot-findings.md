@@ -2915,3 +2915,84 @@ present before it. Workaround for headless capture runs:
 `SDL_VIDEODRIVER=dummy STUNRUN_VIDEO_BACKEND=null`. Not fixed here: it is a
 defect in the shell's window lifecycle, not in any code touched by gsvp, and
 it deserves its own bead rather than a drive-by change.
+
+## 16. The core executes the real GSP program
+
+`stunrun-gsp-rtl-harness --boot <events> --cycles N`. This is the first time
+the vendored TMS34010 has run STUN Runner's actual GSP program rather than a
+synthetic fixture.
+
+### 16.1 Host writes must reach BOTH the board and the core
+
+Replaying the bus stream through the board model alone can never execute
+anything: the core would hold a zero reset-vector address and no register
+state. The four host registers **are** the boot sequence, so every
+host-window write is presented to both
+
+- the board model, which owns memory, and
+- the core's own `host_*` port, which owns HSTADR/HSTDATA/HSTCTL and through
+  HSTCTL bit 15 the HLT line.
+
+The register index needs no separate translation: `gsp_board_host_reg()`
+returns HSTADRL=0, HSTADRH=1, HSTDATA=2, HSTCTL=3, which is exactly the
+vendored RTL's `host_reg_sel_t`.
+
+### 16.2 This board boots in host-present mode, not by fetching a vector
+
+The captured stream settles it. `/GSPRES` is released at **event 1** --
+before a single HSTDAT write:
+
+```text
+seq=      0 addr=0x0060400c released=0   /GSPRES asserted, 68010 PC 0x402
+seq=      1 addr=0x0060401c released=1   /GSPRES released, 68010 PC 0x40c
+seq=780401 addr=0x0060400c released=0   re-asserted at PC 0x22376
+seq=780402 addr=0x0060401c released=1
+seq=887025 addr=0x0060400c released=0   re-asserted at PC 0x22376
+seq=887026 addr=0x0060401c released=1
+```
+
+So the processor is released with VRAM still empty. Combined with findings
+14.3 -- HCS high at reset defers the level-0 fetch until the host clears HLT
+-- the real boot is: **release reset, halt, upload while halted, clear HLT.**
+The GSP has no ROM because the 68010 loads it during the halt. The harness
+drives HCS only while the 68010 owns the window, which reproduces this without
+special-casing.
+
+The two later assert/release pairs are the service-path re-init at `$022376`,
+matching findings 13.1.
+
+### 16.3 Result
+
+```text
+boot: replaying gsp_bus_events.bin into core + board
+  events=901354 host_txns=901348 reset_events=6 timeouts=0
+  running 2000000 cycles from the post-upload state
+  PC range 0xfff40000..0xfff59dd0  distinct(low16)=374
+  during run: board writes=789524 reads=557900
+```
+
+The PC range is the important number. The GSP instruction addresses recorded
+elsewhere in this log are `0xFFF46590`, `0xFFF45DD0`, `0xFFF47AB0`,
+`0xFFF43030` -- all inside `0xFFF40000..0xFFF59DD0`. The core is executing
+the same code the original executed, from the same VRAM image.
+
+344 distinct instruction addresses at 500k cycles and 374 at 2M: the program
+converges rather than running away. No host transaction timed out.
+
+### 16.4 What this does NOT establish
+
+The starting state is the VRAM as it stood **after** 600 frames of host
+writes, not as it stood when the GSP first ran, and the GSP is then run to
+completion with no further host traffic. Real execution interleaves the two.
+
+To compare against MAME's frame-600 GSP state, the harness needs the 68010's
+cycle count on each bus event so the core can be advanced to that point before
+applying the write. `musashi_gsp_bus_event_t` does not carry one today, so
+that field must be added and the stream re-captured. Until then the correct
+claim is the one above: **the core executes the uploaded program and writes
+memory** -- not that it reproduces the frame.
+
+The finding that shapes this: the host-port write stream alone already
+reproduces the reference VRAM byte-for-byte (section 15.4). That is a fact
+about what the *board model* captures. It is not evidence the GSP is idle, and
+it does not license comparing a GSP-only run against that same reference.

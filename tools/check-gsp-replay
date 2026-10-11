@@ -11,7 +11,17 @@
 # set and a few minutes of emulated time. tools/test-public and the CTest suite
 # cover everything that does not.
 #
-# Usage: tools/check-gsp-replay [DUMP_DIR]
+# Usage: tools/check-gsp-replay [DUMP_DIR] [--boot CYCLES]
+#
+# With --boot N, after the byte-identical comparison it also drives the
+# Verilated core: every host-window write is presented to both the board model
+# and the core's own host port, then the core runs N cycles free. That is how
+# the real board boots -- reset released, halted, uploaded, then HLT cleared --
+# and it is the check that shows the core executing STUN Runner's actual GSP
+# program rather than a fixture. Findings 16.
+#
+#   tools/check-gsp-replay --boot 2000000
+#
 #   DUMP_DIR defaults to $STUNRUN_GSP_DUMP_DIR, then /tmp/opencode/gsp-dump.
 #
 # To produce a dump:
@@ -27,7 +37,18 @@
 set -euo pipefail
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-dump_dir=${1:-${STUNRUN_GSP_DUMP_DIR:-/tmp/opencode/gsp-dump}}
+dump_dir=${STUNRUN_GSP_DUMP_DIR:-/tmp/opencode/gsp-dump}
+boot_cycles=2000000
+want_boot=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --boot)   want_boot=1; boot_cycles=${2:-2000000}; shift 2 ;;
+        --boot=*) want_boot=1; boot_cycles=${1#--boot=}; shift ;;
+        -h|--help) grep '^#' "$0" | cut -c3-; exit 0 ;;
+        -*) echo "$0: unknown option $1" >&2; exit 2 ;;
+        *)  dump_dir=$1; shift ;;
+    esac
+done
 
 harness="$repo_dir/build/gsp_rtl/stunrun-gsp-rtl-harness"
 if [[ ! -x "$harness" ]]; then
@@ -62,4 +83,10 @@ if [[ -f "$dump_dir/gsp_bus_events.truncated" ]]; then
     exit 1
 fi
 
-exec "$harness" --replay-host-writes "$events" --ref-vram "$vram"
+if [[ ${want_boot:-0} != 1 ]]; then
+    exec "$harness" --replay-host-writes "$events" --ref-vram "$vram"
+fi
+
+"$harness" --replay-host-writes "$events" --ref-vram "$vram" || exit $?
+echo
+exec "$harness" --boot "$events" --cycles "${boot_cycles:-2000000}"

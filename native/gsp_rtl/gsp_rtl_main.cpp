@@ -97,6 +97,7 @@ struct Options {
     bool self_test = false;
     std::string host_writes;
     std::string ref_vram;
+    std::string boot;
 };
 
 void usage(const char *argv0)
@@ -152,6 +153,8 @@ bool parse_args(int argc, char **argv, Options *o)
             o->self_test = true;
         } else if (a == "--replay-host-writes") {
             o->host_writes = need("--replay-host-writes");
+        } else if (a == "--boot") {
+            o->boot = need("--boot");
         } else if (a == "--ref-vram") {
             o->ref_vram = need("--ref-vram");
         } else if (a == "--quiet") {
@@ -473,6 +476,172 @@ int self_test(unsigned long long cycles)
     return 1;
 }
 
+/* Boot the core from a captured bus stream.
+ *
+ * This is the real integration, and it differs from replay_host_writes() in
+ * one crucial way: every host-window write is presented to BOTH
+ *
+ *   - the board model, which owns memory, and
+ *   - the core's own host port, which owns HSTADR/HSTDATA/HSTCTL and, through
+ *     HSTCTL bit 15, the HLT line.
+ *
+ * Driving only the board model leaves the core with a zero reset-vector
+ * address and no register state, so it can never execute. The host registers
+ * ARE the boot sequence.
+ *
+ * HCS is asserted exactly while the 68010 drives the host window, which is
+ * what makes tms34010_core select host-present mode: it defers the level-0
+ * fetch until the host clears HLT. That is how this board boots a GSP with no
+ * ROM -- the 68010 uploads while the processor is halted, then releases it.
+ * Findings 14.3 covers the alternative (HCS low at reset, immediate ROM-less
+ * fetch) and why it is not what the ROM does here.
+ */
+int boot_from_events(const std::string &path, unsigned long long cycles)
+{
+    std::FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::fprintf(stderr, "cannot open bus-event stream %s\n", path.c_str());
+        return 1;
+    }
+
+    auto *top = new tms34010_sv;
+    static gsp_board_t board;
+    gsp_board_reset(&board);
+
+    top->run_emu_n_i = 1;
+    top->lint1_n_i = 1;
+    top->lint2_n_i = 1;
+    top->hold_req_i = 0;
+    top->dpyint_set_i = 0;
+    top->video_hsync_n_i = 1;
+    top->video_vsync_n_i = 1;
+    top->host_be_i = 3;      /* every captured event carries both bytes */
+    top->host_reg_i = 0;
+    top->host_wdata_i = 0;
+    top->host_we_i = 0;
+    top->host_req_i = 0;
+    top->hcs_n_i = 1;        /* idle: the 68010 is not driving the window */
+    top->rst = 1;            /* held in reset until /GSPRES is released */
+    top->vclk_rst_i = 1;
+    top->clk = 0;
+    top->eval();
+
+    unsigned long long host_txns = 0, resets = 0, timeouts = 0;
+    bool cycle_pending = false;
+
+    /* One clock edge, servicing any local-bus cycle the core raised. */
+    auto tick = [&]() {
+        if (cycle_pending) {
+            const unsigned kind = top->cycle_kind_o & 0xf;
+            const uint32_t a = static_cast<uint32_t>(top->cycle_addr_o);
+            if (kind == KIND_WORD_READ) {
+                top->cycle_rdata_i = gsp_board_read16(&board, a);
+            } else if (kind == KIND_WORD_WRITE) {
+                gsp_board_write16(&board, a,
+                                  static_cast<uint16_t>(top->cycle_wdata_o));
+            }
+            top->cycle_ack_i = 1;
+            cycle_pending = false;
+        } else {
+            top->cycle_rdata_i = 0;
+            top->cycle_ack_i = 0;
+        }
+        if (!cycle_pending && top->cycle_req_o) cycle_pending = true;
+        top->clk = 1;
+        top->eval();
+        top->clk = 0;
+        top->eval();
+    };
+
+    /* Present one host transaction and wait for its acknowledge.  The
+     * requester holds req and payload stable until ack, then deasserts req
+     * before the next transaction (tms34010_host_if.sv header). */
+    auto host_txn = [&](unsigned reg, uint16_t data) {
+        top->hcs_n_i = 0;
+        top->host_req_i = 1;
+        top->host_we_i = 1;
+        top->host_reg_i = reg & 3u;
+        top->host_wdata_i = data;
+        /* Bounded wait: a transaction that never acks would otherwise hang
+         * the run silently. */
+        unsigned guard = 4096;
+        while (!top->host_ack_o && guard-- > 0) tick();
+        if (guard == 0) timeouts++;
+        top->host_req_i = 0;
+        top->hcs_n_i = 1;
+        tick();
+        host_txns++;
+    };
+
+    std::printf("boot: replaying %s into core + board\n", path.c_str());
+    musashi_gsp_bus_event_t ev;
+    unsigned long long count = 0;
+    while (std::fread(&ev, sizeof ev, 1, f) == 1) {
+        count++;
+        if (ev.kind == MUSASHI_GSP_BUS_RESET_CONTROL) {
+            /* /GSPRES is active low. */
+            top->rst = ev.gsp_reset_released ? 0 : 1;
+            top->vclk_rst_i = top->rst;
+            tick();
+            resets++;
+        } else if (ev.kind == MUSASHI_GSP_BUS_HOST_WINDOW) {
+            const unsigned byte_off = ev.address - 0xC00000u;
+            /* The register index is shared with the board model and matches
+             * the RTL's host_reg_sel_t: HSTADRL=0 HSTADRH=1 HSTDATA=2
+             * HSTCTL=3. */
+            host_txn(gsp_board_host_reg(byte_off), ev.data);
+            gsp_board_host_write(&board, byte_off, ev.data);
+        }
+    }
+    std::fclose(f);
+    std::printf("  events=%llu host_txns=%llu reset_events=%llu timeouts=%llu\n",
+                count, host_txns, resets, timeouts);
+
+    /* Run free. */
+    std::printf("  running %llu cycles from the post-upload state\n", cycles);
+    const uint32_t pc_first = static_cast<uint32_t>(top->pc_o);
+    uint32_t pc_last = pc_first, pc_min = pc_first, pc_max = pc_first;
+    const uint64_t vram_before = board.vram_writes;
+    const uint64_t reads_before = board.word_reads;
+    /* Distinct instruction addresses seen, to distinguish a running program
+     * from a spin on one instruction. A 16-byte program region is plenty for
+     * the real thing; anything far larger is noise. */
+    std::vector<uint8_t> seen(0x10000, 0);
+    unsigned long long pc_hits = 0;
+
+    for (unsigned long long c = 0; c < cycles; c++) {
+        tick();
+        pc_last = static_cast<uint32_t>(top->pc_o);
+        if (pc_last < pc_min) pc_min = pc_last;
+        if (pc_last > pc_max) pc_max = pc_last;
+        if (pc_last) {
+            seen[pc_last & 0xffffu] = 1;
+            pc_hits++;
+        }
+    }
+    unsigned distinct = 0;
+    for (unsigned i = 0; i < seen.size(); i++) distinct += seen[i];
+
+    std::printf("  PC 0x%08x -> 0x%08x  range 0x%08x..0x%08x  distinct(low16)=%u\n",
+                pc_first, pc_last, pc_min, pc_max, distinct);
+    std::printf("  state=%u instr=0x%04x nonzero-PC samples=%llu\n",
+                static_cast<unsigned>(top->state_o),
+                static_cast<unsigned>(top->instr_word_o), pc_hits);
+    std::printf("  during run: board writes=%llu reads=%llu\n",
+                (unsigned long long)(board.vram_writes - vram_before),
+                (unsigned long long)(board.word_reads - reads_before));
+    std::printf("  board totals: word_reads=%llu word_writes=%llu unmapped_r=%llu "
+                "unmapped_w=%llu\n",
+                (unsigned long long)board.word_reads,
+                (unsigned long long)board.word_writes,
+                (unsigned long long)board.unmapped_reads,
+                (unsigned long long)board.unmapped_writes);
+
+    top->final();
+    delete top;
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -483,6 +652,8 @@ int main(int argc, char **argv)
         return 2;
     }
     if (opt.self_test) return self_test(opt.cycles);
+    if (!opt.boot.empty())
+        return boot_from_events(opt.boot, opt.cycles);
     if (!opt.host_writes.empty())
         return replay_host_writes(opt.host_writes, opt.ref_vram);
 
