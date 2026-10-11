@@ -295,9 +295,77 @@ bd close <id>         # Complete work
 
 The managed Beads block is task-tracking guidance, not permission to override repository, user, or orchestrator instructions.
 
-- **Conservative (default)**: Use `bd` for task tracking. Do not run git commits, git pushes, or Dolt remote sync unless explicitly asked. At handoff, report changed files, validation, and suggested next commands.
-- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same conservative git policy unless active instructions say otherwise.
-- **Team-maintainer**: Only when the repository explicitly opts in, agents may close beads, run quality gates, commit, and push as part of session close. A current "do not commit" or "do not push" instruction still wins.
+- **Conservative (default)**: Use `bd` for task tracking. Agents **commit locally at logical opportunities** (see "Committing at logical opportunities" below). Do not `git push`, and do not run Dolt remote sync, unless explicitly asked. At handoff, report commits, changed files, validation, and suggested next commands.
+- **Minimal**: Keep tool instruction files as pointers to `bd prime`; use the same local-commit git policy unless active instructions say otherwise.
+- **Team-maintainer**: Only when the repository explicitly opts in, agents may also close beads, run quality gates, `git push`, and `bd dolt push` as part of session close. A current "do not push" instruction still wins.
+
+## Committing at logical opportunities
+
+Local commits are expected, not something to ask permission for. A long
+investigation left uncommitted is one crash, one `/tmp` wipe, or one context
+loss away from being lost, and this repository accumulates evidence that
+cannot be regenerated cheaply.
+
+Commit when a unit of work is **verifiable and coherent** — not at every
+save, and not only at session end. Concretely, commit at:
+
+- a slice that passes its own test and leaves the suite green;
+- a recorded finding, refutation, or evidence capture, once written down;
+- a vendored dependency landing with its licence and provenance;
+- before starting a materially different lane of work.
+
+A commit must be **self-contained**: it builds or tests on its own, and its
+message says what changed and what was verified. Do not commit a half-finished
+slice "to save it" — that just moves the breakage to someone else's checkout.
+
+Each logical opportunity is a separate commit. Squashing unrelated slices into
+one commit destroys the history that makes the evidence auditable, and this
+project's whole method depends on being able to see what was known when.
+
+Never commit:
+
+- commercial ROM contents, NVRAM, snapshots, or other local emulator state;
+- generated build trees (`build/`) — see "Keep the build tree out of git";
+- a failing test suite. If a change cannot be made green, leave it uncommitted
+  and say so plainly at handoff.
+
+### How to commit
+
+```bash
+git add <specific paths>       # never `git add -A`; review each path
+git commit                     # message states what changed and what was verified
+git status                     # confirm what was left out, and say why
+```
+
+Remote sync (`git push`, `bd dolt push`) is still gated by the active profile
+above. Local commit authority is not.
+
+## Keep the build tree out of git
+
+`build/` is gitignored and must stay that way. It is a local artifact, not
+source, and a committed tree is worse than no tree at all:
+
+- **CMake caches an absolute source path.** `CMakeCache.txt` records the
+  directory it was configured from. If the repository is moved, renamed, or
+  checked out anywhere else, a committed cache makes `cmake --build build`
+  fail outright with *"The current CMakeCache.txt directory ... is different
+  than the directory ... where CMakeCache.txt was created"*, and the error
+  message does not obviously point at the real cause. This repository has
+  already been renamed once; the stale `build/` left behind broke every build
+  until it was deleted.
+- The tree is large, regenerable, and per-machine.
+
+Configure into a fresh directory instead, and prefer a path outside the repo
+when experimenting:
+
+```bash
+cmake -S native -B build
+cmake --build build -j"$(nproc)"
+ctest --test-dir build
+```
+
+If a committed build tree is ever found in history, delete it rather than
+repairing it, and confirm `.gitignore` still lists `build/` before committing.
 
 ## Session Completion
 
@@ -306,9 +374,13 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 1. **File issues for remaining work** - Create beads for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **Handle git/sync by active profile**:
+4. **Commit at logical opportunities** — commit coherent, self-contained,
+   green slices as they complete, per "Committing at logical opportunities"
+   above. Do not leave a verified slice uncommitted.
+5. **Handle git/sync by active profile**:
    ```bash
-   # Conservative/minimal/default: report status and proposed commands; wait for approval.
+   # Conservative/minimal/default: local commits are expected; push is not.
+   # Report status and the exact push command; wait for approval.
    git status
 
    # Team-maintainer opt-in only, unless current instructions forbid it:
@@ -317,11 +389,15 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
    git push
    git status
    ```
-5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
+6. **Hand off** - Summarize commits made, changes, validation, issue status, and
+   any blocked sync/push step
 
 **Critical rules:**
 - Explicit user or orchestrator instructions override this Beads block.
-- Do not commit or push without clear authority from the active profile or the current user request.
+- Local commits need no per-commit permission under this repository's policy.
+- `git push` and `bd dolt push` still need authority from the active profile or
+  the current user request.
+- Never commit a red suite. Leave it uncommitted and report it instead.
 - If a required sync or push is blocked, stop and report the exact command and error.
 <!-- END BEADS INTEGRATION -->
 
