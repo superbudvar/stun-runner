@@ -29,14 +29,18 @@ twice and requires byte-identical stdout.
 The normal shell remains bounded at 600 frames. For a live window, set
 `STUNRUN_MC68010=1` and `STUNRUN_LIVE_VIDEO=1`; set `STUNRUN_FRAMES=0` to keep
 running until the SDL window is closed. `STUNRUN_LIVE_VIDEO_FPS` optionally
-limits presentation speed (for example, 30 FPS). From the project source root:
+limits presentation speed (for example, 30 FPS). From the project source root,
+use the build-on-demand launcher:
 
 ```sh
-STUNRUN_STUNRUN_DIR=roms/stunrun \
-STUNRUN_MC68010=1 STUNRUN_LIVE_VIDEO=1 STUNRUN_LIVE_VIDEO_FPS=30 \
-STUNRUN_FRAMES=0 STUNRUN_AUDIO_BACKEND=null \
-./native/build/stunrun-native-shell
+./tools/run-native-shell.sh
 ```
+
+The wrapper defaults to `$ROOT/build/native`, builds `stunrun-native-shell` if
+missing, opens a resizable SDL/OpenGL window, and runs until the window closes.
+Override `NATIVE_BUILD_DIR`, `STUNRUN_STUNRUN_DIR`, `STUNRUN_VIDEO_BACKEND`,
+`STUNRUN_LIVE_VIDEO_FPS`, or `STUNRUN_FRAMES` to select another build, ROM
+directory, backend, pace, or bounded run length.
 
 This displays the live 68010-written GSP share, not a complete game picture:
 the TMS34010 GSP does not yet execute the uploaded display list, so the view
