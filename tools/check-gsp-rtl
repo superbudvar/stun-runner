@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Verify the vendored TMS34010 SystemVerilog tree against its recorded manifest.
+
+Checks, in order:
+
+1. Every file in ``manifest.json`` is present with the recorded SHA-256 and size.
+2. No unexpected file has appeared in the vendored subtree.
+3. ``LICENSE`` is present and still the MIT text.
+4. If Verilator is available, the RTL lints clean using upstream's own
+   invocation from ``scripts/lint.sh`` (package-first source order,
+   ``-Wno-MULTITOP``).
+
+Exits non-zero on the first failure. This is a drift check, not a
+correctness check: passing here does not mean the GSP integration works, only
+that the third-party tree is byte-identical to the pinned upstream commit and
+still compiles.
+"""
+
+import argparse
+import hashlib
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+VENDOR = ROOT / "third_party" / "tms34010_sv"
+MANIFEST = VENDOR / "manifest.json"
+EXCLUDED_FROM_DRIFT = {"manifest.json", "PROVENANCE.md"}
+
+
+def package_first_sources():
+    """Upstream compiles tms34010_pkg.sv before everything else; so must we."""
+    pkg = VENDOR / "rtl" / "tms34010_pkg.sv"
+    if not pkg.is_file():
+        raise SystemExit(f"missing package source: {pkg}")
+    ordered = [pkg]
+    for path in sorted((VENDOR / "rtl").rglob("*.sv")):
+        if path != pkg:
+            ordered.append(path)
+    return ordered
+
+
+def check_manifest(errors):
+    if not MANIFEST.is_file():
+        errors.append(f"missing manifest: {MANIFEST}")
+        return
+    doc = json.loads(MANIFEST.read_text())
+    recorded = {entry["path"]: entry for entry in doc["files"]}
+
+    for rel, entry in sorted(recorded.items()):
+        path = VENDOR / rel
+        if not path.is_file():
+            errors.append(f"missing vendored file: {rel}")
+            continue
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != entry["sha256"]:
+            errors.append(
+                f"content drift: {rel}\n"
+                f"  recorded sha256 {entry['sha256']}\n"
+                f"  actual   sha256 {actual}"
+            )
+        elif path.stat().st_size != entry["bytes"]:
+            errors.append(f"size drift: {rel}")
+
+    present = {
+        str(p.relative_to(VENDOR))
+        for p in VENDOR.rglob("*")
+        if p.is_file() and p.name not in EXCLUDED_FROM_DRIFT
+    }
+    for rel in sorted(present - set(recorded)):
+        errors.append(
+            f"unexpected file in vendored subtree: {rel}\n"
+            "  Vendored third-party source must stay byte-identical to upstream. "
+            "If this file is intentional, re-record the manifest deliberately."
+        )
+
+    print(f"manifest: {len(recorded)} recorded files checked against "
+          f"{doc['commit'][:12]} ({doc['license']})")
+
+
+def check_license(errors):
+    licence = VENDOR / "LICENSE"
+    if not licence.is_file():
+        errors.append("missing LICENSE")
+        return
+    text = licence.read_text()
+    if "MIT License" not in text:
+        errors.append("LICENSE is no longer the MIT text")
+    else:
+        print("licence: MIT present")
+
+
+def check_lint(errors, verilator):
+    if verilator is None:
+        print("lint: SKIPPED (verilator not found)")
+        return
+    cmd = [verilator, "--lint-only", "-Wno-MULTITOP"]
+    cmd += [str(p) for p in package_first_sources()]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        errors.append(
+            "lint failed:\n" + (proc.stdout + proc.stderr).strip()[-4000:]
+        )
+        return
+    print(f"lint: clean ({verilator})")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--verilator",
+        default=shutil.which("verilator"),
+        help="verilator binary (default: found on PATH)",
+    )
+    args = parser.parse_args()
+
+    errors = []
+    check_manifest(errors)
+    check_license(errors)
+    check_lint(errors, args.verilator)
+
+    if errors:
+        print("\nFAILED:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        return 1
+    print("RESULT PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

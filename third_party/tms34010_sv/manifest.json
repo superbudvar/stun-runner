@@ -1,0 +1,183 @@
+{
+  "schema": "stunrun-tms34010-sv-manifest/v1",
+  "upstream": "https://github.com/birdybro/TMS34010_sv",
+  "commit": "94a258e80a07ceb4303ce0b99818df832e96007f",
+  "commit_date": "2026-07-30T06:58:16-06:00",
+  "commit_author": "Kevin Coleman",
+  "license": "MIT",
+  "vendored_subtree": "rtl/ (all .sv) plus LICENSE",
+  "file_count": 34,
+  "total_bytes": 621490,
+  "files": [
+    {
+      "path": "LICENSE",
+      "sha256": "199fe26ee92d4b68553d1603c604883fd28819a6e958ad403e0d93a63a7f88a2",
+      "bytes": 1070
+    },
+    {
+      "path": "rtl/cdc/tms34010_cdc_mailbox.sv",
+      "sha256": "594b7c325836525875832ef9851f4dbb86050978de2930761df69b75542d2fe6",
+      "bytes": 2945
+    },
+    {
+      "path": "rtl/cdc/tms34010_emu_bridge.sv",
+      "sha256": "8092de77fa7b5c57d55f30793a512a7b1ea63a3f1f91b11e74d7e7a4e27565e6",
+      "bytes": 4447
+    },
+    {
+      "path": "rtl/cdc/tms34010_local_bus_bridge.sv",
+      "sha256": "b7b36d89d9a9882e82aa2e619d1a185d7bf013bf436eb696eb41e75e4398ae6e",
+      "bytes": 4712
+    },
+    {
+      "path": "rtl/cdc/tms34010_screen_cdc.sv",
+      "sha256": "084e74bfb2ebe66b98247df4b65259479d0f8097f05c7355b00a9e5c27166f7b",
+      "bytes": 4036
+    },
+    {
+      "path": "rtl/cdc/tms34010_sync_bit.sv",
+      "sha256": "db29d672f756a5bf0dd8e49dff8770454132895066b20d4c012fa32800d9f137",
+      "bytes": 1440
+    },
+    {
+      "path": "rtl/core/tms34010_alu.sv",
+      "sha256": "931db00cd56f36ace180035822ca7e9d3813224d1e33040dcbda8eaa7f942f3a",
+      "bytes": 7640
+    },
+    {
+      "path": "rtl/core/tms34010_core.sv",
+      "sha256": "e8032bcc85787cd04668bc930a40afc96452e122fd6d61f4d0ba46c0f472d885",
+      "bytes": 211381
+    },
+    {
+      "path": "rtl/core/tms34010_decode.sv",
+      "sha256": "01be32a542cb772f0a2f22344e04c13fd737fad9e5b8a976338e30b583ea328a",
+      "bytes": 129238
+    },
+    {
+      "path": "rtl/core/tms34010_divider.sv",
+      "sha256": "b3404ae7a32196ebff97d97e67f2a711e3929646f751f68b3a24f823492c634b",
+      "bytes": 4450
+    },
+    {
+      "path": "rtl/core/tms34010_int_ctrl.sv",
+      "sha256": "b86a2b06e45aeedcb0c91058b78d7ac5e1da41ced0b453476702da05dba9bea4",
+      "bytes": 2790
+    },
+    {
+      "path": "rtl/core/tms34010_pc.sv",
+      "sha256": "f9074cf3eeec800c72d80915ed1e375d341130916f4cd1e016b611cdc8010de7",
+      "bytes": 3160
+    },
+    {
+      "path": "rtl/core/tms34010_regfile.sv",
+      "sha256": "36f1b477673cf7ac06f087541a7410da1ebde1e63a9dcac8972fd43ca740f482",
+      "bytes": 5121
+    },
+    {
+      "path": "rtl/core/tms34010_shifter.sv",
+      "sha256": "83144891c3739858b1c3ab884353a83ad3111ab8e4cf149e3a95cffa0eeb7c13",
+      "bytes": 4985
+    },
+    {
+      "path": "rtl/core/tms34010_status_reg.sv",
+      "sha256": "faa120a46e61fcce23efd1eced26eca24be594fb46910f20ae5e2ec9ae9c0c46",
+      "bytes": 2760
+    },
+    {
+      "path": "rtl/fpga/tms34010_cyclone_v_pll.sv",
+      "sha256": "91e80928b3f2ee7593c55742585e976cd6e516fb152c91c3ce7d62479fe3e627",
+      "bytes": 2801
+    },
+    {
+      "path": "rtl/fpga/tms34010_cyclone_v_top.sv",
+      "sha256": "ebe464be575cd3206c822c329cea926093f3b2de84663e9b137e197a9ea7f385",
+      "bytes": 7220
+    },
+    {
+      "path": "rtl/fpga/tms34010_cyclone_v_video_pll.sv",
+      "sha256": "c1c04d3a16150433d83a76b8eb14ab3b69125f0c913e73ba3617e76c5d19fa92",
+      "bytes": 2444
+    },
+    {
+      "path": "rtl/fpga/tms34010_fpga_io.sv",
+      "sha256": "368b358b68191e0a11e5f352925e702e5c4027045e4c6821ca3b5b1088ea4f53",
+      "bytes": 2893
+    },
+    {
+      "path": "rtl/fpga/tms34010_reset_sync.sv",
+      "sha256": "50e2abffde2f589b928cdd390da3769d1aad054352356f3be7891998bf694b97",
+      "bytes": 1515
+    },
+    {
+      "path": "rtl/host/tms34010_host_bus.sv",
+      "sha256": "baaf755fa260db3af920d390e83a9ec202afe66f3a113c95494286795ee8c8f7",
+      "bytes": 6005
+    },
+    {
+      "path": "rtl/host/tms34010_host_if.sv",
+      "sha256": "a67c4eeab786e46e531bdc3ef4b63fb04c8de21cd6203ca3da30b67f3928e9f9",
+      "bytes": 12311
+    },
+    {
+      "path": "rtl/io/tms34010_io_regs.sv",
+      "sha256": "93655098fae277b106f4eff8f0fe90720b89ae4b55afa628e0d79e6dbf1d0a5d",
+      "bytes": 29183
+    },
+    {
+      "path": "rtl/memory/tms34010_bus_arbiter.sv",
+      "sha256": "7d0a2c93a36402de1297aa835d488c87bdfc88aa38c63a456e8c0e4eeef774de",
+      "bytes": 10716
+    },
+    {
+      "path": "rtl/memory/tms34010_field_sequencer.sv",
+      "sha256": "7eb00ae22d3a6d4974cfde4cfa8d2287c589cfe537a2aaa2202e1f92ee09fa0c",
+      "bytes": 11669
+    },
+    {
+      "path": "rtl/memory/tms34010_local_bus.sv",
+      "sha256": "178b8a3acb3c637203d7fe842b032fb2a0caa779ac44536be8313114766855f2",
+      "bytes": 24649
+    },
+    {
+      "path": "rtl/memory/tms34010_memory_fabric.sv",
+      "sha256": "6b38f77200cd16430fba2b8df1f948a37916032fedebf4b778c8044ab1943ee5",
+      "bytes": 10340
+    },
+    {
+      "path": "rtl/tms34010_pin_system.sv",
+      "sha256": "c4ba730374983b13c8efe373da5ef53dd75c0d5c95423dc741a6e78d0c9ab8c1",
+      "bytes": 13535
+    },
+    {
+      "path": "rtl/tms34010_pkg.sv",
+      "sha256": "d56f84ed38eeb478aaf47a781d35cb70b4d20d4b2795d4718e7c1f8871145828",
+      "bytes": 54002
+    },
+    {
+      "path": "rtl/tms34010_system.sv",
+      "sha256": "d04eab223e4de913136c7c3c9b9b9d791308845ed1e69c5b8d45938fc0e5f740",
+      "bytes": 9515
+    },
+    {
+      "path": "rtl/video/tms34010_display_addr.sv",
+      "sha256": "39e9209989980eb4892766be5976401646a256af897d0497cfdfdb6b2ab5219c",
+      "bytes": 6508
+    },
+    {
+      "path": "rtl/video/tms34010_refresh.sv",
+      "sha256": "4104ec0b58ccf41cdd765b586a42a3ac2dd65d6e47b82c981451b6c63f43b5df",
+      "bytes": 3246
+    },
+    {
+      "path": "rtl/video/tms34010_video.sv",
+      "sha256": "e9c0f1bfdb1bd5830d3a76b4b56c2924e66925909599722670e3f1793e31bed7",
+      "bytes": 10237
+    },
+    {
+      "path": "rtl/video/tms34010_video_subsystem.sv",
+      "sha256": "d4e8cb0604b19ab4e80931d78af789ee63123c94f16812bb7ea203b435dd3e03",
+      "bytes": 12526
+    }
+  ]
+}
