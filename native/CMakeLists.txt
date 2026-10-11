@@ -709,3 +709,24 @@ add_executable(stunrun-gsp-display-slice-test
   render.c)
 set_target_properties(stunrun-gsp-display-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-display-slice-c COMMAND stunrun-gsp-display-slice-test)
+
+# --- vendored TMS34010 SystemVerilog GSP core ------------------------------
+# third_party/tms34010_sv is a pinned, byte-verified copy of
+# birdybro/TMS34010_sv @ 94a258e (MIT).  This test proves the vendored tree is
+# unmodified and still compiles; it does NOT prove the GSP integration works.
+# It always runs: without Verilator the manifest and licence checks still
+# apply and only the lint is skipped, so the ROM-free build never breaks.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME gsp-rtl-vendored
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../tools/check-gsp-rtl)
+  set_tests_properties(gsp-rtl-vendored PROPERTIES TIMEOUT 300)
+endif()
+
+# The Verilated core itself is OPTIONAL.  It is a provider, not a dependency.
+# gsp_rtl/ is still configured without Verilator: the board model is plain
+# C99 with no simulator in its dependency chain, so its test always runs and
+# always guards the map.  Only the Verilated core and its harness are skipped.
+# This matters because the public ROM-free build must not acquire a
+# heavyweight simulator dependency.
+add_subdirectory(gsp_rtl)
