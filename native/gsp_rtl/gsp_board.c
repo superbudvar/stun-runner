@@ -55,20 +55,32 @@ void gsp_board_reset(gsp_board_t *b)
 }
 
 /* m_mask_table[data * 2 + half], for the multisync board.
- * harddriv_v.cpp:43-61 builds two 32-bit masks per data word: the low halfword
- * takes bits 0x0001/0x0004/0x0010/0x0040 and the high halfword the same four
- * bits shifted left by 8, each selecting one 2-bit pixel of a 16-bit
- * halfword.  `half` selects which of the two. */
+ *
+ * harddriv_v.cpp:28 defines  MASK(n) = 0x000000ff << (n * 8)  -- a full BYTE
+ * lane, not a 2-bit pixel.  harddriv_v.cpp:43-61 then builds two masks per
+ * data word: the low one tests data bits 0x0001/0x0004/0x0010/0x0040 and the
+ * high one tests 0x0100/0x0400/0x1000/0x4000, and BOTH map onto the same byte
+ * lanes 0..3.
+ *
+ * Two ways to get this wrong, both of which were written here first:
+ *  - using a 2-bit pixel mask (0x3 << n*2) instead of a byte lane, and
+ *  - shifting the lane by 8 for the high half instead of switching which data
+ *    bits are tested.
+ *
+ * Caught by replaying the captured bus stream: under the wrong mask every
+ * diverging 4-byte word in the residue had a 2bpp expander as its last writer,
+ * and not one had a plain VRAM write. */
 static uint32_t gsp_2bpp_mask_word(uint16_t data, unsigned half)
 {
-    static const uint16_t bits[4] = { 0x0001u, 0x0004u, 0x0010u, 0x0040u };
+    static const uint16_t bits[2][4] = {
+        { 0x0001u, 0x0004u, 0x0010u, 0x0040u },
+        { 0x0100u, 0x0400u, 0x1000u, 0x4000u }
+    };
     uint32_t mask = 0;
-    unsigned shift = half ? 8u : 0u;
-    unsigned i;
-    for (i = 0; i < 4u; i++) {
-        if (data & bits[i])
-            mask |= 0x00000003u << (i * 2u + shift);
-    }
+    unsigned n;
+    for (n = 0; n < 4u; n++)
+        if (data & bits[half][n])
+            mask |= 0x000000ffu << (n * 8u);
     return mask;
 }
 

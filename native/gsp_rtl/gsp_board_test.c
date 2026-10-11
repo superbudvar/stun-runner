@@ -309,13 +309,17 @@ static void test_hstdat_dispatches_on_address(void)
     gsp_board_host_write(&b, 0x04u, 0x0010u);
     gsp_board_host_write(&b, 0x0cu, 0x0001u); /* one 2-bit pixel, low half */
     CHECK(b.vram_writes > pal_before);
-    /* Bit 0 of the data selects MASK(0) = 0x3, so the colour's low two bits
-     * (0x5a & 3 = 2) must appear.  Assembled big-endian, that field is the
-     * least significant byte of the masked word.
+    /* Bit 0 of the data selects MASK(0), which is a full BYTE lane
+     * (0x000000ff << 0), not a 2-bit pixel.  Assembled big-endian that lane
+     * is the least significant byte of the masked word, so the whole colour
+     * byte must land there.
      *
      * HSTADR 0x02000010 -> offset (0x10 >> 1) = 8, and the stride is
      * offset * 8, so the first masked word starts at byte 0x40. */
-    CHECK_EQ(b.vram[0x40u + 3u] & 0x03u, 0x02u);
+    CHECK_EQ(b.vram[0x43u], 0x5au);
+    CHECK_EQ(b.vram[0x40u], 0x00u); /* other lanes untouched by this mask */
+    CHECK_EQ(b.vram[0x41u], 0x00u);
+    CHECK_EQ(b.vram[0x42u], 0x00u);
 
     /* HSTDAT -> control low: byte-wide, and it must feed the 2bpp colour. */
     gsp_board_host_write(&b, 0x00u, 0xf400u);

@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Replay a captured MC68010 -> GSP bus stream through the board model and
+# compare the resulting VRAM against the native model's own dump.
+#
+# This is the acceptance for stun-runner-gsvp.4: the board model, written
+# independently of native/musashi_cpu.c, must reproduce the VRAM that the
+# native model produced from the same ordered bus traffic. Byte-identical is
+# the pass condition; a percentage is not.
+#
+# It is NOT a CTest: it needs a captured run, which needs the commercial ROM
+# set and a few minutes of emulated time. tools/test-public and the CTest suite
+# cover everything that does not.
+#
+# Usage: tools/check-gsp-replay [DUMP_DIR]
+#   DUMP_DIR defaults to $STUNRUN_GSP_DUMP_DIR, then /tmp/opencode/gsp-dump.
+#
+# To produce a dump:
+#   SDL_VIDEODRIVER=dummy STUNRUN_MC68010=1 \
+#   STUNRUN_STUNRUN_DIR=roms/stunrun \
+#   STUNRUN_DUMP_DIR=<dir> STUNRUN_FRAMES=600 \
+#   STUNRUN_AUDIO_BACKEND=null STUNRUN_VIDEO_BACKEND=null \
+#   build/stunrun-native-shell
+#
+# The headless backend is not optional: with a ROM directory set the shell
+# segfaults in libGLX during exit(). See docs/mc68010-boot-findings.md 15.7.
+
+set -euo pipefail
+
+repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+dump_dir=${1:-${STUNRUN_GSP_DUMP_DIR:-/tmp/opencode/gsp-dump}}
+
+harness="$repo_dir/build/gsp_rtl/stunrun-gsp-rtl-harness"
+if [[ ! -x "$harness" ]]; then
+    cat >&2 <<EOF
+$0: $harness not found.
+
+Build it with Verilator available (it is discovered automatically from
+\$HOME/.local/share/verilator-5.052):
+
+    cmake -S "$repo_dir/native" -B "$repo_dir/build"
+    cmake --build "$repo_dir/build" -j"\$(nproc)"
+
+See third_party/tms34010_sv/PROVENANCE.md for why Verilator is not a system
+package here.
+EOF
+    exit 69
+fi
+
+events="$dump_dir/gsp_bus_events.bin"
+vram="$dump_dir/gsp_vram.bin"
+for f in "$events" "$vram"; do
+    if [[ ! -f "$f" ]]; then
+        echo "$0: missing $f" >&2
+        echo "  capture a run first; see the usage comment at the top of this script." >&2
+        exit 66
+    fi
+done
+
+if [[ -f "$dump_dir/gsp_bus_events.truncated" ]]; then
+    echo "$0: REFUSING to compare -- the captured stream is incomplete." >&2
+    cat "$dump_dir/gsp_bus_events.truncated" >&2
+    exit 1
+fi
+
+exec "$harness" --replay-host-writes "$events" --ref-vram "$vram"

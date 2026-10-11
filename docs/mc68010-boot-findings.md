@@ -2833,7 +2833,54 @@ are 4-byte granular, so comparing them as 16-byte cells is already an
 approximation; the next bisect should compare at 4-byte granularity. Left
 **open**.
 
-### 15.5 Tests that asserted an address the board never uses
+### 15.5 The 2bpp mask was a 2-bit pixel; it is a byte lane
+
+Comparing at 4-byte granularity -- the natural granularity of a 2bpp write,
+and the granularity at which 16-byte cell comparison is an approximation --
+localised the last residue at once: **every** diverging 4-byte word had a 2bpp
+expander as its last writer, and not one had a plain VRAM write. A divergence
+confined to a single code path is a bug in that path, not a scheduling or
+ordering problem.
+
+The mask was wrong. `harddriv_v.cpp:28` defines
+
+```c
+#define MASK(n)  NATIVE_ENDIAN_VALUE_LE_BE(0x000000ffUL << ((n) * 8), ...)
+```
+
+so each selected data bit drives a **full byte lane**, not a 2-bit pixel. And
+`harddriv_v.cpp:43-61` builds two masks per data word from two *different sets
+of data bits* -- `0x0001/0x0004/0x0010/0x0040` for the low mask,
+`0x0100/0x0400/0x1000/0x4000` for the high one -- mapping both onto the same
+byte lanes.
+
+The implementation here had made **both** opposite assumptions at once: it
+used `0x3 << (n * 2)` (2-bit pixels), and it shifted the lane by eight for the
+high half instead of switching which data bits were tested. Two errors
+pointing opposite ways is why the residue was small and structured rather than
+gross.
+
+```text
+before:  6,614 / 524,288 bytes differ  (98.74%)
+after:       0 / 524,288 bytes differ  (byte-identical)
+  board: host_writes=901348 vram_writes=15104880 unmapped_writes=39
+  byte sum ours=52878584 reference=52878584
+```
+
+`unmapped_writes=39` independently matches the 39 host-window writes whose
+address selects no region, so the dispatch is now correct in both the writes it
+performs and the ones it declines.
+
+The lesson worth keeping: **compare at the granularity the code under test
+actually writes at.** Sixteen bytes is right for a host VRAM cell and wrong for
+a 2bpp expander; picking the wrong one made the residue look like scattered
+noise across six buckets instead of one clean signal.
+
+`test_hstdat_dispatches_on_address` now asserts the full byte lane, and is
+verified as a negative control: reverting the mask to the 2-bit form makes
+`gsp-board-map-c` fail, so the test genuinely pins the semantics.
+
+### 15.6 Tests that asserted an address the board never uses
 
 Correcting HSTDAT to dispatch on HSTADR immediately broke `gsp-board-map-c`,
 and rightly so. Three tests set `HSTADR` to `0x0100`, `0x0200` and
