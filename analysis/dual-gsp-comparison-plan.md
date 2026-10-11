@@ -66,6 +66,37 @@ locally under `/tmp/opencode/verilator-install` (source tag commit
 `ea338be98e1e838d3518809ce8899f85a009963c`), without system package or
 repository changes.
 
+> **SUPERSEDED 2026-10-11 by explicit user decision.** The paragraph above
+> recorded this candidate as "not adopted" and warned against substituting it
+> silently, because using it instead of a MAME-derived core changes what the
+> dual-window comparison means. The user has now chosen it knowingly, so the
+> caveat no longer binds.
+>
+> Concretely: `stun-runner-a10.2`, the MAME C++ adapter, is **retired rather
+> than pursued**. Its blocked conclusion still stands — current MAME's
+> `tms34010_device` derives from `cpu_device` + `device_video_interface` and is
+> not embeddable as a standalone library — but the lane is no longer the path
+> forward. Forward work moved to `stun-runner-gsvp` and its children.
+>
+> The core is vendored at the pinned commit under `third_party/tms34010_sv/`,
+> with `PROVENANCE.md` recording the upstream, the commit, and the verification
+> actually performed rather than the verification claimed.
+>
+> **Why this core fits STUN Runner specifically.** The board's GSP has *no ROM*
+> — `mainpcb:user1` is the ADSP object ROM — which is normally disqualifying for
+> a CPU core. It is not: `tms34010_pkg.sv:110` makes `RESET_PC` an overridable
+> parameter and the PC loads from `RESET_VECTOR_ADDR` (`0xFFFF_FFE0`) through
+> the memory bus, inside the mirrored VRAM the 68010 fills. The core therefore
+> boots ROM-less, which is exactly this board's arrangement. Verified: it takes
+> its level-0 vector from VRAM and reaches a seeded entry in 10 cycles with
+> zero unmapped accesses.
+>
+> **Two claims refuted while integrating it**, recorded in
+> `docs/mc68010-boot-findings.md` section 14 rather than here because neither is
+> readable off the RTL headers: the core address is a **byte** address (no
+> `>> 3`, despite `addr_shift 3` and a PC that advances by 16), and HCS must be
+> **asserted** at reset or the core never fetches its vector at all.
+
 The temporary older MAME4ALL TMS34010 source is a more direct MAME-derived
 provider candidate: it exposes CPU reset/execute/context and host-port calls,
 but still uses the older MAME global memory, timer, CPU-context and screen

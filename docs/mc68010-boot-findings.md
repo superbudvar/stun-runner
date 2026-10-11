@@ -2624,3 +2624,103 @@ so each independent provider can apply its own decode. The synthetic
 event and does not overwrite HSTADRH. It also checks the raw `$C00020` event is
 preserved while its invalid decoded register has no modeled host-register
 effect. The host observer and all 50 native CTests pass after this correction.
+
+## 14. A working TMS34010 core: the ROM-less GSP boot
+
+Bead `stun-runner-gsvp`. The GSP now actually executes. This is the first
+entry in this log whose subject is a *solution* rather than a correction, and
+it also carries a refuted claim of its own.
+
+### 14.1 The GSP has no ROM, and that is what makes a core usable here
+
+`src/mame/atari/harddriv.cpp:2691-2729` (`ROM_START(stunrun)`) declares no GSP
+ROM region at all. `mainpcb:user1` is the **ADSP** object ROM ("384k for ADSP
+object ROM"). The GSP program is uploaded by the 68010 into VRAM, the same
+way the ADSP program is, and the boot entry `$0067A` does exactly that:
+
+```text
+$0067A: ori.w   #$1800,$C00008.l      ; HSTCTL |= 0x1800 (increment on)
+$00682: lea     $C0000C.l,A0          ; A0 = HSTDAT
+$00688: move.l  #$FF800000,$C00002.l  ; HSTADRH/L = 0xFF800000
+$00692: move.w  #$0383,D2
+$00696: move.w  #$00FF,D1
+$0069A: move.w  D0,(A0)               ; the upload itself
+```
+
+A ROM-less board is normally disqualifying for a CPU core. It is not here:
+`third_party/tms34010_sv/rtl/tms34010_pkg.sv:110` defines `RESET_PC = '0` as
+an **overridable parameter**, and `tms34010_pc.sv:61` loads the PC from
+`RESET_VECTOR_ADDR` (`= TRAP_VECTOR_BASE = 0xFFFF_FFE0`, `tms34010_pkg.sv:342`)
+through the normal memory bus. On this board `0xFFFFFFE0` is inside the
+mirrored VRAM share, so the 68010 supplies the entry point the core needs.
+Measured: the core reaches a seeded entry at byte `0xFF800000` in 10 cycles
+with zero unmapped accesses (`gsp-rtl-romless-boot`).
+
+### 14.2 REFUTED: the core address is a bit address and needs `>> 3`
+
+This is the claim that took the longest to kill and is worth recording so it
+is not repeated.
+
+The RTL says otherwise three times. `tms34010.cpp:67` declares the program
+space with `addr_shift 3`; `tms34010_pc.sv:20` ties the PC advance to
+`INSTR_WORD_BITS`; and `tms34010_core.sv:3629` advances the PC by
+`INSTR_WORD_BITS`. MAME agrees on the increment: `tms34010.cpp:164`
+`#define SKIP_WORD() (m_pc += (2 << 3))` — sixteen units per 16-bit
+instruction. Since `emumem.h:2078` defines
+`addr2byte(a) = a >> addr_shift`, the obvious reading is that the device
+address is a **bit** address and the board byte address is `addr >> 3`.
+
+It is wrong. Measured against the pinned MAME with
+`mame/lua/gsp-address-unit-probe.lua`, at frame 600 with the GSP running:
+
+```text
+PROBE frame600 pc=0xFFF41680
+PROBE   pc-as-byte       addr=0xFFF41680 value=0xCBFC   <- real program data
+PROBE   pc-shift3        addr=0x1FFE82D0 value=0xFFFF   <- floating bus
+PROBE   vram-base        addr=0xFF800000 value=0x8484   <- VRAM, confirms byte units
+```
+
+`0xFFFF` is MAME's floating-bus value for unmapped space, so the `>> 3`
+reading addresses nothing. The PC value is already a byte address in
+program-space units, and no shift belongs in the conversion. Confirmed in the
+harness: at shift 3 the reset-vector fetch lands outside every mapped region
+and `unmapped_reads` goes from 0 to 2; at shift 0 it is 0.
+
+Two independent facts corroborate it. Upstream's own
+`sim/models/sim_memory_model.sv` indexes its backing store with
+`word_addr[IDX_WIDTH + LOCAL_WORD_ADDR_LSB - 1 : LOCAL_WORD_ADDR_LSB]` where
+`LOCAL_WORD_ADDR_LSB = 4` — **16-byte** physical cells, not 16-bit ones. And
+section 12.2 above already established that this board's host writes expand to
+exactly a 16-byte cell. A 16-bit TMS34010 word is addressed here as a 16-byte
+cell, which is why the PC advances by 16 in byte units.
+
+**Do not add a `>> 3` to the harness.** `--addr-shift 0` is the measured
+answer; the option survives only so the refuted reading can be reproduced.
+
+### 14.3 HCS at reset selects the boot path
+
+`tms34010_core.sv:3590-3593` (CORE_RESET) states it: *"HCS high at reset
+selects host-present mode and defers the level-0 vector fetch until the host
+clears HLT.  Otherwise fetch the 32-bit vector through the normal memory
+interface."* With HCS deasserted the core never fetches its vector at all: it
+spins at PC 0, and because byte address 0 is the `.noprw()` self-test window
+that is an endless `0x0000` fetch. Observed directly — PC stayed 0 with
+`instr=0x0000`. Asserting HCS selects the architectural ROM-less boot.
+
+`HSTCTL` bit 15 is `HLT` (`tms34010_pkg.sv:461`), written through the host
+port, which is how a real host would clear host-present mode instead. Both
+paths exist; this board needs the ROM-less one.
+
+### 14.4 What the C slice covers
+
+`native/gsp_rtl/gsp_board.{h,c}` is the board model: the `multisync_gsp_map`
+decode including `unmap_value_high()`, the 512 KiB `gsp_vram` share (section
+12.1), the separate 2bpp window, both palette planes, both control shares, and
+the four-register host port with its 16-byte `HSTDAT` expansion and `HSTCTL`
+post-increment. It is plain C99, so `gsp-board-map-c` tests the map with
+neither Verilator nor commercial ROMs. `native/gsp_rtl/gsp_rtl_main.cpp` is the
+thin Verilated driver and owns nothing but clocking and the cycle handshake.
+
+The host-register decode is the board-correct `(byte_offset >> 2) ^ 1`, per
+section 13 above; the tests pin it against MAME's word-index form so the two
+cannot be confused again.
