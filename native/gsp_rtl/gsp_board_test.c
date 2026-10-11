@@ -223,16 +223,21 @@ static void test_hstdat_cell_expansion(void)
     unsigned i;
     gsp_board_reset(&b);
 
-    gsp_board_host_write(&b, 0x00u, 0x0000u); /* HSTADRH = 0      */
-    gsp_board_host_write(&b, 0x04u, 0x0100u); /* HSTADRL = 0x0100 */
-    gsp_board_host_write(&b, 0x0cu, 0xc37fu); /* HSTDAT           */
+    /* HSTADR must select the VRAM share.  The ROM's own boot fill uses
+     * `move.l #$FF800000,$C00002.l` (findings 13.1), and an address outside
+     * 0xFF000000-0xFFFFFFFF lands in no region at all -- so a test that uses
+     * a small HSTADR like 0x0100 is not testing the board, it is testing
+     * an address the board never sees. */
+    gsp_board_host_write(&b, 0x00u, 0xff80u); /* HSTADRH */
+    gsp_board_host_write(&b, 0x04u, 0x1000u); /* HSTADRL -> 0xFF801000 */
+    gsp_board_host_write(&b, 0x0cu, 0xc37fu); /* HSTDAT                 */
 
-    CHECK_EQ(b.hstadr, 0x0100u);
+    CHECK_EQ(b.hstadr, 0xff801000u);
     for (i = 0; i < 8u; i++) {
-        CHECK_EQ(b.vram[0x0100u + i], 0x7fu);
-        CHECK_EQ(b.vram[0x0108u + i], 0xc3u);
+        CHECK_EQ(b.vram[0x1000u + i], 0x7fu);
+        CHECK_EQ(b.vram[0x1008u + i], 0xc3u);
     }
-    CHECK_EQ(b.vram[0x0110u], 0x00u); /* cell is exactly 16 bytes */
+    CHECK_EQ(b.vram[0x1010u], 0x00u); /* cell is exactly 16 bytes */
     CHECK_EQ(b.vram_writes, 16u);
 }
 
@@ -245,18 +250,21 @@ static void test_hstctl_increment(void)
     static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
     gsp_board_reset(&b);
 
-    gsp_board_host_write(&b, 0x00u, 0x0000u);
-    gsp_board_host_write(&b, 0x04u, 0x0200u);
+    /* HSTADRH is loaded with the real 0xFF8x high half: HSTADR is masked by
+     * the region decode, so an address like 0x0200 would select no region at
+     * all and the store would be discarded. */
+    gsp_board_host_write(&b, 0x00u, 0xff80u);
+    gsp_board_host_write(&b, 0x04u, 0x0200u); /* -> 0xFF800200 */
 
     /* Increment clear: address must not move. */
     gsp_board_host_write(&b, 0x08u, 0x0000u); /* HSTCTL = 0 */
     gsp_board_host_write(&b, 0x0cu, 0x1111u);
-    CHECK_EQ(b.hstadr, 0x0200u);
+    CHECK_EQ(b.hstadr, 0xff800200u);
 
     /* Increment set: one cell forward, after the store. */
     gsp_board_host_write(&b, 0x08u, 0x0800u); /* HSTCTL = 0x0800 */
     gsp_board_host_write(&b, 0x0cu, 0x2222u);
-    CHECK_EQ(b.hstadr, 0x0210u);
+    CHECK_EQ(b.hstadr, 0xff800210u);
     CHECK_EQ(b.vram[0x0200u], 0x22u); /* stored at the OLD address */
     CHECK_EQ(b.vram[0x0210u], 0x00u); /* the new address is not yet written */
 
@@ -266,6 +274,64 @@ static void test_hstctl_increment(void)
     CHECK_EQ(b.hstadr, 0x00070210u);
     gsp_board_host_write(&b, 0x04u, 0x0000u);
     CHECK_EQ(b.hstadr, 0x00070000u);
+}
+
+/* HSTDAT must be DISPATCHED on the effective HSTADR address.
+ *
+ * This is the regression test for the bug that made the 901,354-event replay
+ * diverge on 2,062 cells: every HSTDAT was expanded into a 16-byte VRAM cell
+ * unconditionally, so the 2bpp window, the palette planes and the control
+ * shares were silently ignored.  The failure looked like arithmetic drift --
+ * our values came out looking like cell indices -- rather than a missing
+ * branch, which is exactly why it survived the earlier fixes.
+ *
+ * Counter-check for the dispatch itself: the same register index reaches a
+ * different store purely because HSTADR differs. */
+static void test_hstdat_dispatches_on_address(void)
+{
+    static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
+    gsp_board_reset(&b);
+    b.ctrl_lo[0] = 0x5a;   /* the 2bpp colour source */
+
+    /* HSTDAT -> palette low, entry 0 of bank 0. */
+    gsp_board_host_write(&b, 0x00u, 0xf500u);
+    gsp_board_host_write(&b, 0x04u, 0x0000u);
+    gsp_board_host_write(&b, 0x0cu, 0x1234u);
+    CHECK_EQ(b.pal_lo[0], 0x12u);
+    CHECK_EQ(b.pal_lo[1], 0x34u);
+    /* And nothing landed in VRAM. */
+    CHECK_EQ(b.vram_writes, 0u);
+
+    /* The SAME HSTDAT, with HSTADR in the 2bpp window, must reach the VRAM
+     * share through the masked expander instead -- not the palette. */
+    uint64_t pal_before = b.vram_writes;
+    gsp_board_host_write(&b, 0x00u, 0x0200u);
+    gsp_board_host_write(&b, 0x04u, 0x0010u);
+    gsp_board_host_write(&b, 0x0cu, 0x0001u); /* one 2-bit pixel, low half */
+    CHECK(b.vram_writes > pal_before);
+    /* Bit 0 of the data selects MASK(0) = 0x3, so the colour's low two bits
+     * (0x5a & 3 = 2) must appear.  Assembled big-endian, that field is the
+     * least significant byte of the masked word.
+     *
+     * HSTADR 0x02000010 -> offset (0x10 >> 1) = 8, and the stride is
+     * offset * 8, so the first masked word starts at byte 0x40. */
+    CHECK_EQ(b.vram[0x40u + 3u] & 0x03u, 0x02u);
+
+    /* HSTDAT -> control low: byte-wide, and it must feed the 2bpp colour. */
+    gsp_board_host_write(&b, 0x00u, 0xf400u);
+    gsp_board_host_write(&b, 0x04u, 0x0000u);
+    gsp_board_host_write(&b, 0x0cu, 0x00c3u);
+    CHECK_EQ(b.ctrl_lo[0], 0xc3u);
+
+    /* An HSTADR outside every mapped region is dropped and counted, not
+     * silently turned into a VRAM write. */
+    uint64_t unmapped_before = b.unmapped_writes;
+    uint64_t vram_before = b.vram_writes;
+    gsp_board_host_write(&b, 0x00u, 0x1234u);
+    gsp_board_host_write(&b, 0x04u, 0x5678u);
+    gsp_board_host_write(&b, 0x0cu, 0xffffu);
+    CHECK(b.unmapped_writes > unmapped_before);
+    CHECK_EQ(b.vram_writes, vram_before);
 }
 
 static void test_host_readback(void)
@@ -313,6 +379,7 @@ int main(void)
     test_host_register_decode();
     test_hstdat_cell_expansion();
     test_hstctl_increment();
+    test_hstdat_dispatches_on_address();
     test_host_readback();
     test_region_roundtrip();
 

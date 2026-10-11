@@ -2783,47 +2783,77 @@ and refused the file. The harness now includes `native/musashi_cpu.h` and uses
 `sizeof(musashi_gsp_bus_event_t)`. Guessing this layout misparses every record
 while still looking like a data problem.
 
-### 15.4 Where the replay stands: 95.4%, residual not yet attributed
+### 15.4 HSTDAT was never dispatched on the address (the real cause)
 
-With the correct stream and stride:
+The residual is **attributed**, and the cause was a missing branch rather
+than arithmetic drift.
+
+`gsp_board_host_write()` expanded **every** HSTDAT into a 16-byte VRAM cell,
+unconditionally. But HSTADR selects one of several regions, and the native
+model dispatches on it in `gsp_mem_write_word()`:
 
 ```text
-gsp-rtl replay: 901354 bus events
-  host-window events=901348  reset-control events=6 (released=3 asserted=3)
-  sequence monotonic=yes
-  board: host_writes=901348 vram_writes=14352160 unmapped_writes=0
-    differing bytes : 23979 / 524288   (95.43% identical)
+843,688  0xFF000000-0xFFFFFFFF   VRAM share, 16-byte cell expansion
+ 51,200  0x02000000-0x020FFFFF   2bpp masked expander over the SAME share
+  1,024  0xF5000000              palette low        1,024  0xF5800000  palette high
+     29  0xF4800000              control high            6  0xF4000000  control low
+     39  0xC000xxxx              unmapped
 ```
 
-The parse is sound: the sequence is monotonic, all 901,348 host-window events
-address `0x00C0xxxx` (the host port), and the six reset-control events are
-three assert/release pairs, consistent with the `/GSPRES` writes at
-`$60400C`/`$60401C`.
+Those counts are reproducible from the captured stream and match
+`gsp_summary.txt` exactly, which is how the dispatch was confirmed rather than
+assumed.
 
-HSTDAT destinations decompose as 843,688 VRAM, 51,200 through the 2bpp
-expander, 1,024 into each palette plane, and 35 into the control shares --
-which matches the shell's own region counts (`gsp_summary.txt`) exactly.
+The symptom was distinctive: the first differing cell read `33 33 33 ff ...`
+in our output where the reference had `00 ff 00 ff ...`, and `0x33` was the
+**cell index**. That is what a write lands like when it is meant for one
+region, arrives in another, and has its offset parameterise the data. Two
+corrections followed:
 
-**The residual is not yet attributed.** It is 2,062 of 32,768 sixteen-byte
-cells, and all 2,062 were written by the host stream, so it is an ordering or
-value divergence rather than content the host never produced. Two candidate
-causes were checked and eliminated:
+- HSTDAT now dispatches on HSTADR across all six regions, and an address in
+  none of them is counted as unmapped rather than turned into a VRAM write.
+- The 2bpp expander covers **eight** four-byte words (32 bytes), alternating
+  the low and high halfword mask, not the two words an obvious reading gives.
 
-- The 2bpp window is **not** a separate store. `hdgsp_vram_2bpp_w`
-  (harddriv_v.cpp:304-320) is a masked read-modify-write into the *main* VRAM
-  share with a colour taken from `gsp_control_lo[0]`. The board model had it
-  as a private buffer; corrected, including the `offset * 8` byte stride and
-  the big-endian masked-word assembly that come from MAME casting to
-  `uint32_t*` over a `uint16_t` share.
-- HSTADRH takes all 16 bits. Masking it to 8 discarded the `0xC000` the ROM
-  writes. The resulting change was masked away by the 512 KiB share mask, so
-  it is harmless here but wrong on its face, and `host_w()` stores `data`
-  whole.
+Result: divergent bytes fell from **23,979 to 6,614** of 524,288
+(**98.74% identity**), and the two buckets covering the 2bpp destination
+range, `0x020000-0x023fff` and `0x040000-0x043fff`, went from 7,656 and 7,536
+differing bytes to **clean**. That is the confirmation: the buckets the fix
+should have eliminated did disappear.
 
-Neither changed the result, which means the cause is elsewhere. Recorded as
-**open**, not closed: this is the state `stun-runner-gsvp.4` is in.
+Two supporting checks: the 2bpp colour source `ctrl_lo[0]` agrees with the
+reference dump at 0xFF and `ctrl_hi[0]` is 0 in both, so the colour was never
+the problem.
 
-### 15.5 A shell crash worth recording separately
+**What remains.** 6,614 bytes, concentrated in the low 64 KiB, across 870
+cells: 808 whose last writer was the 2bpp expander, 62 a plain VRAM write.
+Both now reach the correct store, so the residue is a finer-granularity
+effect inside those paths rather than a missing region. Note that 2bpp writes
+are 4-byte granular, so comparing them as 16-byte cells is already an
+approximation; the next bisect should compare at 4-byte granularity. Left
+**open**.
+
+### 15.5 Tests that asserted an address the board never uses
+
+Correcting HSTDAT to dispatch on HSTADR immediately broke `gsp-board-map-c`,
+and rightly so. Three tests set `HSTADR` to `0x0100`, `0x0200` and
+`0x00012345` and expected a VRAM write. None of those is in
+`0xFF000000-0xFFFFFFFF`, so each selects **no region at all** and the store
+is correctly discarded. They had been passing because the model ignored the
+address entirely.
+
+They now use addresses the board actually sees, `0xFF801000` and
+`0xFF800200`, matching the ROM's own boot fill
+`move.l #$FF800000,$C00002.l` (findings 13.1). A new
+`test_hstdat_dispatches_on_address` asserts the dispatch directly: the same
+register index reaching the palette, then the 2bpp window, then control low,
+then an unmapped address, with the control write feeding the 2bpp colour.
+
+The general lesson: a test that passes because the code under test ignores
+its input is not a test. A missing branch that every input value satisfies
+stays invisible until something real depends on it.
+
+### 15.6 A shell crash worth recording separately
 
 With a ROM directory set, the shell segfaults on exit:
 

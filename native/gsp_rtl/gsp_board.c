@@ -72,6 +72,16 @@ static uint32_t gsp_2bpp_mask_word(uint16_t data, unsigned half)
     return mask;
 }
 
+/* Palette entry index.  hdgsp_control_hi_w (harddriv_v.cpp:211-256) selects
+ * the bank from the low three bits of control_high, and only the first 256
+ * entries of each plane are addressable. */
+static unsigned gsp_board_palette_index(const gsp_board_t *b, uint32_t addr)
+{
+    unsigned bank = (unsigned)(b->ctrl_hi[0] & 0x07u);
+    unsigned off = (unsigned)(addr & 0x0fffu) & 0xffu;
+    return bank * 0x100u + off;
+}
+
 unsigned gsp_board_host_reg(uint32_t byte_offset)
 {
     /* See the header: `(byte_offset >> 2) ^ 1` is the board-correct decode.
@@ -227,21 +237,93 @@ void gsp_board_write16(gsp_board_t *b, uint32_t byte_addr, uint16_t value)
 
 /* -------------------------------------------------------------- host port */
 
-/* HSTDAT expands to a 16-byte cell: eight copies of the low byte followed by
- * eight copies of the high byte.  This is the board's observed host-write
- * expansion, recorded in docs/mc68010-boot-findings.md section 12.2 and
- * already implemented in native/musashi_cpu.c. */
+/* One HSTDAT write, dispatched on the effective HSTADR address.
+ *
+ * REFUTED MODEL, corrected here.  This used to expand every HSTDAT into a
+ * 16-byte VRAM cell unconditionally, which silently ignored the other
+ * regions the address can select.  Replaying the captured 901,354-event bus
+ * stream showed 1,658 cells whose last writer was a plain VRAM write and 404
+ * whose last writer was the 2bpp expander, with our values looking like cell
+ * indices rather than data -- the signature of a write landing in the wrong
+ * store.
+ *
+ * The dispatch below mirrors gsp_mem_write_word in native/musashi_cpu.c
+ * region for region, and MAME's host_w() (tms34010.cpp:1875) for the
+ * expansion itself. */
 static void gsp_board_hstdat_store(gsp_board_t *b, uint16_t data)
 {
-    uint32_t base = b->hstadr & (GSP_BOARD_VRAM_BYTES - 1u);
-    uint8_t lo = (uint8_t)(data & 0xffu);
-    uint8_t hi = (uint8_t)(data >> 8);
-    unsigned i;
-    for (i = 0; i < 8u; i++) {
-        b->vram[base + i] = lo;
-        b->vram[base + 8u + i] = hi;
+    const uint32_t addr = b->hstadr;
+
+    /* 0xFF000000-0xFFFFFFFF: the 512 KiB VRAM share.  A host word write does
+     * NOT store two bytes -- MAME's program space is a 32-bit view over a
+     * 16-bit share, so one 16-bit write covers a 16-byte cell with each
+     * source byte replicated eight times. */
+    if ((addr & 0xff000000u) == 0xff000000u) {
+        uint32_t off = ((addr - 0xff800000u) &
+                        (GSP_BOARD_VRAM_BYTES - 1u)) & ~0xfu;
+        uint8_t lo = (uint8_t)(data & 0xffu);
+        uint8_t hi = (uint8_t)(data >> 8);
+        unsigned k;
+        for (k = 0; k < 8u; k++) {
+            b->vram[off + k]      = lo;
+            b->vram[off + 8u + k] = hi;
+        }
+        b->vram_writes += 16u;
+        return;
     }
-    b->vram_writes += 16u;
+
+    /* 0x02000000-0x020FFFFF: masked expander over the SAME VRAM share, with
+     * the colour taken from the low control byte.  The loop covers EIGHT
+     * four-byte words -- 32 bytes -- alternating the low and high halfword
+     * mask, not just the two words a first reading suggests. */
+    if ((addr & 0xfff00000u) == 0x02000000u) {
+        uint32_t offset = (addr & 0x000fffffu) >> 1;
+        uint32_t colour = b->ctrl_lo[0];
+        unsigned w;
+        colour |= colour << 16;
+        for (w = 0; w < 8u; w++) {
+            uint32_t mask = gsp_2bpp_mask_word(data, w & 1u);
+            uint32_t o, cur;
+            if (mask == 0u) continue;
+            o = (offset * 8u + w * 4u) &
+                (GSP_BOARD_VRAM_BYTES - 1u) & ~3u;
+            cur = ((uint32_t)b->vram[o] << 24) |
+                  ((uint32_t)b->vram[o + 1] << 16) |
+                  ((uint32_t)b->vram[o + 2] << 8) |
+                  (uint32_t)b->vram[o + 3];
+            cur = (cur & ~mask) | (colour & mask);
+            b->vram[o]     = (uint8_t)(cur >> 24);
+            b->vram[o + 1] = (uint8_t)(cur >> 16);
+            b->vram[o + 2] = (uint8_t)(cur >> 8);
+            b->vram[o + 3] = (uint8_t)cur;
+            b->vram_writes += 4u;
+        }
+        return;
+    }
+
+    /* Palette and control shares.  The control shares are byte-wide; the
+     * palette planes are indexed by the bank selected through control_high. */
+    if ((addr & 0xfffff000u) == 0xf5000000u ||
+        (addr & 0xfffff000u) == 0xf5800000u) {
+        uint8_t *plane = ((addr & 0xfffff000u) == 0xf5000000u)
+                       ? b->pal_lo : b->pal_hi;
+        unsigned idx = gsp_board_palette_index(b, addr) * 2u;
+        if (idx + 1u < GSP_BOARD_PAL_BYTES) {
+            plane[idx]     = (uint8_t)(data >> 8);
+            plane[idx + 1] = (uint8_t)(data & 0xffu);
+        }
+        return;
+    }
+    if ((addr & 0xfffff000u) == 0xf4000000u) {
+        b->ctrl_lo[addr & 0xffu] = (uint8_t)(data & 0xffu);
+        return;
+    }
+    if ((addr & 0xfffff000u) == 0xf4800000u) {
+        b->ctrl_hi[addr & 0xffu] = (uint8_t)(data & 0xffu);
+        return;
+    }
+    /* Anything else is unmapped; the native model counts and drops it. */
+    b->unmapped_writes++;
 }
 
 void gsp_board_host_write(gsp_board_t *b, uint32_t byte_offset, uint16_t data)
