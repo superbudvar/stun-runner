@@ -62,9 +62,18 @@ full independent pass. Gentoo `eix`/`equery` found no installed Verilator; the
 available `sci-electronics/verilator-5.052-r1::guru` ebuild fails because its
 `PYTHON_COMPAT` includes unsupported `python3_15`, while 5.050 is `~amd64`-masked.
 At the user's suggestion, official Verilator 5.052 was built and installed
-locally under `/tmp/opencode/verilator-install` (source tag commit
+locally (source tag commit
 `ea338be98e1e838d3518809ce8899f85a009963c`), without system package or
 repository changes.
+
+> **Verilator prefix resolved 2026-10-11.** That install originally lived at
+> `/tmp/opencode/verilator-install`, which does not survive. It has moved to
+> `$HOME/.local/share/verilator-5.052`, and `native/gsp_rtl/CMakeLists.txt`
+> now finds it through `find_program` HINTS, so no environment setup is needed.
+> Verified with `VERILATOR`, `VERILATOR_ROOT` unset and a bare
+> `PATH=/usr/bin:/bin`: configure, full build and 53/53 CTests all pass.
+> This closes the open half of `stun-runner-gsvp.2`; the optional-target
+> half was already done.
 
 > **SUPERSEDED 2026-10-11 by explicit user decision.** The paragraph above
 > recorded this candidate as "not adopted" and warned against substituting it

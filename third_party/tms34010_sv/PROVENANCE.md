@@ -85,6 +85,30 @@ Verilator-generated C++ is ordinary toolkit-free C++. This is a CPU core, in
 the same category as the Musashi 68010 core already linked into the native
 target. It sits **below** the seam and holds no game state and no policy.
 
+## Verilator location
+
+The core is built with Verilator 5.052, built locally from upstream tag
+`ea338be98e1e838d3518809ce8899f85a009963c` into
+`$HOME/.local/share/verilator-5.052`.
+
+There is no system Verilator package available here: the
+`sci-electronics/verilator-5.052-r1::guru` ebuild fails because its
+`PYTHON_COMPAT` includes the unsupported `python3_15`, and 5.050 is
+`~amd64`-masked.
+
+`native/gsp_rtl/CMakeLists.txt` discovers it via `find_program` with HINTS on
+that prefix, so a plain
+
+```bash
+cmake -S native -B build && cmake --build build && ctest --test-dir build
+```
+
+works with no environment setup and no PATH edit. Verified with `VERILATOR`,
+`VERILATOR_ROOT` unset and `PATH=/usr/bin:/bin`.
+
+Verilator is an **optional** dependency. Without it the board model and its
+test still build and run; only the core and harness are skipped.
+
 ## Removal boundary
 
 Nothing here is required for the 50 native CTests to pass. If the GSP RTL

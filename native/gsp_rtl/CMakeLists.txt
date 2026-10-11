@@ -29,7 +29,17 @@ add_test(NAME gsp-board-map-c COMMAND stunrun-gsp-board-test)
 
 # ---- optional: the Verilated core ---------------------------------------
 
-find_program(STUNRUN_VERILATOR NAMES verilator)
+find_program(STUNRUN_VERILATOR NAMES verilator
+  # Verilator has no system package here: the 5.052 ebuild is broken
+  # (sci-electronics/verilator-5.052-r1::guru fails because PYTHON_COMPAT
+  # includes unsupported python3_15) and 5.050 is ~amd64-masked.  A local
+  # build therefore lives outside the system, so look in the conventional
+  # per-user prefix before giving up.  This keeps the GSP provider
+  # discoverable without every caller having to edit PATH.
+  HINTS
+    "$ENV{HOME}/.local/share/verilator-5.052/bin"
+    "$ENV{HOME}/opt/verilator/bin"
+    "$ENV{HOME}/.local/bin")
 if(NOT STUNRUN_VERILATOR)
   message(STATUS
     "stunrun: verilator not found; the GSP RTL core and harness are not "
