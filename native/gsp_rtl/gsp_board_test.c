@@ -114,22 +114,45 @@ static void test_vram_mirroring_is_one_share(void)
     CHECK_EQ(gsp_board_read16(&b, 0xff800000u), 0x1234u);
 }
 
-/* The 2bpp window is a distinct store from the vram share.  Keeping them
- * apart is why native/musashi_cpu.c allocates two arrays. */
-static void test_2bpp_window_is_separate(void)
+/* The 2bpp window writes INTO the main VRAM share.
+ *
+ * This test was originally written to assert the opposite -- that the 2bpp
+ * window is a separate store -- because that is what the model did.  It is
+ * wrong.  hdgsp_vram_2bpp_w (harddriv_v.cpp:304-320) is a masked
+ * read-modify-write of the main VRAM share, with the colour taken from
+ * gsp_control_lo[0]:
+ *
+ *     uint32_t *dest = (uint32_t *)&m_gsp_vram[offset * 4];
+ *     uint32_t color = m_gsp_control_lo[0];  color |= color << 16;
+ *     *dest = (*dest & ~curmask) | (color & curmask);      // x2
+ *
+ * A separate buffer meant the two views silently disagreed.  Caught by
+ * replaying a captured 901,354-event bus stream.  See
+ * docs/mc68010-boot-findings.md section 15.4. */
+static void test_2bpp_window_writes_main_vram(void)
 {
     static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
     gsp_board_reset(&b);
 
-    gsp_board_write16(&b, 0x02000000u, 0xaaaau);
-    gsp_board_write16(&b, 0xff800000u, 0x5555u);
+    /* Colour byte 0 comes from the low control share. */
+    gsp_board_write16(&b, 0xf4000000u, 0x00u);
+    b.ctrl_lo[0] = 0x5a;
 
-    CHECK_EQ(gsp_board_read16(&b, 0x02000000u), 0xaaaau);
-    CHECK_EQ(gsp_board_read16(&b, 0xff800000u), 0x5555u);
-    /* Only the vram share counts as a vram write; the 2bpp window is a
-     * separate store. */
-    CHECK_EQ(b.vram_writes, 1u);
-    CHECK_EQ(b.word_writes, 2u);
+    /* Data 0x0001 selects one 2-bit pixel in the low halfword only.
+     * The masked word is assembled big-endian (MAME casts uint16_t* to
+     * uint32_t*), so vram[o] is the most significant byte: the 2-bit field
+     * lands in vram[3], not vram[0]. */
+    gsp_board_write16(&b, 0x02000000u, 0x0001u);
+
+    CHECK_EQ(b.vram[3] & 0x03u, 0x02u); /* colour 0x5a, low 2 bits = 0b10 */
+    CHECK_EQ(b.vram[0], 0x00u);         /* untouched by the low-half mask */
+    CHECK_EQ(b.vram[1], 0x00u);
+    CHECK_EQ(b.vram[2], 0x00u);
+
+    /* An all-zero data word writes nothing at all. */
+    uint64_t before = b.vram_writes;
+    gsp_board_write16(&b, 0x02000000u, 0x0000u);
+    CHECK_EQ(b.vram_writes, before);
 }
 
 /* Unmapped space reads zero and is counted, so a harness that walks off the
@@ -266,7 +289,6 @@ static void test_region_roundtrip(void)
 {
     static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
     static const struct { uint32_t addr; uint16_t expect; } cases[] = {
-        { 0x02000010u, 0xa5a5u },   /* 2bpp window        */
         { 0xf5000800u, 0xa5a5u },   /* palette low        */
         { 0xf5800800u, 0xa5a5u },   /* palette high       */
         { 0xff801000u, 0xa5a5u },   /* vram share         */
@@ -286,7 +308,7 @@ int main(void)
 {
     test_address_map();
     test_vram_mirroring_is_one_share();
-    test_2bpp_window_is_separate();
+    test_2bpp_window_writes_main_vram();
     test_unmapped_reads_zero_and_count();
     test_host_register_decode();
     test_hstdat_cell_expansion();

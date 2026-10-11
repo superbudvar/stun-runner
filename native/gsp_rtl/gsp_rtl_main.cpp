@@ -25,10 +25,18 @@
 #include "verilated.h"
 #include "gsp_board.h"
 
+/* The real bus-event record, from the producer side.  Include the header
+ * rather than redeclaring the struct: musashi_gsp_bus_event_t packs to 32
+ * bytes, not the 24 a hand-written version suggests, because `kind` is a C
+ * enum and therefore four bytes with four bytes of padding.  Reading this file
+ * with a guessed stride silently misparses every record. */
+#include "musashi_cpu.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -87,6 +95,8 @@ struct Options {
      * where the core waits for the host to clear HSTCTL.HLT instead. */
     int hcs_n = 0;
     bool self_test = false;
+    std::string host_writes;
+    std::string ref_vram;
 };
 
 void usage(const char *argv0)
@@ -140,6 +150,10 @@ bool parse_args(int argc, char **argv, Options *o)
             o->hcs_n = static_cast<int>(v);
         } else if (a == "--self-test") {
             o->self_test = true;
+        } else if (a == "--replay-host-writes") {
+            o->host_writes = need("--replay-host-writes");
+        } else if (a == "--ref-vram") {
+            o->ref_vram = need("--ref-vram");
         } else if (a == "--quiet") {
             o->quiet = true;
         } else if (a == "--help" || a == "-h") {
@@ -168,6 +182,175 @@ bool load_image(gsp_board_t *board, const std::string &path)
     std::fprintf(stderr, "loaded %zu bytes into the VRAM share from %s\n",
                  n, path.c_str());
     return true;
+}
+
+/* Replay a captured MC68010 -> TMS34010 bus-event stream through the board
+ * model.
+ *
+ * This is the decisive check on the host port before the core is involved at
+ * all.  The native model's own dump is the reference: it records the ordered
+ * bus stream AND the GSP VRAM that resulted.  If replaying the same stream
+ * through this independently written board model reproduces that VRAM byte for
+ * byte, then the HSTADR/HSTCTL/HSTDAT decode and the 16-byte cell expansion are
+ * right.  If it does not, no amount of correct TMS34010 execution downstream can
+ * rescue them.
+ *
+ * The record is musashi_gsp_bus_event_t from native/musashi_cpu.h:
+ *   uint64_t sequence;
+ *   uint32_t address;       original MC68010 byte address
+ *   uint32_t pc;            MC68010 PC at the bus callback
+ *   uint16_t data;          effective host word
+ *   uint16_t lane_mask;     0xFFFF word, 0xFF00 even-byte, 0x00FF odd-byte
+ *   uint8_t  width_bits;    8 or 16
+ *   uint8_t  kind;          1 = host window, 2 = reset control
+ *   uint8_t  gsp_reset_released;
+ * which packs to 20 bytes on this ABI.  The size is checked, not assumed.
+ *
+ * Do NOT feed this the old gsp_host_writes.bin: that records the RESOLVED
+ * destination of each HSTDAT write, having already discarded the HSTADR/HSTCTL
+ * writes that set the address.  Replaying it cannot reproduce VRAM.
+ */
+int replay_host_writes(const std::string &path, const std::string &ref_vram)
+{
+    std::FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        std::fprintf(stderr, "cannot open bus-event stream %s\n", path.c_str());
+        return 1;
+    }
+    std::fseek(f, 0, SEEK_END);
+    const long bytes = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    const long kRecord = (long)sizeof(musashi_gsp_bus_event_t);
+    if (bytes % kRecord != 0) {
+        std::fprintf(stderr,
+            "%s: %ld bytes is not a multiple of the %ld-byte record\n",
+            path.c_str(), bytes, kRecord);
+        std::fclose(f);
+        return 1;
+    }
+    const long count = bytes / kRecord;
+
+    static gsp_board_t board;
+    gsp_board_reset(&board);
+
+    std::printf("gsp-rtl replay: %ld bus events from %s\n", count,
+                path.c_str());
+    unsigned long host = 0, reset_ctl = 0, released = 0, asserted = 0;
+    unsigned long last_seq = 0;
+    int seq_ok = 1;
+    for (long i = 0; i < count; i++) {
+        musashi_gsp_bus_event_t ev;
+        if (std::fread(&ev, sizeof ev, 1, f) != 1) {
+            std::fprintf(stderr, "short read at record %ld\n", i);
+            std::fclose(f);
+            return 1;
+        }
+        if (i > 0 && ev.sequence <= last_seq) seq_ok = 0;
+        last_seq = (unsigned long)ev.sequence;
+
+        if (ev.kind == MUSASHI_GSP_BUS_HOST_WINDOW) {
+            /* The event carries the absolute MC68010 address; the host window
+             * starts at 0xC00000. */
+            gsp_board_host_write(&board, ev.address - 0xC00000u, ev.data);
+            host++;
+        } else if (ev.kind == MUSASHI_GSP_BUS_RESET_CONTROL) {
+            reset_ctl++;
+            if (ev.gsp_reset_released) released++; else asserted++;
+        }
+    }
+    std::fclose(f);
+
+    std::printf("  host-window events=%lu  reset-control events=%lu "
+                "(released=%lu asserted=%lu)  sequence monotonic=%s\n",
+                host, reset_ctl, released, asserted, seq_ok ? "yes" : "NO");
+    std::printf("  board: host_writes=%llu vram_writes=%llu "
+                "unmapped_writes=%llu\n",
+                (unsigned long long)board.host_writes,
+                (unsigned long long)board.vram_writes,
+                (unsigned long long)board.unmapped_writes);
+
+    if (ref_vram.empty()) {
+        std::printf("RESULT PASS: stream applied (no reference given)\n");
+        return 0;
+    }
+
+    std::FILE *r = std::fopen(ref_vram.c_str(), "rb");
+    if (!r) {
+        std::fprintf(stderr, "cannot open reference VRAM %s\n", ref_vram.c_str());
+        return 1;
+    }
+    std::vector<uint8_t> want(GSP_BOARD_VRAM_BYTES);
+    const size_t got = std::fread(want.data(), 1, want.size(), r);
+    std::fclose(r);
+    if (got != want.size()) {
+        std::fprintf(stderr, "reference VRAM is %zu bytes, expected %u\n",
+                     got, GSP_BOARD_VRAM_BYTES);
+        return 1;
+    }
+
+    long diff_bytes = 0, diff_words = 0;
+    uint64_t sum_ours = 0, sum_want = 0;
+    for (size_t i = 0; i < want.size(); i++) {
+        if (board.vram[i] != want[i]) diff_bytes++;
+        sum_ours += board.vram[i];
+        sum_want += want[i];
+    }
+    for (size_t i = 0; i + 1 < want.size(); i += 2)
+        if (board.vram[i] != want[i] || board.vram[i + 1] != want[i + 1])
+            diff_words++;
+
+    std::printf("  vs native model reference VRAM:\n");
+    std::printf("    differing bytes : %ld / %u\n", diff_bytes,
+                GSP_BOARD_VRAM_BYTES);
+    std::printf("    differing words : %ld / %u\n", diff_words,
+                GSP_BOARD_VRAM_BYTES / 2);
+    std::printf("    byte sum ours=%llu reference=%llu\n",
+                (unsigned long long)sum_ours, (unsigned long long)sum_want);
+
+    if (!seq_ok) {
+        std::printf("RESULT FAIL: bus-event sequence is not monotonic\n");
+        return 1;
+    }
+    if (diff_bytes == 0) {
+        std::printf("RESULT PASS: replayed VRAM is byte-identical to the "
+                    "native model\n");
+        return 0;
+    }
+
+    /* Localise the residual before declaring failure.  A whole-frame count is
+     * not actionable; a contiguous range points at one decode path. */
+    std::printf("  differing ranges (16 KiB buckets):\n");
+    const size_t bucket = 0x4000;
+    long ranges = 0;
+    for (size_t start = 0; start < want.size(); start += bucket) {
+        long n = 0;
+        for (size_t i = start; i < start + bucket && i < want.size(); i++)
+            if (board.vram[i] != want[i]) n++;
+        if (n) {
+            std::printf("    0x%06zx-0x%06zx : %ld/%u bytes\n", start,
+                        start + bucket - 1, n, (unsigned)bucket);
+            ranges++;
+        }
+    }
+    std::printf("  %ld of %u buckets differ\n", ranges,
+                (unsigned)(want.size() / bucket));
+
+    /* First few differing byte offsets, so a decode bug has a concrete
+     * address to be investigated against. */
+    std::printf("  first differing offsets:");
+    int shown = 0;
+    for (size_t i = 0; i < want.size() && shown < 12; i++) {
+        if (board.vram[i] != want[i]) {
+            std::printf(" 0x%06zx(ours=%02x ref=%02x)", i, board.vram[i],
+                        want[i]);
+            shown++;
+        }
+    }
+    std::printf("\n");
+
+    std::printf("RESULT FAIL: replayed VRAM differs from the native model in "
+                "%ld bytes\n", diff_bytes);
+    return 1;
 }
 
 /* Milestone-1 self test: prove the ROM-less boot end to end.
@@ -300,6 +483,8 @@ int main(int argc, char **argv)
         return 2;
     }
     if (opt.self_test) return self_test(opt.cycles);
+    if (!opt.host_writes.empty())
+        return replay_host_writes(opt.host_writes, opt.ref_vram);
 
     Verilated::commandArgs(argc, argv);
     auto *top = new tms34010_sv;

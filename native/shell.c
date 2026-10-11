@@ -1743,11 +1743,26 @@ static int run_walk(void)
         if (musashi_cpu_dump_state(g_cpu, g_dump_dir) == 0) {
             musashi_gsp_region_counts_t counts;
             musashi_cpu_gsp_region_counts(g_cpu, &counts);
-            printf("shell: dump dir=%s gsp_writes=%zu vram=%u vram2bpp=%u "
+            /* The ordered bus stream is the replayable artifact, distinct from
+             * gsp_writes which is the decoded HSTDAT result.  A dropped-event
+             * count means the stream is incomplete, so say so loudly: a VRAM
+             * mismatch against such a run is not evidence about the board
+             * model. */
+            size_t bus_events = musashi_cpu_gsp_bus_event_count(g_cpu);
+            size_t bus_dropped = musashi_cpu_gsp_bus_event_dropped(g_cpu);
+            printf("shell: dump dir=%s gsp_writes=%zu bus_events=%zu "
+                   "bus_dropped=%zu vram=%u vram2bpp=%u "
                    "pal_lo=%u pal_hi=%u control=%u unmapped=%u\n",
                    g_dump_dir, musashi_cpu_gsp_write_count(g_cpu),
+                   bus_events, bus_dropped,
                    counts.vram, counts.vram_2bpp, counts.pal_lo,
                    counts.pal_hi, counts.control, counts.unmapped);
+            if (bus_dropped > 0) {
+                printf("shell: WARNING bus-event stream INCOMPLETE "
+                       "(%zu dropped) - replay and VRAM comparison against "
+                       "this run are not conclusive\n", bus_dropped);
+                g_failures++;
+            }
         } else {
             printf("shell: dump dir=%s FAILED\n", g_dump_dir);
             g_failures++;

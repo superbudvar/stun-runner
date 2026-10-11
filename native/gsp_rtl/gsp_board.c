@@ -54,6 +54,24 @@ void gsp_board_reset(gsp_board_t *b)
     memset(b, 0, sizeof(*b));
 }
 
+/* m_mask_table[data * 2 + half], for the multisync board.
+ * harddriv_v.cpp:43-61 builds two 32-bit masks per data word: the low halfword
+ * takes bits 0x0001/0x0004/0x0010/0x0040 and the high halfword the same four
+ * bits shifted left by 8, each selecting one 2-bit pixel of a 16-bit
+ * halfword.  `half` selects which of the two. */
+static uint32_t gsp_2bpp_mask_word(uint16_t data, unsigned half)
+{
+    static const uint16_t bits[4] = { 0x0001u, 0x0004u, 0x0010u, 0x0040u };
+    uint32_t mask = 0;
+    unsigned shift = half ? 8u : 0u;
+    unsigned i;
+    for (i = 0; i < 4u; i++) {
+        if (data & bits[i])
+            mask |= 0x00000003u << (i * 2u + shift);
+    }
+    return mask;
+}
+
 unsigned gsp_board_host_reg(uint32_t byte_offset)
 {
     /* See the header: `(byte_offset >> 2) ^ 1` is the board-correct decode.
@@ -81,11 +99,20 @@ uint16_t gsp_board_read16(gsp_board_t *b, uint32_t byte_addr)
         return (uint16_t)(b->vram[off] | ((uint16_t)b->vram[off + 1] << 8));
     }
     case GSP_REGION_VRAM2BPP:
-        /* The 2bpp window has a distinct backing store from the vram share.
-         * native/musashi_cpu.c keeps them separate for the same reason. */
-        return (uint16_t)((b->vram2bpp[byte_addr & 0xffffu] & 0xff) |
-                          ((uint16_t)(b->vram2bpp[(byte_addr & 0xffffu) + 1u]
-                                      << 8)));
+        /* REFUTED MODEL, corrected here: the 2bpp window is NOT a separate
+         * store.  hdgsp_vram_2bpp_r (harddriv_v.cpp) reads the MAIN vram share
+         * at `offset * 4`, so writes must land there too or the two views
+         * silently disagree.  Getting this wrong showed up as 23,979 of
+         * 524,288 bytes differing when replaying a captured 901,354-event
+         * bus stream, concentrated in the 2bpp range with the reference
+         * holding data where this model still held its 0xFF fill. */
+        {
+            uint32_t off = (byte_addr & 0xffffu) * 4u;
+            off &= (GSP_BOARD_VRAM_BYTES - 1u) & ~3u;
+            return (uint32_t)b->vram[off] | ((uint32_t)b->vram[off + 1] << 8) |
+                   ((uint32_t)b->vram[off + 2] << 16) |
+                   ((uint32_t)b->vram[off + 3] << 24);
+        }
     case GSP_REGION_CTRL_LO:
         return (uint16_t)(b->ctrl_lo[byte_addr & 0xffu]);
     case GSP_REGION_CTRL_HI:
@@ -123,12 +150,56 @@ void gsp_board_write16(gsp_board_t *b, uint32_t byte_addr, uint16_t value)
         b->vram_writes++;
         return;
     }
-    case GSP_REGION_VRAM2BPP: {
-        uint32_t off = byte_addr & 0xffffu;
-        b->vram2bpp[off]     = (uint8_t)(value & 0xffu);
-        b->vram2bpp[off + 1] = (uint8_t)(value >> 8);
+    case GSP_REGION_VRAM2BPP:
+        /* hdgsp_vram_2bpp_w (harddriv_v.cpp:304-320), transcribed literally:
+         *
+         *     uint32_t *dest = (uint32_t *)&m_gsp_vram[offset * 4];
+         *     uint32_t *mask = &m_mask_table[data * 2];
+         *     uint32_t color = m_gsp_control_lo[0];
+         *     color |= color << 16;
+         *     *dest = (*dest & ~curmask) | (color & curmask);   // x2
+         *
+         * A MASKED read-modify-write of the MAIN VRAM share using a colour
+         * from the low control byte -- not a plain store, and not a separate
+         * buffer.  Two details are easy to get wrong and both cost real
+         * fidelity, so they are called out:
+         *
+         *  - The stride is `offset * 8` BYTES, not `offset * 4`.  MAME casts
+         *    to `uint32_t*` over a share declared `uint16_t`, so one element
+         *    is two bytes and the cast advances 4 elements = 8 bytes.  See the
+         *    identical note in native/musashi_cpu.c.
+         *  - The masked word is assembled BIG-endian from the share and stored
+         *    back big-endian, again because the share is uint16_t and MAME's
+         *    uint32_t view is the opposite endianness.
+         *
+         * The mask table (harddriv_v.cpp:43-61, multisync branch) packs bits
+         * 0x0001/0x0004/0x0010/0x0040 into the low halfword and the same four
+         * bits shifted by 8 into the high halfword, each driving one 2-bit
+         * pixel. */
+        {
+            uint32_t offset = (byte_addr & 0x000fffffu) >> 1;
+            uint32_t colour = b->ctrl_lo[0];
+            unsigned half;
+            colour |= colour << 16;
+            for (half = 0; half < 2u; half++) {
+                uint32_t mask = gsp_2bpp_mask_word(value, half);
+                uint32_t o, cur;
+                if (mask == 0u) continue;
+                o = (offset * 8u + half * 4u);
+                o &= (GSP_BOARD_VRAM_BYTES - 1u) & ~3u;
+                cur = ((uint32_t)b->vram[o] << 24) |
+                      ((uint32_t)b->vram[o + 1] << 16) |
+                      ((uint32_t)b->vram[o + 2] << 8) |
+                      (uint32_t)b->vram[o + 3];
+                cur = (cur & ~mask) | (colour & mask);
+                b->vram[o]     = (uint8_t)(cur >> 24);
+                b->vram[o + 1] = (uint8_t)(cur >> 16);
+                b->vram[o + 2] = (uint8_t)(cur >> 8);
+                b->vram[o + 3] = (uint8_t)cur;
+                b->vram_writes += 4u;
+            }
+        }
         return;
-    }
     case GSP_REGION_CTRL_LO:
         b->ctrl_lo[byte_addr & 0xffu] = (uint8_t)(value & 0xffu);
         return;
@@ -178,8 +249,15 @@ void gsp_board_host_write(gsp_board_t *b, uint32_t byte_offset, uint16_t data)
     b->host_writes++;
     switch (gsp_board_host_reg(byte_offset)) {
     case GSP_BOARD_HSTADRH:
-        b->hstadr = (b->hstadr & 0x0000ffffu) |
-                    ((uint32_t)(data & 0x00ffu) << 16);
+        /* All 16 bits are significant.  Masking to 8 bits here silently
+         * discarded the 0xC000 the ROM writes, which turned address 0xC0000100
+         * into 0x00000100 -- the two agree after the 512 KiB mask for some
+         * addresses and disagree for others, which is exactly the sort of
+         * partial failure that looks like a rendering bug rather than a decode
+         * bug.  Found by replaying a captured 901,354-event bus stream:
+         * 2,062 of 32,768 cells differed.
+         * MAME: host_w() case TMS34010_HOST_ADDRESS_H stores `data` whole. */
+        b->hstadr = (b->hstadr & 0x0000ffffu) | ((uint32_t)data << 16);
         return;
     case GSP_BOARD_HSTADRL:
         b->hstadr = (b->hstadr & 0xffff0000u) | (uint32_t)(data & 0xffffu);

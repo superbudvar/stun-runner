@@ -78,6 +78,14 @@ struct stunrun_jsa_latches;
 
 #define MUSASHI_GSP_WLOG_CAP        (4u * 1024u * 1024u) /* host-write log cap */
 
+/* Ordered MC68010 -> TMS34010 bus-event log.  This grows on demand from a
+ * small initial block rather than being preallocated: a fixed cap large enough
+ * for a long run costs hundreds of megabytes up front for a debug aid, and
+ * preallocating it made the shell abort before its first frame.  Growth
+ * doubling is amortised O(1) per event. */
+#define MUSASHI_GSP_BUS_LOG_INITIAL 0x10000u  /* 65536 events, ~1.3 MiB */
+#define MUSASHI_GSP_BUS_LOG_MAX     0x8000000u /* hard ceiling, ~256 MiB */
+
 /* One captured HSTDAT write: where the GSP was told to put it, and what. */
 typedef struct musashi_gsp_write {
     uint32_t addr;   /* GSP address, already masked to 0xFFFFFFF0 */
@@ -214,6 +222,13 @@ uint32_t musashi_cpu_gsp_cycles_until_irq(const musashi_cpu_t *cpu,
  * main RAM, the GSP host write log, and each GSP memory region that received
  * host writes.  Returns 0 on success, -1 on I/O failure. */
 int musashi_cpu_dump_state(const musashi_cpu_t *cpu, const char *out_dir);
+
+/* Number of ordered MC68010 -> TMS34010 bus events recorded, and how many were
+ * dropped at MUSASHI_GSP_BUS_LOG_MAX.  A nonzero dropped count means the
+ * replay stream in gsp_bus_events.bin is incomplete, so any VRAM mismatch
+ * against that run is not evidence about the board model. */
+size_t musashi_cpu_gsp_bus_event_count(const musashi_cpu_t *cpu);
+size_t musashi_cpu_gsp_bus_event_dropped(const musashi_cpu_t *cpu);
 
 /* ── Live GSP memory ──
  *

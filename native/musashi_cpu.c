@@ -104,6 +104,15 @@ struct musashi_cpu {
     /* Optional live fanout tap for MC68010 GSP host-window/reset events. */
     musashi_gsp_bus_observer_t gsp_bus_observer;
     void *gsp_bus_observer_context;
+
+    /* Bounded ordered record of every MC68010 -> TMS34010 bus event.  Written
+     * unconditionally (not only when an observer is attached) so the shell's
+     * state dump always yields the replayable host-port stream.  See
+     * musashi_cpu_dump_state() for how this differs from gsp_wlog. */
+    musashi_gsp_bus_event_t *gsp_bus_log;
+    size_t gsp_bus_log_len;
+    size_t gsp_bus_log_cap;   /* allocated capacity, grows on demand */
+    size_t gsp_bus_log_dropped; /* events lost at MUSASHI_GSP_BUS_LOG_MAX */
     uint64_t gsp_bus_event_sequence;
     uint8_t gsp_reset_released; /* active-low /GSPRES state */
 
@@ -471,6 +480,9 @@ musashi_cpu_t *musashi_cpu_create(void)
     cpu->adsp_pgm_ram  = calloc(MUSASHI_ADSP_PGM_WORDS, sizeof(uint16_t));
     cpu->gsp_wlog     = calloc(MUSASHI_GSP_WLOG_CAP,
                                sizeof(musashi_gsp_write_t));
+    cpu->gsp_bus_log  = calloc(MUSASHI_GSP_BUS_LOG_INITIAL,
+                               sizeof(musashi_gsp_bus_event_t));
+    cpu->gsp_bus_log_cap = MUSASHI_GSP_BUS_LOG_INITIAL;
     cpu->pc_hist      = NULL;
     if (g_pc_hist_enabled)
         cpu->pc_hist = calloc(MUSASHI_PC_HIST_SIZE, sizeof(uint32_t));
@@ -506,7 +518,7 @@ musashi_cpu_t *musashi_cpu_create(void)
 
     if (!cpu->gsp_vram || !cpu->gsp_vram_2bpp || !cpu->gsp_pal_lo ||
         !cpu->gsp_pal_hi || !cpu->gsp_ctrl_lo || !cpu->gsp_ctrl_hi ||
-        !cpu->gsp_wlog || !cpu->adsp_pgm_ram ||
+        !cpu->gsp_wlog || !cpu->adsp_pgm_ram || !cpu->gsp_bus_log ||
         (g_pc_hist_enabled && !cpu->pc_hist)) {
         musashi_cpu_destroy(cpu);
         return NULL;
@@ -527,6 +539,7 @@ void musashi_cpu_destroy(musashi_cpu_t *cpu)
     free(cpu->gsp_ctrl_lo);
     free(cpu->gsp_ctrl_hi);
     free(cpu->gsp_wlog);
+    free(cpu->gsp_bus_log);
     free(cpu->adsp_pgm_ram);
     free(cpu->pc_hist);
     free(cpu);
@@ -1049,7 +1062,7 @@ static void gsp_emit_bus_event(musashi_cpu_t *cpu,
 {
     musashi_gsp_bus_event_t event;
 
-    if (cpu == NULL || cpu->gsp_bus_observer == NULL)
+    if (cpu == NULL)
         return;
 
     event.sequence = cpu->gsp_bus_event_sequence++;
@@ -1061,7 +1074,32 @@ static void gsp_emit_bus_event(musashi_cpu_t *cpu,
     event.kind = (uint8_t)kind;
     event.gsp_reset_released = reset_released;
 
-    cpu->gsp_bus_observer(cpu->gsp_bus_observer_context, &event);
+    /* Record unconditionally, before the observer check.  The ordered bus
+     * stream is needed for offline replay by a GSP provider, and requiring a
+     * live observer to be attached just to capture it made the dump
+     * unavailable in the normal shell run.  The log is bounded and dropped
+     * with the CPU. */
+    if (cpu->gsp_bus_log_len == cpu->gsp_bus_log_cap &&
+        cpu->gsp_bus_log_cap < MUSASHI_GSP_BUS_LOG_MAX) {
+        size_t next = cpu->gsp_bus_log_cap * 2u;
+        if (next > MUSASHI_GSP_BUS_LOG_MAX) next = MUSASHI_GSP_BUS_LOG_MAX;
+        musashi_gsp_bus_event_t *grown = realloc(
+            cpu->gsp_bus_log, next * sizeof(musashi_gsp_bus_event_t));
+        if (grown) {
+            cpu->gsp_bus_log = grown;
+            cpu->gsp_bus_log_cap = next;
+        }
+    }
+    if (cpu->gsp_bus_log_len < cpu->gsp_bus_log_cap) {
+        cpu->gsp_bus_log[cpu->gsp_bus_log_len++] = event;
+    } else {
+        /* Counted, never silently dropped: a truncated replay stream would
+         * look like a VRAM mismatch rather than a lost record. */
+        cpu->gsp_bus_log_dropped++;
+    }
+
+    if (cpu->gsp_bus_observer != NULL)
+        cpu->gsp_bus_observer(cpu->gsp_bus_observer_context, &event);
 }
 
 /* Preserve actual MC68010 bus addresses; provider adapters choose how to
@@ -2670,6 +2708,16 @@ static int dump_blob(const char *out_dir, const char *name,
     return rc;
 }
 
+size_t musashi_cpu_gsp_bus_event_count(const musashi_cpu_t *cpu)
+{
+    return cpu ? cpu->gsp_bus_log_len : 0;
+}
+
+size_t musashi_cpu_gsp_bus_event_dropped(const musashi_cpu_t *cpu)
+{
+    return cpu ? cpu->gsp_bus_log_dropped : 0;
+}
+
 int musashi_cpu_dump_state(const musashi_cpu_t *cpu, const char *out_dir)
 {
     if (!cpu || !out_dir) return -1;
@@ -2684,10 +2732,38 @@ int musashi_cpu_dump_state(const musashi_cpu_t *cpu, const char *out_dir)
     dump_blob(out_dir, "main_ram.bin", stunrun_ports_main_ram(),
               STUNRUN_MAIN_RAM_BYTES);
 
-    /* The display list, verbatim and in order. */
+    /* The display list, verbatim and in order.
+     *
+     * NOTE what this is NOT: these are the RESOLVED destinations of each
+     * HSTDAT write (GSP address, masked to 0xFFFFFFF0), not the host-port
+     * stream that produced them.  Replaying this file into a board model
+     * cannot reproduce VRAM, because it has already thrown away the
+     * HSTADR/HSTCTL writes that set the address and the increment.  The
+     * ordered bus stream is gsp_bus_events.bin below; analysis
+     * dual-gsp-comparison-plan.md records the same distinction. */
     dump_blob(out_dir, "gsp_host_writes.bin",
               cpu->gsp_wlog,
               cpu->gsp_wlog_len * sizeof(musashi_gsp_write_t));
+
+    /* The real ordered MC68010 -> TMS34010 bus stream: every host-window write
+     * with its raw byte address and lane mask, plus every /GSPRES control
+     * event, captured through musashi_cpu_set_gsp_bus_observer.  This is the
+     * artifact a GSP provider replays; gsp_host_writes.bin is the decoded
+     * result, not the input. */
+    if (cpu->gsp_bus_log_len > 0) {
+        /* A short fwrite must fail the dump, not silently produce a truncated
+         * file.  A truncated bus stream replays into a VRAM that merely looks
+         * wrong, with nothing pointing at the real cause. */
+        if (dump_blob(out_dir, "gsp_bus_events.bin", cpu->gsp_bus_log,
+                      cpu->gsp_bus_log_len * sizeof(musashi_gsp_bus_event_t))
+            != 0) {
+            return -1;
+        }
+        /* Say so explicitly if the stream was truncated, so a later VRAM
+         * mismatch is not misread as a board-model defect. */
+        /* gsp_bus_events.truncated is written by the shell, which can report
+         * the dropped count on stdout; this function only signals failure. */
+    }
 
     /* Each GSP memory region, so we can see what the latched addresses
      * actually resolved to. */

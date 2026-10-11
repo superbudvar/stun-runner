@@ -2724,3 +2724,117 @@ thin Verilated driver and owns nothing but clocking and the cycle handshake.
 The host-register decode is the board-correct `(byte_offset >> 2) ^ 1`, per
 section 13 above; the tests pin it against MAME's word-index form so the two
 cannot be confused again.
+
+## 15. Feeding the real 68010 upload to the board model (gsvp.4)
+
+### 15.1 `gsp_host_writes.bin` is the wrong artifact, and using it fails silently
+
+The obvious first move is to replay the shell's existing
+`gsp_host_writes.bin` into the board model and compare VRAM. It fails, and it
+fails in a way that looks like a board bug rather than a wrong input.
+
+The reason is already written down in `analysis/dual-gsp-comparison-plan.md`:
+*"the existing `gsp_host_writes.bin` records only effective HSTDAT
+destination/data/PC words; it is not a complete host-port stream."* Those
+records carry the **resolved destination** of each HSTDAT write, having
+already discarded the HSTADR and HSTCTL writes that set the address and the
+increment. Replaying them applies writes to addresses the stream never
+latched, and the first version of this harness did exactly that:
+
+```text
+gsp-rtl replay: 897010 host writes
+  board: host_writes=897010 vram_writes=0 unmapped_writes=0
+    differing bytes : 477272 / 524288
+    byte sum ours=0 reference=52878584
+```
+
+`vram_writes=0` and `byte sum ours=0` is the tell: nothing was written at all.
+
+The artifact that is needed is the ordered bus stream from
+`musashi_cpu_set_gsp_bus_observer` (commit 2d881db), which carries the raw
+byte address and lane mask for every host-window write plus every `/GSPRES`
+control event. That observer was live-only, so `musashi_cpu_dump_state()` now
+records it to `gsp_bus_events.bin`. One capture is 901,354 events.
+
+### 15.2 Two defects in making that stream usable
+
+**The bus log was gated behind an attached observer.** The emit path returned
+early when no observer was registered, so the normal shell run produced an
+empty log. The recording is now unconditional; the observer is optional.
+
+**A fixed 8M-record cap aborted the run.** Sizing the log up front costs
+~160 MB for a debug aid, and the shell died before its first frame. It now
+grows by doubling from 65,536 records, and a dropped-event count is reported
+rather than silently truncating a replay stream -- a truncated stream
+reproduces VRAM that merely looks wrong, with nothing pointing at the cause.
+
+A third, non-code defect: `/home` was at 99% full (2.8 GB free), so a 28 MB
+`fwrite` was short. `dump_blob` already returned -1 on a short write, but the
+new bus-event call did not check it, so the file was silently truncated to a
+size that is not a multiple of the record size. A truncated dump now fails the
+dump instead.
+
+### 15.3 Record layout must come from the producer's header
+
+`musashi_gsp_bus_event_t` is **32 bytes**, not the 24 a hand-written version
+suggests: `kind` is a C enum, so it occupies four bytes and pads the struct.
+The first version of the reader computed a 23-byte stride from the field list
+and refused the file. The harness now includes `native/musashi_cpu.h` and uses
+`sizeof(musashi_gsp_bus_event_t)`. Guessing this layout misparses every record
+while still looking like a data problem.
+
+### 15.4 Where the replay stands: 95.4%, residual not yet attributed
+
+With the correct stream and stride:
+
+```text
+gsp-rtl replay: 901354 bus events
+  host-window events=901348  reset-control events=6 (released=3 asserted=3)
+  sequence monotonic=yes
+  board: host_writes=901348 vram_writes=14352160 unmapped_writes=0
+    differing bytes : 23979 / 524288   (95.43% identical)
+```
+
+The parse is sound: the sequence is monotonic, all 901,348 host-window events
+address `0x00C0xxxx` (the host port), and the six reset-control events are
+three assert/release pairs, consistent with the `/GSPRES` writes at
+`$60400C`/`$60401C`.
+
+HSTDAT destinations decompose as 843,688 VRAM, 51,200 through the 2bpp
+expander, 1,024 into each palette plane, and 35 into the control shares --
+which matches the shell's own region counts (`gsp_summary.txt`) exactly.
+
+**The residual is not yet attributed.** It is 2,062 of 32,768 sixteen-byte
+cells, and all 2,062 were written by the host stream, so it is an ordering or
+value divergence rather than content the host never produced. Two candidate
+causes were checked and eliminated:
+
+- The 2bpp window is **not** a separate store. `hdgsp_vram_2bpp_w`
+  (harddriv_v.cpp:304-320) is a masked read-modify-write into the *main* VRAM
+  share with a colour taken from `gsp_control_lo[0]`. The board model had it
+  as a private buffer; corrected, including the `offset * 8` byte stride and
+  the big-endian masked-word assembly that come from MAME casting to
+  `uint32_t*` over a `uint16_t` share.
+- HSTADRH takes all 16 bits. Masking it to 8 discarded the `0xC000` the ROM
+  writes. The resulting change was masked away by the 512 KiB share mask, so
+  it is harmless here but wrong on its face, and `host_w()` stores `data`
+  whole.
+
+Neither changed the result, which means the cause is elsewhere. Recorded as
+**open**, not closed: this is the state `stun-runner-gsvp.4` is in.
+
+### 15.5 A shell crash worth recording separately
+
+With a ROM directory set, the shell segfaults on exit:
+
+```text
+#0  libGLX.so.0
+#2  _dl_call_fini ()
+#5  exit ()
+```
+
+A GLX/SDL teardown fault at process exit, unrelated to the GSP work and
+present before it. Workaround for headless capture runs:
+`SDL_VIDEODRIVER=dummy STUNRUN_VIDEO_BACKEND=null`. Not fixed here: it is a
+defect in the shell's window lifecycle, not in any code touched by gsvp, and
+it deserves its own bead rather than a drive-by change.

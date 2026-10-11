@@ -96,6 +96,9 @@ verilate(stunrun_tms34010_sv
                  -Wno-UNUSEDPARAM -Wno-UNUSEDSIGNAL)
 
 add_executable(stunrun-gsp-rtl-harness gsp_rtl_main.cpp)
+# ${CMAKE_CURRENT_SOURCE_DIR}/.. for musashi_cpu.h: the bus-event record layout
+# must come from the producer's own header, never a hand-written copy.
+target_include_directories(stunrun-gsp-rtl-harness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
 target_link_libraries(stunrun-gsp-rtl-harness PRIVATE stunrun_gsp_board stunrun_tms34010_sv)
 set_target_properties(stunrun-gsp-rtl-harness PROPERTIES
   CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
