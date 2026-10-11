@@ -2598,3 +2598,29 @@ and `$02FCAC` clearing `$608000`. In this native run `$FF9BD0` and `$FF9BCC`
 remain empty, so the display-list consumer has no queued source and never
 reaches `$02F470`. This corrects the earlier `$0216` attribution; it does not
 prove that the native model has reached the game's later geometry state.
+
+## Correction: MC68010 GSP host-window extent
+
+The native memory router previously treated `$C00000-$CFFFFF` as a GSP host
+window and masked the byte offset to eight bits before decoding the four host
+registers. This was too broad: the MAME MC68010 maps at
+`/mnt/build/mame-ref/src/mame/atari/harddriv.cpp:562,611,651` are exactly
+`$C00000-$C03FFF`; that aperture is the **host-port interface**, not TMS34010
+VRAM. VRAM is in the separate GSP bit-address space. In MAME's handler,
+`/mnt/build/mame-ref/src/mame/atari/harddriv_m.cpp:139-145,215-221`, the word
+offset is transformed with `(offset / 2) ^ 1` before calling `host_r/host_w`.
+The native model's `gsp_host_reg(byte_offset) = (byte_offset >> 2) ^ 1` agrees
+for the first mapped word offsets; larger offsets decode to invalid TMS host
+register indices and must not wrap back to one of the four registers.
+
+This was a **native address-map modeling error**, not a ROM or MAME defect, so
+it does not belong in `BUGS.md`. `native/musashi_cpu.c::route_address()` now
+routes only `$C00000-$C03FFF` as `REGION_GSP`; host-register accesses use the
+full offset relative to `$C00000` instead of `address & 0xFF`. The bus observer
+preserves every raw mapped-window write, including invalid register indices,
+so each independent provider can apply its own decode. The synthetic
+`native/gsp_host_write_observer_musashi_test.c` program writes a word at
+`$C04000` after valid host-port traffic; it asserts this produces no host-port
+event and does not overwrite HSTADRH. It also checks the raw `$C00020` event is
+preserved while its invalid decoded register has no modeled host-register
+effect. The host observer and all 50 native CTests pass after this correction.

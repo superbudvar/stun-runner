@@ -101,6 +101,12 @@ struct musashi_cpu {
      * musashi_gsp_region_counts_t). */
     musashi_gsp_region_counts_t gsp_counts;
 
+    /* Optional live fanout tap for MC68010 GSP host-window/reset events. */
+    musashi_gsp_bus_observer_t gsp_bus_observer;
+    void *gsp_bus_observer_context;
+    uint64_t gsp_bus_event_sequence;
+    uint8_t gsp_reset_released; /* active-low /GSPRES state */
+
     /* Cycles executed since reset, used to pace the periodic IRQ5. */
     uint32_t total_cycles;
     uint32_t *pc_hist;
@@ -276,7 +282,7 @@ typedef enum {
     REGION_ADSP_CTRL = 4,   /* 0x818000-0x81FFFF: ADSP control/IRQ */
     REGION_SOUND     = 5,   /* 0x600000-0x603FFF: JSA II sound board */
     REGION_INPUT     = 6,   /* 0xA80000-0xA800FF: input ports */
-    REGION_GSP       = 7,   /* 0xC00000-0xCFFFFF: GSP VRAM + registers */
+    REGION_GSP       = 7,   /* 0xC00000-0xC03FFF: MC68010 GSP host-port window */
     REGION_IRQACK    = 10,  /* 0x60C000-0x60FFFF: port0 read / IRQ ack write */
     REGION_GSP_PAL   = 8,   /* 0xF5000000-0xF5FFFFFF: GSP palette RAM */
     REGION_GSP_VRAM_MIRROR = 9, /* 0xFF800000-0xFFFFFFFF: GSP VRAM mirror */
@@ -389,8 +395,10 @@ static region_t route_address(unsigned int address, unsigned int *out_offset)
         *out_offset = address;
         return REGION_ADC_CTRL;
     }
-    /* GSP VRAM + registers */
-    if (address >= 0xC00000 && address <= 0xCFFFFF) {
+    /* MC68010 host-port window.  The TMS34010 VRAM is in the GSP's separate
+     * bit-addressed space; it is not directly mapped over the 68010 C00000
+     * range (harddriv.cpp:562, 611, 651). */
+    if (address >= 0xC00000u && address <= 0xC03FFFu) {
         *out_offset = address;
         return REGION_GSP;
     }
@@ -571,10 +579,27 @@ void musashi_cpu_set_jsa_latches(musashi_cpu_t *cpu,
     cpu->jsa_latches = latches;
 }
 
+void musashi_cpu_set_gsp_bus_observer(
+    musashi_cpu_t *cpu, musashi_gsp_bus_observer_t observer,
+    void *context)
+{
+    if (cpu == NULL)
+        return;
+    cpu->gsp_bus_observer = observer;
+    cpu->gsp_bus_observer_context = context;
+}
+
+int musashi_cpu_gsp_reset_released(const musashi_cpu_t *cpu)
+{
+    return cpu != NULL && cpu->gsp_reset_released != 0;
+}
+
 void musashi_cpu_reset(musashi_cpu_t *cpu)
 {
-    (void)cpu;
+    if (cpu == NULL)
+        return;
     s_cpu = cpu;
+    cpu->gsp_reset_released = 0;
     m68k_init();
     m68k_set_cpu_type(M68K_CPU_TYPE_68010);
 
@@ -1016,6 +1041,70 @@ static void gsp_host_bump_address(musashi_cpu_t *cpu)
     cpu->hstadrl = (uint16_t)(next & 0xFFFFu);
 }
 
+static void gsp_emit_bus_event(musashi_cpu_t *cpu,
+                               musashi_gsp_bus_event_kind_t kind,
+                               uint32_t address, uint16_t value,
+                               uint16_t lane_mask, uint8_t width_bits,
+                               uint8_t reset_released)
+{
+    musashi_gsp_bus_event_t event;
+
+    if (cpu == NULL || cpu->gsp_bus_observer == NULL)
+        return;
+
+    event.sequence = cpu->gsp_bus_event_sequence++;
+    event.address = address;
+    event.pc = (uint32_t)m68k_get_reg(NULL, M68K_REG_PC);
+    event.data = value;
+    event.lane_mask = lane_mask;
+    event.width_bits = width_bits;
+    event.kind = (uint8_t)kind;
+    event.gsp_reset_released = reset_released;
+
+    cpu->gsp_bus_observer(cpu->gsp_bus_observer_context, &event);
+}
+
+/* Preserve actual MC68010 bus addresses; provider adapters choose how to
+ * decode the host window.  C transcription adapters bypass this callback. */
+static void gsp_emit_host_write_event(musashi_cpu_t *cpu,
+                                      uint32_t address,
+                                      uint16_t value,
+                                      uint16_t lane_mask,
+                                      uint8_t width_bits)
+{
+    if (address < 0x00C00000u || address > 0x00C03FFFu)
+        return;
+    gsp_emit_bus_event(cpu, MUSASHI_GSP_BUS_HOST_WINDOW, address, value,
+                       lane_mask, width_bits, 0u);
+}
+
+/* MAME's NWR handler uses a word-index offset: bit 3 chooses the line value,
+ * bits 0-2 choose the function, and function 6 controls active-low /GSPRES.
+ * For MC68010 byte addresses the word index is `(address - 0x604000) / 2`.
+ * `data` itself is explicitly ignored by harddriv_m.cpp:466-495. */
+static void gsp_emit_reset_control_event(musashi_cpu_t *cpu,
+                                         uint32_t address,
+                                         uint16_t value,
+                                         uint16_t lane_mask,
+                                         uint8_t width_bits)
+{
+    uint32_t offset;
+    uint32_t word_index;
+    uint8_t released;
+
+    if (cpu == NULL || address < 0x00604000u || address > 0x00607FFFu)
+        return;
+    offset = address - 0x00604000u;
+    word_index = offset >> 1;
+    if ((word_index & 7u) != 6u)
+        return;
+
+    released = (uint8_t)((word_index >> 3) & 1u);
+    cpu->gsp_reset_released = released;
+    gsp_emit_bus_event(cpu, MUSASHI_GSP_BUS_RESET_CONTROL, address, value,
+                       lane_mask, width_bits, released);
+}
+
 /* 16-bit write to the host port window. */
 static void gsp_host_write_word(musashi_cpu_t *cpu, unsigned byte_offset,
                                 uint16_t value)
@@ -1328,8 +1417,9 @@ unsigned int m68k_read_memory_8(unsigned int address)
     case REGION_GSP:
         /* Byte reads see one half of the register word.  Big-endian: the low
          * byte offset is the LSB. */
-        return (address & 1u) ? (gsp_host_read_word(s_cpu, address & 0xFFu) & 0xFF)
-                              : (gsp_host_read_word(s_cpu, address & 0xFFu) >> 8);
+        return (address & 1u)
+            ? (gsp_host_read_word(s_cpu, offset - 0x00C00000u) & 0xFF)
+            : (gsp_host_read_word(s_cpu, offset - 0x00C00000u) >> 8);
     case REGION_IRQACK: {
         uint16_t port = port0_status(s_cpu);
         return (address & 1u) ? (port & 0xFF) : (port >> 8);
@@ -1409,9 +1499,10 @@ unsigned int m68k_read_memory_16(unsigned int address)
         return 0xFFFF;
     }
     case REGION_GSP:
-        /* The driver maps 0xC00000-0xC03FFF but implements four registers;
-         * the byte offset within the window selects which. */
-        return gsp_host_read_word(s_cpu, address & 0xFFu);
+        /* harddriv.cpp maps only 0xC00000-0xC03FFF. The word-index decode
+         * aliases each adjacent pair of byte offsets; higher indices are
+         * invalid host registers and read as zero. */
+        return gsp_host_read_word(s_cpu, offset - 0x00C00000u);
     case REGION_IRQACK:
         /* Same status word as the 8-bit path above. */
         return port0_status(s_cpu);
@@ -1479,8 +1570,18 @@ unsigned int m68k_read_memory_32(unsigned int address)
         return 0xFFFFFFFFu;
     }
     case REGION_GSP:
-        return (uint32_t)gsp_host_read_word(s_cpu, address & 0xFFu) << 16 |
-               (uint32_t)gsp_host_read_word(s_cpu, (address + 2) & 0xFFu);
+        {
+            uint32_t value =
+                (uint32_t)gsp_host_read_word(
+                    s_cpu, offset - 0x00C00000u) << 16;
+            if (address + 2u <= 0x00C03FFFu) {
+                value |= gsp_host_read_word(
+                    s_cpu, offset - 0x00C00000u + 2u);
+            } else {
+                value |= 0xFFFFu;
+            }
+            return value;
+        }
     case REGION_INPUT: {
         int32_t value = 0;
         if (s_cpu->ports &&
@@ -1549,14 +1650,18 @@ void m68k_write_memory_8(unsigned int address, unsigned int value)
     case REGION_GSP:
         /* Byte write: read-modify-write the 16-bit register word. */
         if (address & 1u) {
-            uint16_t cur = gsp_host_read_word(s_cpu, address & 0xFFu);
-            gsp_host_write_word(s_cpu, address & 0xFFu,
-                                (uint16_t)((cur & 0x00FFu) | (value & 0xFFu)));
+            unsigned host_offset = offset - 0x00C00000u;
+            uint16_t cur = gsp_host_read_word(s_cpu, host_offset);
+            uint16_t merged = (uint16_t)((cur & 0xFF00u) | (value & 0xFFu));
+            gsp_host_write_word(s_cpu, host_offset, merged);
+            gsp_emit_host_write_event(s_cpu, address, merged, 0x00FFu, 8u);
         } else {
-            uint16_t cur = gsp_host_read_word(s_cpu, address & 0xFFu);
-            gsp_host_write_word(s_cpu, address & 0xFFu,
-                                (uint16_t)((cur & 0xFF00u) |
-                                           ((value & 0xFFu) << 8)));
+            unsigned host_offset = offset - 0x00C00000u;
+            uint16_t cur = gsp_host_read_word(s_cpu, host_offset);
+            uint16_t merged = (uint16_t)((cur & 0x00FFu) |
+                                         ((value & 0xFFu) << 8));
+            gsp_host_write_word(s_cpu, host_offset, merged);
+            gsp_emit_host_write_event(s_cpu, address, merged, 0xFF00u, 8u);
         }
         break;
     case REGION_IRQACK:
@@ -1588,10 +1693,17 @@ void m68k_write_memory_8(unsigned int address, unsigned int value)
         (void)stunrun_jsa_transport_write(s_cpu->jsa_latches, offset, 1u,
                                           (uint8_t)value);
         break;
+    case REGION_SOUNDRST: {
+        uint16_t bus_value = (address & 1u) ? (uint16_t)(value & 0xFFu)
+                                            : (uint16_t)((value & 0xFFu) << 8);
+        uint16_t lane_mask = (address & 1u) ? 0x00FFu : 0xFF00u;
+        gsp_emit_reset_control_event(s_cpu, address, bus_value, lane_mask, 8u);
+        break;
+    }
     case REGION_ADSP_DATA: case REGION_ADSP_BUF:
     case REGION_ADSP_CTRL:
     case REGION_INPUT: case REGION_GSP_PAL:
-    case REGION_GSP_VRAM_MIRROR: case REGION_ADSP_IRQ: case REGION_SOUNDRST:
+    case REGION_GSP_VRAM_MIRROR: case REGION_ADSP_IRQ:
         /* TODO: wire to proper MMIO handlers */
         break;
     }
@@ -1613,8 +1725,15 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
         break;
     case REGION_GSP:
         /* The display list arrives here, one word per HSTDAT write. */
-        stunrun_hostprobe(address & 0xFFu, (uint16_t)value);
-        gsp_host_write_word(s_cpu, address & 0xFFu, (uint16_t)value);
+        stunrun_hostprobe(offset - 0x00C00000u, (uint16_t)value);
+        gsp_host_write_word(s_cpu, offset - 0x00C00000u,
+                            (uint16_t)value);
+        gsp_emit_host_write_event(s_cpu, address, (uint16_t)value,
+                                  0xFFFFu, 16u);
+        break;
+    case REGION_SOUNDRST:
+        gsp_emit_reset_control_event(s_cpu, address, (uint16_t)value,
+                                     0xFFFFu, 16u);
         break;
     case REGION_GSP_VRAM_MIRROR:
         /* Writes to GSP VRAM mirror */
@@ -1649,7 +1768,7 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
     case REGION_ADSP_DATA: case REGION_ADSP_BUF:
     case REGION_ADSP_CTRL:
     case REGION_INPUT: case REGION_GSP_PAL:
-    case REGION_ADSP_IRQ: case REGION_SOUNDRST:
+    case REGION_ADSP_IRQ:
         break;
     }
 }
@@ -1671,9 +1790,23 @@ void m68k_write_memory_32(unsigned int address, unsigned int value)
     case REGION_GSP:
         /* Only 16-bit registers exist; a long write becomes two of them in
          * big-endian order. */
-        gsp_host_write_word(s_cpu, (address) & 0xFFu, (uint16_t)(value >> 16));
-        gsp_host_write_word(s_cpu, (address + 2) & 0xFFu,
-                            (uint16_t)(value & 0xFFFFu));
+        gsp_host_write_word(s_cpu, offset - 0x00C00000u,
+                            (uint16_t)(value >> 16));
+        gsp_emit_host_write_event(s_cpu, address, (uint16_t)(value >> 16),
+                                  0xFFFFu, 16u);
+        if (address + 2u <= 0x00C03FFFu) {
+            gsp_host_write_word(s_cpu, offset - 0x00C00000u + 2u,
+                                (uint16_t)(value & 0xFFFFu));
+            gsp_emit_host_write_event(s_cpu, address + 2u,
+                                      (uint16_t)(value & 0xFFFFu),
+                                      0xFFFFu, 16u);
+        }
+        break;
+    case REGION_SOUNDRST:
+        gsp_emit_reset_control_event(s_cpu, address,
+                                     (uint16_t)(value >> 16), 0xFFFFu, 16u);
+        gsp_emit_reset_control_event(s_cpu, address + 2,
+                                     (uint16_t)value, 0xFFFFu, 16u);
         break;
     case REGION_GSP_VRAM_MIRROR:
         stunrun_mem_write32_be(s_cpu->ports, offset, value);

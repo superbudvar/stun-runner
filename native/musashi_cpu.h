@@ -85,6 +85,31 @@ typedef struct musashi_gsp_write {
     uint32_t pc;     /* MC68010 PC executing the HSTDAT write */
 } musashi_gsp_write_t;
 
+typedef enum musashi_gsp_bus_event_kind {
+    MUSASHI_GSP_BUS_HOST_WINDOW = 1,
+    MUSASHI_GSP_BUS_RESET_CONTROL = 2
+} musashi_gsp_bus_event_kind_t;
+
+/* One ordered MC68010 event affecting the TMS34010.  Host-window events retain
+ * the raw byte address; providers apply their own register-index decode.  Long
+ * CPU writes are exposed as two 16-bit host events.  For byte host writes,
+ * `data` is the native effective 16-bit word after lane merge; consumers must
+ * merge only lane_mask into their own register state.  Reset-control events
+ * also carry the active-low board line's decoded released/asserted state. */
+typedef struct musashi_gsp_bus_event {
+    uint64_t sequence;        /* monotonically increasing within this CPU instance */
+    uint32_t address;         /* original MC68010 byte address */
+    uint32_t pc;              /* MC68010 PC at the bus callback */
+    uint16_t data;            /* effective host word or reset bus value */
+    uint16_t lane_mask;       /* 0xFFFF word, 0xFF00 even-byte, 0x00FF odd-byte */
+    uint8_t width_bits;       /* 8 or 16; long writes split into 16-bit events */
+    musashi_gsp_bus_event_kind_t kind;
+    uint8_t gsp_reset_released; /* valid for RESET_CONTROL; active-low /GSPRES */
+} musashi_gsp_bus_event_t;
+
+typedef void (*musashi_gsp_bus_observer_t)(
+    void *context, const musashi_gsp_bus_event_t *event);
+
 /* Create/destroy the CPU */
 musashi_cpu_t *musashi_cpu_create(void);
 void musashi_cpu_destroy(musashi_cpu_t *cpu);
@@ -104,6 +129,15 @@ void musashi_cpu_set_ports(musashi_cpu_t *cpu, stunrun_fake_ports_t *ports);
  * Pass NULL to detach. */
 void musashi_cpu_set_jsa_latches(musashi_cpu_t *cpu,
                                  struct stunrun_jsa_latches *latches);
+
+/* Observe live MC68010 writes to MAME's TMS34010 host window and /GSPRES. The
+ * callback runs synchronously after the native host-register side effect.  It
+ * receives only actual MC68010 bus writes (not calls to C display-list slice
+ * adapters).  Pass NULL to detach; callback context remains caller-owned. */
+void musashi_cpu_set_gsp_bus_observer(
+    musashi_cpu_t *cpu, musashi_gsp_bus_observer_t observer,
+    void *context);
+int musashi_cpu_gsp_reset_released(const musashi_cpu_t *cpu);
 
 /* Reset the CPU */
 void musashi_cpu_reset(musashi_cpu_t *cpu);

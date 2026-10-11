@@ -50,7 +50,10 @@ interaction or mouse input is required:
 
 The windowed option selects SDL with `-window`; it does not use fullscreen.
 For safe visual captures, add `--isolated-display`; this runs the windowed SDL
-output on a private Xvfb display rather than the physical desktop.
+output on a private Xvfb display rather than the physical desktop. The process
+helper normalizes Xvfb's `-displayfd` numeric response to the X11 `:N` form
+before setting `DISPLAY`; `tests/test_mame_process.py` checks that the isolated
+display is actually reachable with `xdpyinfo` when Xvfb is installed.
 
 To build a reviewable screen oracle, request several frame targets and a
 directory of PNG snapshots. The service input is asserted before reset:

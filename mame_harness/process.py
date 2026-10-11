@@ -35,10 +35,12 @@ def run_mame(
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             start_new_session=(os.name == "posix"),
         )
-        display = display_process.stdout.readline().strip()
-        if not display:
+        display_number = display_process.stdout.readline().strip()
+        display_process.stdout.close()
+        if not display_number:
             _stop_process_group(display_process)
             raise RuntimeError("Xvfb did not provide a display number")
+        display = display_number if display_number.startswith(":") else f":{display_number}"
         process_env["DISPLAY"] = display
     process = subprocess.Popen(
         list(command),

@@ -630,6 +630,32 @@ add_test(NAME gsp-upload-callers-musashi-c
   COMMAND stunrun-gsp-upload-callers-musashi-test)
 set_tests_properties(gsp-upload-callers-musashi-c PROPERTIES TIMEOUT 120)
 
+# Observe ordered MC68010 writes in the TMS34010 host window and the board's
+# /GSPRES control.  The fixture runs real Musashi MOVE.B/.W/.L instructions
+# from synthetic RAM and checks raw addresses, lane merge, longword splitting,
+# effective HSTDAT effects, and active-low reset assert/release sequencing.
+add_executable(stunrun-gsp-host-write-observer-musashi-test
+  gsp_host_write_observer_musashi_test.c
+  jsa_transport.c
+  ../reproduction/sound/jsa_latch.c
+  fake_ports.c
+  musashi_cpu.c
+  musashi_loader.c
+  cpu_override.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kops.c)
+target_include_directories(stunrun-gsp-host-write-observer-musashi-test PRIVATE
+  . ../reproduction/sound ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi)
+target_link_libraries(stunrun-gsp-host-write-observer-musashi-test PRIVATE
+  m
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kcpu.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kdasm.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/softfloat/softfloat.o)
+set_target_properties(stunrun-gsp-host-write-observer-musashi-test PROPERTIES
+  C_STANDARD 99)
+add_test(NAME gsp-host-write-observer-musashi-c
+  COMMAND stunrun-gsp-host-write-observer-musashi-test)
+set_tests_properties(gsp-host-write-observer-musashi-c PROPERTIES TIMEOUT 120)
+
 # --- jsa_transport slice --------------------------------------------------
 # The 68010 -> JSA-II sound-board transport.  harddriv.cpp:4806 maps all of
 # 0x600000-0x603FFF to one 8-bit handler pair (main_command_w on write,
