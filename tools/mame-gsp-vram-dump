@@ -3,13 +3,22 @@
 
 tools/mame-gsp-state-snapshot reports vram_high_sum32, which is a stride sweep
 of the share. That is the right shape for a checksum and the wrong shape for an
-image: it cannot answer "are these 512 KiB identical", which is the question
+image: it cannot answer "are these bytes identical", which is the question
 tools/check-gsp-replay asks when it compares a native board-model replay
 against the original machine.
 
 This captures every word consecutively from 0xff800000 and writes it
-little-endian, the byte order native/gsp_rtl/gsp_board.c stores, so the two are
+little-endian, the byte order the native VRAM paths store, so the two are
 directly comparable.
+
+The default extent is the whole 4 MiB share. An earlier version of this tool
+defaulted to 512 KiB because native/gsp_rtl/gsp_board.h said GSP_BOARD_VRAM_BYTES
+was 0x80000. That constant was wrong: measured against the driver, the window
+0xff800000-0xffffffff carries 4 MiB of distinct content, and
+docs/mc68010-boot-findings.md records the 0x80000 -> 0x400000 correction. A
+512 KiB capture is not a small view of the share, it is a different thing: it is
+the first page only, and the page-600 fixture committed under an oracle name was
+exactly that mistake. See findings section 19.
 
 The capture is rejected if it contains no nonzero word. A misconfigured read
 produces a correctly sized file full of zeros that otherwise looks like a
@@ -19,12 +28,15 @@ without -nvram_directory, which is why this tool always passes one.
 Measured on this driver at frame 600, headless:
 
   * -nvram_directory omitted -> 0 of 262144 words nonzero.
-  * -nvram_directory set     -> 262128 of 262144 nonzero, 546 distinct values.
+  * -nvram_directory set     -> 262128 of 262144 nonzero over 512 KiB;
+                                1664200 of 2097152 nonzero over 4 MiB.
 
-The host window mirrors with period 4 MiB (mask bit 22): the 512 KiB page at
-n * 0x400000 is identical for n = 0, 1, 2, 3, and the four 512 KiB pages inside
-one period differ from each other. The default capture is the first 512 KiB,
-matching the native board model's share; raise --words to take more.
+The host window mirrors with period 4 MiB (mask bit 22): over a full 8 MiB
+capture every 512 KiB page is byte-identical to its twin 4 MiB away, and the
+pages inside one period differ from each other. Page 0 is additionally identical
+to page 4, a 2 MiB delta; that is a content period in what the ROM wrote, not a
+mirror period, and it is recorded in the findings doc rather than treated as
+decode evidence.
 
 Usage:
     tools/mame-gsp-vram-dump roms /tmp/stunrun-oracle \
@@ -64,8 +76,9 @@ def main() -> int:
                         help="emulated frames to run (bounds the MAME process)")
     parser.add_argument("--target", type=int, default=600,
                         help="frame to capture the share at")
-    parser.add_argument("--words", type=int, default=0x40000,
-                        help="words to capture; default 262144 = the whole 512 KiB share")
+    parser.add_argument("--words", type=int, default=0x200000,
+                        help="words to capture; default 2097152 = the whole 4 MiB share. "
+                             "Use 262144 only to reproduce the retired 512 KiB fixture")
     parser.add_argument("--input", choices=INPUT_MODES, default="none")
     parser.add_argument("--mame", default="mame")
     parser.add_argument("--nothrottle", action="store_true",

@@ -10,11 +10,15 @@
 --
 -- So this reads every word consecutively instead.  The output is byte-for-byte
 -- comparable against a native board-model replay: same address range, same
--- little-endian word order that native/gsp_rtl/gsp_board.{c,h} stores.
+-- little-endian word order the native VRAM paths store.
 --
--- The share is 512 KiB, not 4 MiB (docs/mc68010-boot-findings.md 12.1:
--- m_vram_mask = 0x3FFFF), and it is read at the start of the declared 4 MiB
--- host window, 0xff800000.
+-- The share is 4 MiB, read at the start of the host window, 0xff800000.  An
+-- earlier version of this script defaulted to 512 KiB words on the strength of
+-- GSP_BOARD_VRAM_BYTES = 0x80000 in native/gsp_rtl/gsp_board.h.  That constant
+-- was wrong: the window carries 4 MiB of distinct content.  A 512 KiB capture
+-- is not a smaller view of the share, it is only its first page -- which is
+-- what made the committed "frame 600" fixture not-VRAM.  See
+-- docs/mc68010-boot-findings.md section 19.
 --
 -- The nonzero-word count is reported because a misconfigured read is silent:
 -- it yields a correctly sized file full of zeros that looks like a valid
@@ -24,7 +28,7 @@
 -- Environment:
 --   STUNRUN_GSP_VRAM_OUT    output path (required)
 --   STUNRUN_GSP_VRAM_FRAME  frame to capture at (default 600)
---   STUNRUN_GSP_VRAM_WORDS  words to capture (default 262144 = the whole share)
+--   STUNRUN_GSP_VRAM_WORDS  words to capture (default 2097152 = 4 MiB share)
 --   STUNRUN_GSP_VRAM_INPUT  input mode; same names and timing as
 --                           gsp-state-snapshot.lua, so a dump and a state
 --                           snapshot can be taken of the same machine state
@@ -35,7 +39,7 @@ local space = assert(gsp.spaces['program'], 'no GSP program space')
 
 local out_path = assert(os.getenv('STUNRUN_GSP_VRAM_OUT'), 'STUNRUN_GSP_VRAM_OUT is required')
 local target = tonumber(os.getenv('STUNRUN_GSP_VRAM_FRAME') or '600')
-local words = tonumber(os.getenv('STUNRUN_GSP_VRAM_WORDS') or '262144')
+local words = tonumber(os.getenv('STUNRUN_GSP_VRAM_WORDS') or '2097152')
 local base = 0xff800000
 local input_mode = os.getenv('STUNRUN_GSP_VRAM_INPUT') or 'none'
 

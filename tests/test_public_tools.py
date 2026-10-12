@@ -575,6 +575,18 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn("entirely zero", tool)
         self.assertIn("dump_sha256", tool)
 
+    def test_gsp_vram_dump_defaults_to_the_whole_4mib_share(self):
+        # The share is 4 MiB. A 512 KiB capture is only its first page, which
+        # is how the committed "frame 600" fixture came to be not-VRAM.
+        tool = (ROOT / "tools" / "mame-gsp-vram-dump").read_text(encoding="utf-8")
+        lua = (ROOT / "mame" / "lua" / "gsp-vram-dump.lua").read_text(encoding="utf-8")
+        self.assertIn('default=0x200000', tool)
+        self.assertIn("or '2097152'", lua)
+        self.assertNotIn('default=0x40000', tool)
+        self.assertNotIn("or '262144'", lua)
+        # --words must still let the retired extent be reproduced deliberately.
+        self.assertIn("retired 512 KiB fixture", tool)
+
     def test_gsp_vram_dump_always_sets_an_nvram_directory(self):
         # -nonvram_save stops MAME writing NVRAM but not loading it, so a run
         # without an explicit directory inherits ~/.mame/nvram/stunrun/ and the
