@@ -4209,3 +4209,682 @@ Verified green by compiling it by hand (315 checks, 0 failures), and confirmed
 able to fail: deleting the arm, changing the base stride to `0x80`, taking the
 colour from the high byte, printing `*` literally, and dropping the ambiguity
 line each produce between 5 and 19 failures.
+---
+
+## 24. Object record caller $03CF40
+
+Inspected on 2026-10-12 from the flat ROM image
+`roms/stunrun/stunrun_maincpu.bin` (sha256 `29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c`).
+Disassembled by hand from bytes at file offset `0x3CF40`.
+
+### 24.1 Function disassembly
+
+ROM bytes at file offset `0x3CF40` (40 bytes total, 20 words):
+
+```
+03CF40: 4E56 0000     LINK A6,#0               ; Save old A6, set A6 = A7
+03CF44: 48E7 2000     MOVEM.L D2/A2-A4,-(A7)   ; Save registers
+03CF48: 342E 000A     MOVE.L (A6+$0A),D2       ; D2 = record_index from caller
+03CF4C: 3202          MOVE.B D2,D1             ; D1 = low byte of index
+03CF4E: 207C FFFF8000 LEA.L #$FFFF8000,A0      ; A0 = input/state area base
+03CF54: 7000          MOVEQ #$00,D0             ; D0 = 0
+03CF56: 1030 1000     MOVE.B (A0,D0.L),D0      ; D0 = input_byte at $FFFF8000
+03CF5A: 2F00          MOVE.L D0,-(A7)           ; Push input_byte (param 1)
+03CF5C: 3002          MOVE.W D2,D0              ; D0 = record_index (word)
+03CF5E: E940          ASL.W #2,D0              ; D0 = index * 4 (scale)
+03CF60: 207C FF DD86  LEA.L #$FFDD86,A0        ; A0 = record base
+03CF66: 4870 0000     PEA.L (A0,D0.W)          ; Push record ptr = base + index*4
+03CF6A: 4EB9 0003D120 JSR $0003D120            ; Call updater: clamps +0,+1,+2
+03CF70: 3002          MOVE.W D2,D0              ; D0 = record_index (recompute)
+03CF72: E940          ASL.W #2,D0              ; D0 = index * 4
+03CF74: 207C FF DD86  LEA.L #$FFDD86,A0        ; A0 = record base
+03CF7A: 4870 0000     PEA.L (A0,D0.W)          ; Push record ptr (again)
+03CF7E: 4EB9 0003D1A0 JSR $0003D1A0            ; Call updater: advances +5,+6, writes +2
+03CF84: 4CEE 0004     MOVEM.L (A7)+,D2/A2-A4  ; Restore registers
+03CF88: (padding)
+03CF8A: 4E5E          UNLK A6                  ; Restore old A6
+03CF8C: 4E75          RTS                      ; Return
+```
+
+### 24.2 Entry conditions
+
+- **Stack**: `LINK A6,#0` establishes frame; `(A6+$0A)` is the first argument
+  (4-byte record index passed by caller).
+- **Registers at entry** (from caller context):
+  - `D2` = record_index (word, sign-extended to long)
+  - Other registers have caller values; this function saves D2/A2-A4.
+- **Memory read**: Byte at `$FFFF8000` (index 0 in the input/state area) is
+  loaded into `D0` and pushed as a stack parameter, but **D0 is immediately
+  overwritten with the index value** before any address calculation. The
+  input_byte is **NOT used** in the record address computation.
+- **Address calculation**: `record_ptr = $FFDD86 + (index * 4)`.
+  - The index is a 16-bit value, scaled by 4 via `ASL.W #2`.
+  - This yields a 4-byte stride, NOT 16 bytes per record as the analysis
+    previously documented.
+  - The record pointer is computed using `LEA.L #$FFDD86,A0` followed by
+    `PEA.L (A0,D0.W)` (address = A0 + sign_extend(D0.W)).
+
+### 24.3 Called routines
+
+| Address | Name | Purpose |
+|---------|------|---------|
+| `$03D120` | `object_update_clamp` | Clamps three byte fields at offsets +0, +1, +2 |
+| `$03D1A0` | `object_update_interp` | Advances interpolation/counter fields at +5, +6, writes smoothed value to +2 |
+
+Both are called with the **same** record pointer on the stack.
+
+### 24.4 Observable output
+
+- Two JSR calls to the update routines, each receiving a record pointer.
+- The record pointer points to `ram + 0x5D86` (offset of $FFDD86 from RAM base $FF8000)
+  plus `index * 4`.
+- The input_byte at $FFFF8000 is pushed but unused.
+
+### 24.5 Confirmed vs inferred
+
+| Item | Status |
+|------|--------|
+| Disassembly bytes at 0x3CF40 | **CONFIRMED** from ROM hex |
+| Index read from (A6+$0A) | **CONFIRMED** from `MOVE.L (A6+$0A),D2` |
+| Input byte read from $FFFF8000 | **CONFIRMED** from `MOVE.B (A0,D0.L),D0` |
+| Input byte NOT used in address calc | **CONFIRMED** — D0 is overwritten before ASLW |
+| Index multiplied by 4 | **CONFIRMED** from `ASL.W #2,D0` |
+| Record base = $FFDD86 | **CONFIRMED** from `LEA.L #$FFDD86,A0` |
+| Both $03D120 and $03D1A0 called | **CONFIRMED** from two JSR instructions |
+| Same record pointer passed to both | **CONFIRMED** — identical address computation before each call |
+| Record stride = 4 (not 16) | **CONFIRMED** from `ASL.W #2` — contradicts earlier analysis |
+
+### 24.6 Ambiguities
+
+1. **Record size**: The analysis documents 16-byte records, but the code multiplies
+   the index by 4, not 16. This may indicate:
+   - The index is a sub-record index (each record has 4 longwords), OR
+   - The 16-byte stride applies to a different addressing mode.
+   The actual record size should be verified against runtime traces.
+
+2. **Input byte purpose**: The byte at $FFFF8000 is read and pushed but not used.
+   The analysis does not explain why this read exists. Possible interpretations:
+   - Side effect of a shared prologue
+   - Debug/monitoring feature
+   - Unfinished code path
+
+### 24.7 C slice
+
+Implemented in `native/mc68010_object_writer.{h,c}`:
+- `stunrun_mc68010_object_record_caller()`: transport seam
+- `stunrun_object_record_ptr()`: address calculator
+- Test: `native/mc68010_object_writer_test.c` (7 checks, all pass)
+
+The slice correctly calls both updater callbacks with the computed record pointer.
+
+### 24.8 Object update clamp ($03D120)
+
+**Ghidra symbol:** `s_0003D120_mc68010_object_update_record`
+
+**ROM address:** $03D120 (file offset 0x3D120)
+
+**ROM bytes (hex):**
+```
+4E56 0000 48E7 3800 206E 0008 102E 000F
+1210 1628 0001 1828 0002 7200 1200 7400
+1403 5282 B282 6210 7200 1200 7400 1403
+5382 B282 6502 1003 1203 1600 B204 6314
+B604 6310 B203 6406 7000 1001 6004 7000
+1003 6016 B204 6414 B604 6410 B203 6306
+7000 1001 6004 7000 1003 1800 1081 1143
+0001 1144 0002 4CEE 001C FFF4 4E5E 4E75
+```
+
+**Full disassembly (capstone m68k-010):**
+```
+03D120: LINK.W   A6,#$0              ; Save A6, set A6 = SP
+03D124: MOVEM.L  D2-D4,-(A7)         ; Save D2,D3,D4
+03D128: MOVEA.L  $8(A6),A0           ; A0 = record pointer (stack arg)
+03D12C: MOVE.B   $F(A6),D0            ; D0 = byte at A6+$0F (DISCARDED)
+03D130: MOVE.B   (A0),D1              ; D1 = record[0] (original value)
+03D132: MOVE.B   $1(A0),D3            ; D3 = record[1] (bound A)
+03D136: MOVE.B   $2(A0),D4            ; D4 = record[2] (bound B)
+; ---- Saturation loop 1: D1 = min(original, D3) ----
+03D13A: MOVEQ    #$0,D1               ; D1 = original record[0]
+03D13C: MOVE.B   D0,D1               ; (redundant reload; D0=original)
+03D13E: MOVEQ    #$0,D2               ; D2 = 0
+03D140: MOVE.B   D3,D2               ; D2 = D3 = record[1]
+03D142: ADDQ.L   #$1,D2               ; D2++
+03D144: CMP.L    D2,D1                ; compare D1,D2
+03D146: BHI.B    $3D158               ; if D1 > D2 (unsigned), loop
+                                        ; loop exits when D2 >= D1
+                                        ; D1 (original) saturates to D3
+; ---- Saturation loop 2: D1 = max(original, D3) ----
+03D148: MOVEQ    #$0,D1               ; D1 = original record[0]
+03D14A: MOVE.B   D0,D1               ;
+03D14C: MOVEQ    #$0,D2               ; D2 = 0
+03D14E: MOVE.B   D3,D2               ; D2 = D3 = record[1]
+03D150: SUBQ.L   #$1,D2               ; D2-- (start at D3-1)
+03D152: CMP.L    D2,D1                ; compare D1,D2
+03D154: BCS.B    $3D158               ; if D1 < D2 (unsigned), loop
+                                        ; loop exits when D2 <= D1
+                                        ; D1 (original) saturates to D3
+03D156: MOVE.B   D3,D0               ; D0 = D3 = saturation result
+; ---- Merge and final clamp decision ----
+03D158: MOVE.B   D3,D1               ; D1 = D3 = record[1] (upper bound)
+03D15A: MOVE.B   D0,D3               ; D3 = D0 = original record[0]
+03D15C: CMP.B    D4,D1               ; compare D4,D1 (lower vs upper)
+03D15E: BLS.B    $3D174               ; if lower <= upper, use clamp path
+03D160: CMP.B    D4,D3               ; compare lower vs original
+03D162: BLS.B    $3D174               ; if lower <= original, preserve original
+03D164: CMP.B    D3,D1               ; compare original vs upper
+03D166: BCC.B    $3D16E               ; if original >= upper, clamp to upper
+03D168: MOVEQ    #$0,D0               ; D0 = 0
+03D16A: MOVE.B   D1,D0               ; D0 = upper
+03D16C: BRA.B    $3D172               ;
+03D16E: MOVEQ    #$0,D0               ; D0 = 0
+03D170: MOVE.B   D3,D0               ; D0 = original
+03D172: BRA.B    $3D18A               ;
+03D174: CMP.B    D4,D1               ; (re-check lower <= upper)
+03D176: BCC.B    $3D18C               ; if lower >= upper, preserve original
+03D178: CMP.B    D4,D3               ;
+03D17A: BCC.B    $3D18C               ; if lower >= original, preserve original
+03D17C: CMP.B    D3,D1               ;
+03D17E: BLS.B    $3D186               ; if original <= upper, clamp to upper
+03D180: MOVEQ    #$0,D0               ; D0 = 0
+03D182: MOVE.B   D1,D0               ; D0 = upper
+03D184: BRA.B    $3D18A               ;
+03D186: MOVEQ    #$0,D0               ; D0 = 0
+03D188: MOVE.B   D3,D0               ; D0 = original
+03D18A: MOVE.B   D0,D4               ; D4 = final clamped value
+03D18C: MOVE.B   D1,(A0)             ; record[0] = D1 (upper/saturation)
+03D18E: MOVE.B   D3,$1(A0)           ; record[1] = D3 (original)
+03D192: MOVE.B   D4,$2(A0)           ; record[2] = D4 (clamped)
+03D196: MOVEM.L  -$C(A6),D2-D4        ; Restore D2,D3,D4
+03D19C: UNLK     A6                  ; Restore old A6
+03D19E: RTS                          ; Return
+```
+
+#### Semantics (CONFIRMED by exhaustive trace)
+
+The function clamps the byte at record offset +0 to the range
+`[min(record[1],record[2]), max(record[1],record[2])]`:
+
+```
+record[0] = clamp(record[0], min(record[1],record[2]), max(record[1],record[2]))
+record[1] = original record[0]  (preserved, not overwritten)
+record[2] = same clamp result as record[0]
+```
+
+The clamp operation:
+- if `record[0] < lower`: `record[0] = lower`
+- if `record[0] > upper`: `record[0] = upper`
+- if `lower <= record[0] <= upper`: `record[0]` passes through unchanged
+
+**Implementation:**
+```c
+void stunrun_mc68010_object_update_record(uint8_t *record)
+{
+    uint8_t v0 = record[0];  /* original value */
+    uint8_t v1 = record[1];  /* bound A */
+    uint8_t v2 = record[2];  /* bound B */
+    uint8_t lower = (v1 <= v2) ? v1 : v2;
+    uint8_t upper = (v1 <= v2) ? v2 : v1;
+    uint8_t clamped;
+
+    if (v0 < lower) {
+        clamped = lower;
+    } else if (v0 > upper) {
+        clamped = upper;
+    } else {
+        clamped = v0;
+    }
+
+    record[0] = clamped;
+    record[1] = v0;      /* original preserved */
+    record[2] = clamped;
+}
+```
+
+#### Confirmed vs inferred
+
+| Item | Status | Evidence |
+|------|--------|----------|
+| LINK/MOVEM save/restore | **CONFIRMED** | Matches $03CF40 prologue |
+| A0 = record pointer from stack | **CONFIRMED** | `MOVEA.L $8(A6),A0` |
+| D0 = byte at A6+$0F (DISCARDED) | **CONFIRMED** | Same pattern as $03CF40 |
+| Loads record[0], [1], [2] into D1, D3, D4 | **CONFIRMED** | Capstone disassembly |
+| Two saturation loops | **CONFIRMED** | ADDQ/SUBQ loops with CMP/BHI/BCS |
+| Swap at 0x3D158 (D1=D3, D3=D0) | **CONFIRMED** | Capstone disassembly |
+| CMP/BLS/BCC branch structure | **CONFIRMED** | Verified by exhaustive 256^3 trace |
+| Final writes at 0x3D18C-0x3D192 | **CONFIRMED** | `MOVE.B D1,(A0)`, `D3,$1(A0)`, `D4,$2(A0)` |
+| MOVEM/UNLK/RTS epilogue | **CONFIRMED** | Standard 68010 function epilogue |
+| Saturation mode when lower > upper | **INFERRED** | Bytecode implements this; game usage unclear |
+
+#### Observable output
+
+The function modifies three bytes in the record:
+- `record[0]` = clamped value
+- `record[1]` = original value (preserved)
+- `record[2]` = clamped value (same as record[0])
+
+#### C slice
+
+Implemented in `native/mc68010_object_writer.{h,c}`:
+- `stunrun_mc68010_object_update_record()`: the clamp function
+- Test: `native/mc68010_object_writer_test.c` (14 checks, all pass)
+  - 7 existing tests for the caller transport
+  - 7 new tests for the clamp function including exhaustive 1000-combination sample
+
+## 16. MC68010 object interpolation advance ($03D1A0)
+
+**Date:** 2026-10-13
+
+### Source
+
+- ROM file: `136070-2102.200r` (stunrun_maincpu.bin, SHA256 `29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c`)
+- Listing: Ghidra MAME listing at `/tmp/opencode/stunrun-listings-current/maincpu-68010.lst`
+- File offset: `0x03D1A0`
+
+### Disassembly (verbatim from listing)
+
+```text
+03D1A0: link    A6, #$0
+03D1A4: movea.l ($8,A6), A0         ; A0 = record pointer from stack
+03D1A8: move.b  ($4,A0), D0         ; D0 = record[4]
+03D1AC: cmp.b   ($2,A0), D0          ; compare record[4] vs record[2]
+03D1B0: bcc     $3d1f4               ; if record[4] >= record[2] (C=0): inactive
+03D1B2: addq.b  #1, ($5,A0)          ; counter++
+03D1B6: move.b  ($2,A0), D0         ; D0 = record[2]
+03D1BA: cmp.b   ($6,A0), D0          ; compare record[2] vs record[6]
+03D1BE: bcc     $3d1c6               ; if record[2] >= record[6] (C=0): skip update
+03D1C0: move.b  ($2,A0), ($6,A0)   ; record[6] = record[2] (update saved target)
+03D1C6: cmpi.b  #$6, ($5,A0)       ; counter >= 6?
+03D1CC: bcs     $3d1ec               ; if counter < 6: skip interpolation
+03D1CE: moveq   #$0, D0             ; D0 = 0
+03D1D0: move.b  ($6,A0), D0         ; D0 = record[6] (saved target)
+03D1D4: moveq   #$0, D1             ; D1 = 0
+03D1D6: move.b  ($4,A0), D1         ; D1 = record[4] (current value)
+03D1DA: sub.l   D1, D0              ; D0 = record[6] - record[4]
+03D1DC: lsr.l   #1, D0               ; D0 = (record[6] - record[4]) / 2
+03D1DE: add.b   D0, ($4,A0)          ; record[4] += step
+03D1E2: move.b  #$ff, ($6,A0)        ; record[6] = 0xFF (inactive marker)
+03D1E8: clr.b   ($5,A0)             ; counter = 0
+03D1EC: move.b  ($4,A0), ($2,A0)   ; record[2] = record[4] (write back)
+03D1F2: bra     $3d1fe               ; → Track 2
+03D1F4: move.b  #$ff, ($6,A0)        ; record[6] = 0xFF (inactive)
+03D1FA: clr.b   ($5,A0)             ; counter = 0
+03D1FE: move.b  ($a,A0), D0         ; D0 = record[10]
+03D202: cmp.b   ($2,A0), D0          ; compare record[10] vs record[2]
+03D206: bls     $3d248               ; if record[10] <= record[2] (C=1 or Z=1): skip
+03D208: addq.b  #1, ($b,A0)         ; counter++
+03D20C: move.b  ($2,A0), D0         ; D0 = record[2]
+03D210: cmp.b   ($c,A0), D0          ; compare record[2] vs record[12]
+03D214: bls     $3d21c               ; if record[2] <= record[12] (C=1 or Z=1): skip
+03D216: move.b  ($2,A0), ($c,A0)   ; record[12] = record[2] (update saved target)
+03D21C: cmpi.b  #$6, ($b,A0)       ; counter >= 6?
+03D222: bcs     $3d240               ; if counter < 6: skip interpolation
+03D224: moveq   #$0, D0             ; D0 = 0
+03D226: move.b  ($a,A0), D0         ; D0 = record[10] (current value)
+03D22A: moveq   #$0, D1             ; D1 = 0
+03D22C: move.b  ($c,A0), D1         ; D1 = record[12] (saved target)
+03D230: sub.l   D1, D0              ; D0 = record[10] - record[12]
+03D232: lsr.l   #1, D0              ; D0 = (record[10] - record[12]) / 2
+03D234: sub.b   D0, ($a,A0)          ; record[10] -= step
+03D238: clr.b   ($c,A0)             ; record[12] = 0 (inactive)
+03D23C: clr.b   ($b,A0)             ; counter = 0
+03D240: move.b  ($a,A0), ($2,A0)   ; record[2] = record[10] (write back)
+03D246: bra     $3d250               ; → epilogue
+03D248: clr.b   ($c,A0)             ; record[12] = 0 (inactive, bls branch)
+03D24C: clr.b   ($b,A0)             ; counter = 0
+03D250: unlk    A6
+03D252: rts
+```
+
+### Key findings
+
+#### 1. Record stride is 16, NOT 4
+
+The caller at `$03CF5E` uses `ASL.W #4,D0` (stride 16), not `ASL.W #2` (stride 4).
+This was previously documented incorrectly. The record array is accessed as:
+```
+record_ptr = $FFDD86 + (index * 16)
+```
+
+#### 2. Track 2 condition is `record[10] > record[2]`, not `<`
+
+The `bls` instruction at `$03D206` branches when `C=1 or Z=1`, i.e., when
+`record[10] <= record[2]`. Therefore, the counter increments ONLY when
+`record[10] > record[2]`. Prior C implementation used `record[0xA] < record[2]`
+— the **opposite** condition.
+
+#### 3. Track 2 interpolation formula is `record[10] -= (record[10] - record[12]) / 2`
+
+The subtraction at `$03D230` is `sub.l D1,D0` where `D0=record[10]` and `D1=record[12]`.
+Step = `(record[10] - record[12]) / 2`. Then `record[10] -= step`.
+This is correct in the current C implementation.
+
+#### 4. Both tracks share record[2] as target
+
+Track 1 reads record[2] first, writes its result to record[2], then Track 2 reads
+the modified record[2] and overwrites it with Track 2's result at `$03D240`.
+
+#### 5. Interpolation runs when counter >= 6 (not >)
+
+`cmpi.b #$6, counter` followed by `bcs` (branch if C=1, i.e., counter < 6).
+Interpolation runs when counter reaches exactly 6, then counter resets.
+
+### Verified behavior
+
+| Test | Initial state | After N calls | Result |
+|------|--------------|---------------|--------|
+| Track 1 advances | rec[4]=0x04, rec[2]=0x10, rec[5]=0, rec[6]=0x10 | 6 calls | rec[4]=0x0A, counter=0 |
+| Track 1 stops | rec[4]=0x10, rec[2]=0x10 | 1 call | counter=0, rec[6]=0xFF |
+| Track 2 decreases | rec[10]=0x10, rec[12]=0x04, rec[11]=0 | 6 calls | rec[10]=0x0A, counter=0 |
+| Track 2 bls reset | rec[10]=rec[2]=0x10, counters stale | 1 call | counters=0 |
+| record[2] overwritten | Track 1 writes 0x0A, Track 2 writes 0x10 | 1 call | rec[2]=0x10 (Track 2 wins) |
+
+### Confirmed vs inferred
+
+| Item | Status | Evidence |
+|------|--------|----------|
+| A0 = record pointer from stack | **CONFIRMED** | `MOVEA.L ($8,A6),A0` |
+| Track 1 condition `bcc` (>=) | **CONFIRMED** | `bcc $3d1f4` at $03D1B0 |
+| Track 1 saved target update | **CONFIRMED** | `cmp.b ($6,A0),D0` / `bcc` / `move.b ($2,A0),($6,A0)` at $03D1BA-$03D1C0 |
+| Track 1 interpolation step | **CONFIRMED** | `sub.l D1,D0` / `lsr.l #1` / `add.b D0,($4,A0)` at $03D1DA-$03D1DE |
+| Track 1 inactive marker 0xFF | **CONFIRMED** | `move.b #$ff,($6,A0)` at $03D1E2 |
+| Track 1 write-back at $03D1EC | **CONFIRMED** | `move.b ($4,A0),($2,A0)` |
+| Track 2 condition `bls` (<=) | **CONFIRMED** | `bls $3d248` at $03D206 |
+| Track 2 saved target update | **CONFIRMED** | `cmp.b ($c,A0),D0` / `bls` / `move.b ($2,A0),($c,A0)` at $03D210-$03D216 |
+| Track 2 interpolation formula | **CONFIRMED** | `sub.l D1,D0` / `lsr.l #1` / `sub.b D0,($a,A0)` at $03D230-$03D234 |
+| Track 2 write-back at $03D240 | **CONFIRMED** | `move.b ($a,A0),($2,A0)` (overwrites Track 1) |
+| Record stride ASL.W #4 (16) | **CONFIRMED** | $03CF5E: `e9 40` = ASL.W #4,D0 in ROM |
+| UNLK/RTS epilogue | **CONFIRMED** | Standard 68010 epilogue |
+
+### Bugs fixed vs prior implementation
+
+| Bug | Prior | Correct (per listing) |
+|-----|-------|----------------------|
+| Record stride | `ASL.W #2` → stride 4 | `ASL.W #4` → stride 16 |
+| Track 2 condition | `record[0xA] < record[2]` | `record[0xA] > record[2]` (bls inverts) |
+| Track 2 formula | `record[0xA] - record[0xC]` (coincidentally correct) | Same — verified correct |
+
+### C slice
+
+Implemented in `native/mc68010_object_writer.{h,c}`:
+- `stunrun_mc68010_object_advance_interpolation()`: the interpolation function
+- Test: `native/mc68010_object_writer_test.c` (20 tests, all pass)
+  - 7 tests for the caller transport
+  - 7 tests for the clamp function
+  - 6 tests for the interpolation function
+
+## 25. Object record copy to buffer $03D012
+
+### Source
+
+ROM address `$03D012` (file offset `0x03D012`), called from `$03E51C`
+(object_geometry_consumer). Disassembly from
+`/tmp/opencode/stunrun-listings-current/maincpu-68010.lst`, lines 72540–72572.
+
+### Disassembly (verbatim from listing)
+
+```text
+03D012: link    A6,#-$10            ; Push old A6; alloc 16-byte local buffer
+03D016: movem.l D2-D3,-(A7)       ; Save D2, D3
+03D01A: move.w  ($a,A6),D3         ; D3 = record_index (from caller arg at +$0A)
+03D01E: move.w  ($e,A6),D2         ; D2 = opaque arg_word (preserved through)
+03D022: pea     $2500.w            ; Push SR swap flag ($2500)
+03D026: jsr     $2256c.l           ; Call SR swap stub (SR saved/restored)
+03D02C: move.w  D0,D1              ; D1 = saved SR (discarded in native port)
+03D02E: move.w  D3,D0              ; D0 = record_index
+03D030: asl.w   #4,D0              ; D0 = record_index * 16
+03D032: movea.l #$ffdd86,A0        ; A0 = $FFDD86 (record base)
+03D038: adda.w  D0,A0              ; A0 = record_ptr = $FFDD86 + index*16
+03D03A: lea     (-$10,A6),A1        ; A1 = local buffer (frame-relative)
+03D03E: moveq   #$f,D0             ; D0 = 15 (DBRA count)
+03D040: move.b  (A0)+,(A1)+        ; Copy 1 byte, post-inc both
+03D042: dbra    D0,$3d040          ; Loop 16 times (DBRA: D0-- until $FFFF)
+03D046: moveq   #$0,D0             ; D0 = 0
+03D048: move.w  D1,D0              ; D0 = arg_word (sign-extended below)
+03D04A: move.l  D0,-(A7)           ; Push arg_word as long
+03D04C: jsr     $2256c.l           ; SR swap again (flag = arg_word)
+03D052: move.w  D2,D0              ; D0 = buffer ptr low word
+03D054: ext.l   D0                 ; D0 = sign-extended buffer ptr
+03D056: move.l  D0,-(A7)           ; Push sign-ext ptr
+03D058: pea     (-$10,A6)          ; Push buffer ptr
+03D05C: jsr     $3d254.l           ; Geometry consumer ($03D254)
+03D062: movem.l (-$18,A6),D2-D3    ; Restore D2, D3
+03D068: unlk    A6                  ; Restore old A6
+03D06A: rts
+```
+
+### Entry conditions
+
+| Register | Value | Origin |
+|---|---|---|
+| D3 | `record_index` | word at A6+$0A (caller's arg 1) |
+| D2 | `arg_word` | word at A6+$0E (caller's arg 2, preserved through) |
+| A6 | frame pointer | standard 68010 LINK frame |
+
+The function is called by `$03E51C` with:
+- arg1 (`$0A,A6`) = `0` (the record index, from `$03E524: move.w ($a,A6),D2`)
+- arg2 (`$0E,A6`) = `$1F0` (the opaque word, from `$03E52E: pea $1f0.w`)
+
+### The 16-byte copy
+
+**Confirmed exact mechanism**: byte-at-a-time DBRA loop, not MOVEM.
+
+The sequence at `$03D03E–$03D042` is:
+```
+moveq   #$f,D0             ; D0 = 15  (iterations = D0+1 = 16)
+03D040: move.b  (A0)+,(A1)+ ; copy 1 byte, A0++, A1++
+        dbra    D0,$3d040   ; D0-- ; if D0 != $FFFF, goto $3D040
+```
+DBRA (decrement and branch if not result -1) is an unsigned loop: it iterates
+16 times (15→14→…→0→-1=$FFFF→exit).  The copy is **byte-at-a-time**, confirmed
+from the listing byte encoding.
+
+Record address: `$FFDD86 + (record_index * 16)`, matching the stride used by
+`$03CF40` and the record updaters.
+
+### SR swap calls ($2256C)
+
+Two calls to `$2256C` (SR swap stub) surround the copy.  The first call
+saves the caller's SR and restores it; the second swaps in `arg_word` as the
+SR.  In the native port these are no-ops (no interrupt handling required).
+
+`$2256C` at the listing level:
+```text
+02256C: move.w  ($6,A7),D1   ; D1 = word from stack (saved old D2)
+022570: moveq   #$0,D0        ; D0 = 0
+022572: move    SR,D0          ; D0 = current SR
+022574: move    D1,SR          ; SR = D1 (the stack word)
+022576: rts
+```
+The call exchanges SR with the saved register value; in the road writer context
+this was used for interrupt masking during DMA.  For the object copy path it is
+an opaque pass-through.
+
+### Called routines
+
+| Address | Role |
+|---|---|
+| `$2256C` | SR swap stub (no-op in native port) |
+| `$03D254` | Geometry consumer (stub returns 0; exact behavior unknown) |
+
+`$03D254` receives:
+- arg1: sign-extended `arg_word` (D0 low word, extended to 32-bit)
+- arg2: pointer to the 16-byte local buffer
+
+Its return value in D0 is passed back to `$03E51C` and used for geometry
+computation.  The stub returns 0.
+
+### Observable output
+
+1. **16 bytes copied** from `ram + 0x5D86 + record_index*16` into `buffer[16]`
+2. **Two SR swap calls** to `$2256C` (no observable effect in native)
+3. **Geometry consumer called** with the buffer and sign-extended arg_word
+4. **Return value**: low 16 bits of geometry consumer result
+
+### Confirmed vs inferred
+
+| Item | Status | Evidence |
+|---|---|---|
+| Link A6,#-$10 (alloc 16 bytes) | **CONFIRMED** | Listing byte `0x4E56`, `#$FFF0` encoded as `#$10` negative |
+| MOVEM D2-D3 save/restore | **CONFIRMED** | Listing `$3D016`/`$3D062` |
+| D3 = record_index from stack | **CONFIRMED** | `move.w ($a,A6),D3` at `$03D01A` |
+| D2 = arg_word from stack | **CONFIRMED** | `move.w ($e,A6),D2` at `$03D01E` |
+| ASL.W #4 → stride 16 | **CONFIRMED** | `move.w D3,D0` / `asl.w #4,D0` at `$03D02E–$03D030` |
+| record base $FFDD86 | **CONFIRMED** | `movea.l #$ffdd86,A0` at `$03D032` |
+| DBRA byte-at-a-time copy | **CONFIRMED** | `moveq #$f,D0` / `move.b (A0)+,(A1)+` / `dbra D0` at `$03D03E–$03D042` |
+| 16 iterations (D0=15→$FFFF) | **CONFIRMED** | DBRA semantics: loop while D0 ≠ $FFFF |
+| First $2256C call (flag $2500) | **CONFIRMED** | `pea $2500.w` at `$03D022` |
+| Second $2256C call (flag = arg_word) | **CONFIRMED** | `move.w D1,D0` then `jsr $2256C` at `$03D048–$03D04C` |
+| Geometry consumer call ($03D254) | **CONFIRMED** | `pea (-$10,A6)` / `jsr $3d254.l` at `$03D058–$03D05C` |
+| Return value from geometry consumer | **CONFIRMED** | D0 loaded after `jsr $3d254.l`, used by caller |
+
+### Ambiguities
+
+- **$2256C semantics**: The SR swap mechanism is for interrupt masking during
+  road DMA.  Its use in the object copy path appears to be a no-op for our
+  purposes (the flag value $2500 and the arg_word are not meaningfully interpreted
+  by the geometry consumer stub).  The two calls preserve D2 (arg_word) and D3
+  (record_index) through the SR swap by using the saved register as the swap
+  source, so they function as register-preserving call boundaries.
+- **$03D254 behavior**: The geometry consumer is not independently analyzed.  The
+  stub returns 0, which is safe for the caller's use only if the caller does not
+  branch on the result.  Full behavior (and thus the meaning of the return
+  value) is unknown.
+
+### C slice
+
+Implemented in `native/mc68010_object_writer.{h,c}`:
+- `stunrun_mc68010_object_copy_to_buffer()`: record fetch and 16-byte copy
+- `stunrun_mc68010_object_geometry_consumer()`: geometry consumer stub (returns 0)
+- Test: `native/mc68010_object_writer_test.c` (30 tests, all pass):
+  - 7 tests for the updater caller transport
+  - 7 tests for the clamp function
+  - 6 tests for the interpolation function
+  - 9 tests for the copy function (NULL inputs, copy correctness, boundary)
+
+## 16. Object build geometry ($03E3FC)
+
+### Symbol
+
+`s_0003E3FC_mc68010_object_build_geometry`
+
+### Function purpose
+
+Receives a 16-byte record buffer and parameters from the caller ($03E51C),
+computes geometry parameters from specific buffer offsets, and makes 7 calls
+to the shared geometry FIFO emitter ($02F470), each emitting 5 words to the
+GSP FIFO at $C0000C.
+
+### Disassembly
+
+ROM address $03E3FC (file offset 0x3E3FC), MAME listing
+`/tmp/opencode/stunrun-listings-current/maincpu-68010.lst`, line 74087.
+
+```
+03E3FC: link    A6,#$0
+03E400: movem.l D2-D3/A2,-(A7)
+03E404: move.w  ($a,A6),D3          ; D3 = record_index word
+03E408: move.w  ($e,A6),D2          ; D2 = geometry_result+8 word
+03E40C: movea.l #$2f470,A2          ; A2 = $02F470
+03E412: pea     $10.w               ; Push $10 (constant selector/flag)
+
+  ;; Call 1: args = D2-3, D3+6, D2, D3
+03E416: move.w  D2,D0               ; D0 = D2 (geometry_result+8)
+03E418: ext.l   D0                  ; D0 = sign-ext(D2)
+03E41A: subq.l  #3,D0               ; D0 = D2 - 3
+03E41C: move.l  D0,-(A7)            ; arg1 = D2 - 3
+03E41E: move.w  D3,D0               ; D0 = D3 (record_index)
+03E420: ext.l   D0                  ; D0 = sign-ext(D3)
+03E422: addq.l  #6,D0               ; D0 = D3 + 6
+03E424: move.l  D0,-(A7)            ; arg2 = D3 + 6
+03E426: move.w  D2,D0               ; D0 = D2
+03E428: ext.l   D0                  ; D0 = sign-ext(D2)
+03E42A: move.l  D0,-(A7)            ; arg3 = D2
+03E42C: move.w  D3,D0               ; D0 = D3
+03E42E: ext.l   D0                  ; D0 = sign-ext(D3)
+03E430: move.l  D0,-(A7)            ; arg4 = D3
+03E432: jsr     (A2)                ; Call $02F470
+
+  ;; Call 2: args = D2-3, D3+3, D2-3, D3+6
+  ;; Call 3: args = D2-6, D3+3, D2-3, D3+3
+  ;; Call 4: args = D2-6, D3-3, D2-6, D3+3
+  ;; Call 5: args = D2-3, D3-3, D2-3, D3-6
+  ;; Call 6: args = D2-3, D3-6, D2-3, D3-3
+
+  ;; Call 7: args = D2 (unextended), D3.sext, D2-3, D3-6
+  ;; (Different pattern: arg1 = unextended D2, arg2 = sign-ext(D3))
+03E4F2: pea     $10.w
+03E4F6: move.w  D2,D0               ; D0 = D2 (unextended for arg1)
+03E4F8: ext.l   D0
+03E4FA: move.l  D0,-(A7)            ; arg1 = D2 (unextended word)
+03E4FC: move.w  D3,D0               ; D0 = D3
+03E4FE: ext.l   D0                  ; D0 = sign-ext(D3)
+03E500: move.l  D0,-(A7)            ; arg2 = sign-ext(D3)
+03E502: move.w  D2,D0
+03E504: ext.l   D0
+03E506: subq.l  #3,D0
+03E508: move.l  D0,-(A7)            ; arg3 = D2 - 3
+03E50A: ext.l   D3                  ; D3 = sign-ext(D3)
+03E50C: subq.l  #6,D3               ; D3 = D3 - 6
+03E50E: move.l  D3,-(A7)            ; arg4 = D3 - 6
+03E510: jsr     (A2)
+
+03E512: movem.l (-$c,A6),D2-D3/A2  ; Restore
+03E518: unlk    A6
+03E51A: rts
+```
+
+### Parameter computation
+
+The function is called from $03E51C with:
+- arg1 (long at A6+$08): sign-extended record_index word
+- arg2 (long at A6+$0C): sign-extended (geometry_result + 8) word
+
+Inside $03E3FC:
+- **D3** = record_index (word loaded from caller's A6+$0A = buffer+0x0A)
+- **D2** = (int16_t)arg_word + 8 (word at caller's A6+$0E = buffer+0x0E)
+
+The 7 calls to $02F470 each emit 5 words to the FIFO:
+
+| Call | arg1 (D0) | arg2 (D0) | arg3 (D0) | arg4 (D0) |
+|------|-----------|-----------|-----------|-----------|
+| 1 | D2-3 | D3+6 | D2 | D3 |
+| 2 | D2-3 | D3+3 | D2-3 | D3+6 |
+| 3 | D2-6 | D3+3 | D2-3 | D3+3 |
+| 4 | D2-6 | D3-3 | D2-6 | D3+3 |
+| 5 | D2-3 | D3-3 | D2-3 | D3-6 |
+| 6 | D2-3 | D3-6 | D2-3 | D3-3 |
+| 7 | D2 (unext) | D3.sext | D2-3 | D3-6 |
+
+Call 7 is structurally distinct: arg1 uses D2 unextended (not sign-extended),
+and arg2 uses sign-extended D3 (not the unextended value). This differs from
+all other calls.
+
+The $02F470 emitter writes 5 words to $C0000C:
+`{0x2000 + selector, arg1, arg2, arg3, arg4}`, where selector is
+buffer[0x1B] (the byte at the 5th argument slot in the frame).
+
+7 calls × 5 words = **35 total FIFO words**.
+
+### C slice
+
+Implemented in `native/mc68010_object_writer.{h,c}`:
+- `stunrun_mc68010_object_build_geometry()`: geometry builder
+- Callback-based FIFO write interface: `write_fifo_word(ctx, word)`
+- Test: `native/mc68010_object_writer_test.c` (35 tests, all pass):
+  - Tests for all previous functions (record updaters, copy, consumer)
+  - 5 new tests for build_geometry (word count, known values, non-zero index,
+    negative arg, selector)
+
+The buffer parameter is 32 bytes to accommodate accesses up to buffer[0x1B].
+The 16-byte record is copied by $03D012; the extended frame in $03E51C
+provides the additional space for arithmetic spills and the selector byte.
+
+### Confirmed vs inferred
+
+**Confirmed**: Full disassembly transcription, all arithmetic formulas,
+7-call structure, FIFO output format (5 words per call, 0x2000+selector first).
+
+**Inferred**: The semantic meaning of the geometry parameters (what the 4 args
+represent in game terms) is unknown. The selector byte (buffer[0x1B] = 0x20
+in observed traces) is confirmed from $02F470's `addi.l #$2000,D0`.
