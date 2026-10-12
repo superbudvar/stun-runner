@@ -780,6 +780,142 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn('action="append"', wrapper)
         self.assertIn("read_pc_filters", lua)
 
+    # ---- MC68010 -> GSP halt protocol -------------------------------
+    #
+    # These two guard the two failure modes that produced real dead ends:
+    # assembling the ROM image without the even/odd interleave (a silently
+    # undecodable image), and reading a bus-event stream at the wrong record
+    # stride (a silently plausible one).
+
+    def test_build_maincpu_image_interleaves_even_and_odd_roms(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            # 4 bytes each: even supplies MSB of each word, odd the LSB.
+            (roms / "e.rom").write_bytes(bytes([0x11, 0x33, 0x55, 0x77]))
+            (roms / "o.rom").write_bytes(bytes([0xAA, 0xBB, 0xCC, 0xDD]))
+            manifest = temp / "m.json"
+            manifest.write_text(json.dumps({"roms": [
+                {"filename": "e.rom", "region": "mainpcb:maincpu",
+                 "size": 4, "offset": 0},
+                {"filename": "o.rom", "region": "mainpcb:maincpu",
+                 "size": 4, "offset": 1},
+            ]}))
+            out = temp / "maincpu.bin"
+            self.run_tool("build-maincpu-image", "--roms", roms,
+                          "--manifest", manifest, "-o", out)
+            image = out.read_bytes()
+            # Interleaved, not concatenated: 11 AA 33 BB 55 CC 77 DD.
+            self.assertEqual(image[:8],
+                             bytes([0x11, 0xAA, 0x33, 0xBB,
+                                    0x55, 0xCC, 0x77, 0xDD]))
+
+    def test_build_maincpu_image_reports_reset_vector(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            # Big-endian SP=0xFFFFC000, PC=0x00000216 at address 0.
+            sp = bytes([0xFF, 0xFF, 0xC0, 0x00])
+            pc = bytes([0x00, 0x00, 0x02, 0x16])
+            (roms / "e.rom").write_bytes(sp[0::2] + pc[0::2])
+            (roms / "o.rom").write_bytes(sp[1::2] + pc[1::2])
+            manifest = temp / "m.json"
+            manifest.write_text(json.dumps({"roms": [
+                {"filename": "e.rom", "region": "mainpcb:maincpu",
+                 "size": 8, "offset": 0},
+                {"filename": "o.rom", "region": "mainpcb:maincpu",
+                 "size": 8, "offset": 1},
+            ]}))
+            out = temp / "s.json"
+            r = self.run_tool("build-maincpu-image", "--roms", roms,
+                              "--manifest", manifest, "--json", "-o", out)
+            report = json.loads(r.stdout)
+            self.assertEqual(report["schema"], "stunrun-maincpu-image/v1")
+            self.assertEqual(report["reset_vector"],
+                             {"sp": 0xFFFFC000, "pc": 0x00000216})
+            # -o is the image, and the reset vector must be readable from it.
+            self.assertEqual(int.from_bytes(out.read_bytes()[0:4], "big"),
+                             0xFFFFC000)
+
+    def test_analyze_gsp_hstctl_separates_halt_changing_from_preserving(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            image = bytearray(0x2000)
+            target = 0x00C00008
+            def put(off, opcode, imm):
+                image[off:off + 8] = opcode + struct.pack(">HI", imm, target)
+            put(0x100, b"\x33\xfc", 0xB800)   # move.w -> SETS HLT
+            put(0x200, b"\x33\xfc", 0x3800)   # move.w -> CLEARS HLT
+            put(0x300, b"\x02\x79", 0x7FFF)   # andi.w #$7fff -> CLEARS HLT
+            put(0x400, b"\x00\x79", 0x1800)   # ori.w #$1800 -> preserves
+            put(0x500, b"\x02\x79", 0xE7FF)   # andi.w #$e7ff -> preserves
+            img = temp / "image.bin"
+            img.write_bytes(bytes(image))
+            out = temp / "s.json"
+            r = self.run_tool("analyze-gsp-hstctl", "--image", img,
+                              "--json", "-o", out)
+            report = json.loads(r.stdout)
+            self.assertEqual(report["schema"],
+                             "stunrun-gsp-hstctl-sites/v1")
+            self.assertEqual(report["site_count"], 5)
+            self.assertEqual([s["addr"] for s in report["hlt_setting_sites"]],
+                             [0x100])
+            self.assertEqual(sorted(s["addr"]
+                                    for s in report["hlt_clearing_sites"]),
+                             [0x200, 0x300])
+            self.assertEqual(sorted(s["addr"]
+                                    for s in report["hlt_preserving_sites"]),
+                             [0x400, 0x500])
+
+    def test_analyze_gsp_hstctl_rejects_wrong_stride_stream(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            img = temp / "image.bin"
+            img.write_bytes(bytes(0x2000))
+            # 32-byte records: the stride of a stream captured before
+            # `cycles` was added to musashi_gsp_bus_event_t. Must be
+            # rejected, not silently misparsed -- see native/musashi_cpu.h.
+            stream = temp / "ev.bin"
+            stream.write_bytes(bytes(32 * 4))
+            r = subprocess.run(
+                [str(ROOT / "tools" / "analyze-gsp-hstctl"),
+                 "--image", str(img), "--stream", str(stream)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("40-byte record", r.stdout + r.stderr)
+
+    def test_analyze_gsp_hstctl_cross_references_stream(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            image = bytearray(0x2000)
+            target = 0x00C00008
+            # A halt release at 0x200; the recorded PC is the instruction
+            # AFTER the store, so the stream carries 0x208.
+            image[0x200:0x208] = b"\x33\xfc" + struct.pack(">HI", 0x3800, target)
+            img = temp / "image.bin"
+            img.write_bytes(bytes(image))
+
+            def rec(seq, cycles, addr, pc, data, kind):
+                return (struct.pack("<QQIIHHB", seq, cycles, addr, pc, data,
+                                    0xFFFF, 16)
+                        + b"\0" * 3
+                        + struct.pack("<iB", kind, 0) + b"\0" * 3)
+            stream = temp / "ev.bin"
+            stream.write_bytes(rec(0, 1000, 0xC00008, 0x208, 0xA000, 1)
+                               + rec(1, 9000, 0xC00008, 0x208, 0x3800, 1))
+            out = temp / "s.json"
+            r = self.run_tool("analyze-gsp-hstctl", "--image", img,
+                              "--stream", stream, "--json", "-o", out)
+            st = json.loads(r.stdout)["stream"]
+            self.assertEqual(st["records"], 2)
+            self.assertEqual(st["hstctl_asserts"], 1)
+            self.assertEqual(st["hstctl_releases"], 1)
+            self.assertEqual(st["first_release_cycle"], 9000)
+            # The release must be attributed back to the ROM site.
+            self.assertEqual(st["hstctl_writes"][1]["rom_site"], 0x200)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Locate the 68010 code that halts and releases the TMS34010 GSP.
+
+The GSP's halt state is `HSTCTLH.HLT`, bit 15 of the control word at
+host-window byte offset 8 -- `$C00008` on the 68010 side. This tool answers
+three questions about it, all of which are easy to get wrong by inspection:
+
+1. Which instructions in the 68010 ROM can change bit 15, and which only
+   appear to but preserve it?  Most HSTCTL traffic is read-modify-write
+   (`ori.w #$1800` to set the increment bits, `andi.w #$e7ff` to clear them);
+   those are HLT-preserving, so counting "writes to HSTCTL" badly
+   over-counts the halt transitions.
+
+2. When did the captured bus stream actually halt and release the GSP, and
+   what fraction of the capture was the core frozen?
+
+3. Which ROM site does a given captured release correspond to?  The 68010 PC
+   in the bus event is the instruction *after* the store, because the bus
+   callback fires post-dispatch, so the site is `pc - insn_len`.
+
+This is a byte-pattern scan, not a disassembler: it recognises only the three
+68000 encodings that can reach an absolute-long destination, which is exactly
+the set that matters here and keeps the tool dependency-free and
+deterministic.
+
+Usage:
+    tools/build-maincpu-image -o /tmp/maincpu.bin
+    tools/analyze-gsp-hstctl --image /tmp/maincpu.bin
+    tools/analyze-gsp-hstctl --image /tmp/maincpu.bin --stream gsp_bus_events.bin
+"""
+
+import argparse
+import json
+import pathlib
+import re
+import struct
+
+# 68000 encodings writing a 16-bit value to (xxx).L, all 8 bytes:
+#   move.w #imm,(xxx).L   33FC imm
+#   ori.w  #imm,(xxx).L   0079 imm
+#   andi.w #imm,(xxx).L   0279 imm
+# Encodings verified against the bytes at $C00008 sites in the real image,
+# e.g. 0x2C1CC = 33fc380000c00008 (move.w #$3800) and
+# 0x0FC7A = 02797fff00c00008 (andi.w #$7fff).
+OPS = {
+    b"\x33\xfc": ("move.w", "set_full"),
+    b"\x00\x79": ("ori.w", "set_bit"),
+    b"\x02\x79": ("andi.w", "clear_bit"),
+}
+INSN_LEN = 8
+
+HSTCTL_BYTE_OFFSET = 0x08
+HOST_WINDOW_BASE = 0xC00000
+HSTCTL_HLT_BIT = 15
+
+BUS_KIND_HOST_WINDOW = 1
+BUS_KIND_RESET_CONTROL = 2
+BUS_STRIDE = 40          # sizeof(musashi_gsp_bus_event_t) -- see musashi_cpu.h
+
+
+def scan_image(image, target, base=0):
+    """Every 16-bit-store-to-(xxx).L that lands on `target`."""
+    hits = []
+    for i in range(len(image) - INSN_LEN + 1):
+        op = bytes(image[i:i + 2])
+        if op not in OPS:
+            continue
+        mnemonic, kind = OPS[op]
+        imm = int.from_bytes(image[i + 2:i + 4], "big")
+        dest = int.from_bytes(image[i + 4:i + INSN_LEN], "big")
+        if dest != target:
+            continue
+        hits.append({"addr": base + i, "mnemonic": mnemonic, "kind": kind,
+                     "imm": imm})
+    return hits
+
+
+def hlt_effect(hit):
+    """Does this store set, clear, or preserve HLT?
+
+    A read-modify-write only changes bit 15 when its mask bit 15 is clear:
+    `andi.w #$7fff` forces HLT to 0, while `ori.w`/`andi.w` with bit 15 set
+    in the mask leave whatever was there alone.
+    """
+    if hit["kind"] == "set_full":
+        return bool((hit["imm"] >> HSTCTL_HLT_BIT) & 1)
+    if hit["kind"] == "set_bit":     # ori -- can only raise a bit
+        return True if (hit["imm"] >> HSTCTL_HLT_BIT) & 1 else None
+    if hit["kind"] == "clear_bit":   # andi -- can only lower a bit
+        return False if (hit["imm"] >> HSTCTL_HLT_BIT) & 1 == 0 else None
+    return None
+
+
+def read_stream(path):
+    """Decode gsp_bus_events.bin, refusing a stream at the wrong stride.
+
+    The file is a raw dump of musashi_gsp_bus_event_t, so its record size is
+    that struct's sizeof. A reader built against a different revision does not
+    fail cleanly -- the first record lands plausibly and the rest is garbage --
+    so check both the stride and the dense 0,1,2,... sequence before trusting
+    anything below.
+    """
+    raw = path.read_bytes()
+    if len(raw) % BUS_STRIDE:
+        raise SystemExit(
+            f"{path}: {len(raw)} bytes is not a multiple of the {BUS_STRIDE}-byte "
+            f"record; this stream was captured against a different "
+            f"musashi_gsp_bus_event_t (see native/musashi_cpu.h)"
+        )
+    for i in range(len(raw) // BUS_STRIDE):
+        seq = struct.unpack_from("<Q", raw, i * BUS_STRIDE)[0]
+        if seq != i:
+            raise SystemExit(
+                f"{path}: record {i} carries sequence={seq}; the stream is not "
+                f"at the {BUS_STRIDE}-byte stride this tool expects"
+            )
+    return raw, len(raw) // BUS_STRIDE
+
+
+def stream_hstctl(raw):
+    """Every HSTCTL write in the stream, with the PC that produced it."""
+    out = []
+    for i in range(len(raw) // BUS_STRIDE):
+        off = i * BUS_STRIDE
+        cycles, = struct.unpack_from("<Q", raw, off + 8)
+        addr, pc = struct.unpack_from("<II", raw, off + 16)
+        data, = struct.unpack_from("<H", raw, off + 24)
+        kind, = struct.unpack_from("<i", raw, off + 32)
+        if kind != BUS_KIND_HOST_WINDOW:
+            continue
+        if addr != HOST_WINDOW_BASE + HSTCTL_BYTE_OFFSET:
+            continue
+        out.append({"index": i, "cycles": cycles, "pc": pc, "value": data,
+                    "hlt": (data >> HSTCTL_HLT_BIT) & 1})
+    return out
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--image", type=pathlib.Path, required=True,
+                   help="68010 ROM image from tools/build-maincpu-image")
+    p.add_argument("--stream", type=pathlib.Path,
+                   help="optional gsp_bus_events.bin to cross-reference")
+    p.add_argument("--target", type=lambda s: int(s, 0),
+                   default=HOST_WINDOW_BASE + HSTCTL_BYTE_OFFSET,
+                   help="host-window register to scan (default HSTCTL)")
+    p.add_argument("-o", "--output", type=pathlib.Path)
+    p.add_argument("--json", action="store_true")
+    a = p.parse_args()
+
+    image = a.image.read_bytes()
+    sites = scan_image(image, a.target)
+    for s in sites:
+        s["hlt_effect"] = hlt_effect(s)
+
+    clearing = [s for s in sites if s["hlt_effect"] is False]
+    setting = [s for s in sites if s["hlt_effect"] is True]
+
+    report = {
+        "schema": "stunrun-gsp-hstctl-sites/v1",
+        "image": str(a.image),
+        "image_bytes": len(image),
+        "target": a.target,
+        "hlt_bit": HSTCTL_HLT_BIT,
+        "site_count": len(sites),
+        "hlt_clearing_sites": clearing,
+        "hlt_setting_sites": setting,
+        "hlt_preserving_sites": [s for s in sites if s["hlt_effect"] is None],
+    }
+
+    if a.stream:
+        raw, count = read_stream(a.stream)
+        writes = stream_hstctl(raw)
+        first_clear = next((w for w in writes if not w["hlt"]), None)
+        last_cycles = max((w["cycles"] for w in writes), default=0)
+        # Attribute a release to a ROM site. The recorded PC is the address of
+        # the instruction AFTER the store (the bus callback fires after
+        # dispatch), so the site is pc - 8.
+        by_value = {}
+        for s in sites:
+            by_value.setdefault(s["imm"], []).append(s["addr"])
+        for w in writes:
+            site = w["pc"] - INSN_LEN
+            w["rom_site"] = site if site in by_value.get(w["value"], []) else None
+        report["stream"] = {
+            "path": str(a.stream),
+            "records": count,
+            "hstctl_writes": writes,
+            "hstctl_asserts": sum(1 for w in writes if w["hlt"]),
+            "hstctl_releases": sum(1 for w in writes if not w["hlt"]),
+            "last_hstctl_cycle": last_cycles,
+            "first_release_cycle": first_clear["cycles"] if first_clear else None,
+            # How much of the capture the GSP was frozen for, as a fraction.
+            "halted_fraction_before_first_release": (
+                (first_clear["cycles"] / last_cycles) if first_clear and last_cycles
+                else None
+            ),
+        }
+
+    if a.output:
+        a.output.write_text(json.dumps(report, indent=2))
+
+    if a.json:
+        print(json.dumps(report, indent=2))
+        return
+
+    print(f"{a.image}: {len(sites)} HSTCTL store sites at 0x{a.target:08x}")
+    print(f"  {len(setting)} can SET HLT, {len(clearing)} can CLEAR it, "
+          f"{len(report['hlt_preserving_sites'])} preserve it")
+    print()
+    print("  HLT CLEAR sites:")
+    for s in clearing:
+        print(f"    0x{s['addr']:08x}: {s['mnemonic']:<6s} "
+              f"${s['imm']:04x},{a.target:08x}.l")
+    print("  HLT SET sites:")
+    for s in setting:
+        print(f"    0x{s['addr']:08x}: {s['mnemonic']:<6s} "
+              f"${s['imm']:04x},{a.target:08x}.l")
+
+    st = report.get("stream")
+    if st:
+        print()
+        print(f"{a.stream}: {st['records']} records, "
+              f"{len(st['hstctl_writes'])} HSTCTL writes "
+              f"({st['hstctl_asserts']} assert, {st['hstctl_releases']} release)")
+        print("    seq        68k_cyc      68010_PC   value   HLT   ROM site")
+        for w in st["hstctl_writes"]:
+            site = f"0x{w['rom_site']:08x}" if w["rom_site"] is not None else "-"
+            print(f"    {w['index']:<9d} {w['cycles']:<12d} 0x{w['pc']:08x}  "
+                  f"0x{w['value']:04x}   {w['hlt']}    {site}")
+        frac = st["halted_fraction_before_first_release"]
+        if frac is not None:
+            print()
+            print(f"    GSP held halted for the first {frac * 100:.2f}% of the "
+                  f"captured HSTCTL activity")
+
+
+if __name__ == "__main__":
+    main()

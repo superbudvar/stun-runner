@@ -336,6 +336,45 @@ Leave persistent evidence, commands, tests, selectors, fixtures, harness capabil
 
 Do not rely on hidden agent context or previous chat history for facts another agent will need.
 
+## Promote analysis scripts into `tools/`
+
+**A throwaway script that answers a question is the start of a tool, not the end
+of one.** When a script has produced a finding you intend to keep, promote it
+into `tools/` in the same commit that records the finding.
+
+The reason is loss, not tidiness. This repository has already lost a working
+investigation to `git checkout -- .` and `git clean -fd`, and the scripts that
+had produced it went with it. `/tmp` is not evidence and is not durable;
+`tools/` is committed, reviewable, and covered by `tests/test_public_tools.py`.
+
+Rules:
+
+- **Name it `tools/<verb>-<noun>`.** Shebang, a module docstring that says what
+  question it answers *and what it gets wrong*, `argparse`, and `--json`
+  emitting a `stunrun-*-v1` schema. Match the existing tools.
+- **Document the trap it exists to avoid.** The value is not the output, it is
+  not making the same wrong assumption twice. `tools/build-maincpu-image` leads
+  with the `ROM_LOAD16_BYTE`/`ROM_SKIP(1)` interleave, because assembling that
+  image by copying files to byte offsets produces an image that *decodes without
+  error into meaningless instructions*. `tools/analyze-gsp-hstctl` leads with
+  the halt bit, because most writes to that register are HLT-preserving
+  read-modify-writes and counting them as halt transitions is wrong.
+- **A tool that reads a raw binary must refuse a wrong-sized input loudly.**
+  These files are unversioned dumps of C structs; a reader built against a
+  different struct revision does not fail, it invents plausible data. Guard on
+  both the stride and the dense record sequence, and say which struct layout it
+  expects and where that layout is defined.
+- **Register a public test, and prove it can fail.** Run the test against a
+  deliberately broken tool before committing; a check that passes both ways is
+  not a check.
+
+Tools currently covering this ground: `tools/build-maincpu-image` (assemble the
+68010 ROM the shell executes), `tools/analyze-gsp-hstctl` (who halts and
+releases the GSP, and for how much of a capture),
+`tools/check-gsp-replay` (replay a captured stream through the board model and
+the Verilated core), `tools/analyze-musashi-gsp-writes` (group the *decoded*
+host-write log by caller PC).
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:46cd31e7 -->
 ## Beads Issue Tracker
 

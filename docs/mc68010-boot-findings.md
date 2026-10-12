@@ -2996,3 +2996,172 @@ The finding that shapes this: the host-port write stream alone already
 reproduces the reference VRAM byte-for-byte (section 15.4). That is a fact
 about what the *board model* captures. It is not evidence the GSP is idle, and
 it does not license comparing a GSP-only run against that same reference.
+
+## 17. Who halts the GSP, who releases it, and why the capture never runs it
+
+### 17.1 The halt bit
+
+`HSTCTLH.HLT` is bit 15 of the control word at host-window byte offset 8
+(`$C00008` on the 68010 side). Confirmed from the vendored RTL rather than
+assumed:
+
+```
+tms34010_pkg.sv:461   parameter int unsigned HSTCTL_HLT_BIT = 15;
+                      // halt processor at next boundary
+tms34010_io_regs.sv:493  assign hlt_o = io_reg[IO_IDX_HSTCTLH][HSTCTL_HLT_BIT];
+tms34010_core.sv:3597    if (io_hlt) state_d = CORE_RESET_HALT;
+```
+
+This matches MAME's `tms34010.cpp:1670-1674`, which drives
+`set_input_line(INPUT_LINE_HALT, (data & 0x8000) ? ASSERT_LINE : CLEAR_LINE)`.
+
+### 17.2 It is the 68010, not the ADSP
+
+The 68010 ROM writes HSTCTL directly. Scanning the 786 KiB maincpu image for
+every instruction touching `$c00008.l` gives 120 sites, of which exactly these
+can change bit 15.
+
+HLT **set** -- full-word writes with bit 15 set, 12 sites:
+
+```text
+0x0000040c: move.w #$a000,$c00008.l      0x00022404: move.w #$b800,$c00008.l
+0x00005408: move.w #$b800,$c00008.l      0x0002fd44: move.w #$b800,$c00008.l
+0x0000a474: move.w #$a000,$c00008.l      0x0002fde2: move.w #$b800,$c00008.l
+0x0000a540: move.w #$9800,$c00008.l      0x0002fe8e: move.w #$a000,$c00008.l
+0x00010938: move.w #$b800,$c00008.l      0x0002ff62: move.w #$a000,$c00008.l
+0x00010a02: move.w #$a000,$c00008.l
+0x00010a7a: move.w #$a000,$c00008.l
+```
+
+HLT **cleared** -- 8 sites, in two shapes:
+
+```text
+0x0000fc7a: andi.w #$7fff,$c00008.l      ; canonical read-modify-write clear
+0x0000fe60: andi.w #$7fff,$c00008.l
+0x0001094c: move.w #$7800,$c00008.l      ; full-word write, bit 15 clear
+0x00010954: move.w #$3800,$c00008.l
+0x0002c1c4: move.w #$7800,$c00008.l
+0x0002c1cc: move.w #$3800,$c00008.l
+0x0002dcbc: move.w #$7800,$c00008.l
+0x0002dcc4: move.w #$3800,$c00008.l
+```
+
+Every other HSTCTL site is a read-modify-write that preserves HLT:
+`ori.w #$1800` (30 occurrences, sets INCR+INCW), `andi.w #$e7ff` (30, clears
+INCR+INCW), `andi.w #$ff7f` (2, clears INTOUT). The HLT-clearing half of the
+register is therefore written deliberately and always with a full-width
+immediate, never incidentally.
+
+The ADSP does not touch it. Nothing in the JSA/ADSP path reaches `$C00008`.
+
+### 17.3 The captured stream holds the GSP halted for ~98.5% of its length
+
+Every HSTCTL write in the 901,354-record capture, with the 68010 PC at the
+bus callback:
+
+```text
+  seq        68k_cyc     68010_PC   value    HLT
+  2          6098        0x00000414  0xa000   1  <- ASSERT halt
+  45         9728        0x00000496  0xb800   1  <- ASSERT halt
+  580        27206       0x00000682  0xb800   1  <- ASSERT halt
+  230983     4671926     0x00000578  0xb800   1  <- ASSERT halt
+  231528     4699232     0x0000063e  0xb800   1  <- ASSERT halt
+  256112     5588620     0x0002240c  0xb800   1  <- ASSERT halt
+  780992     44132272    0x00021708  0xb800   1  <- ASSERT halt
+  805577     44824344    0x000238e6  0xa000   1  <- ASSERT halt
+  806634     44950392    0x00023908  0xb800   1  <- ASSERT halt
+  806638     44950910    0x000238e6  0xa000   1  <- ASSERT halt
+  808751     45201918    0x00023908  0xb800   1  <- ASSERT halt
+  885583     48993292    0x000238e6  0xa000   1  <- ASSERT halt
+  887024     49174576    0x00023908  0xb800   1  <- ASSERT halt
+  887616     49201788    0x0002fdea  0xb800   1  <- ASSERT halt
+  899809     50351440    0x0002c1cc  0x7800   0  <- RELEASE halt
+  899810     50351440    0x0002c1d4  0x3800   0  <- RELEASE halt
+  899814     50351962    0x000238e6  0x2000   0  <- RELEASE halt
+  901351     50547212    0x00023908  0x3800   0  <- RELEASE halt
+```
+
+14 assertions, 4 releases, and **the first release is at 68010 cycle
+50,351,440 of 51,106,634** -- the last 1.5% of the capture. The GSP is frozen
+for essentially the entire recorded window.
+
+The releases land on the sites from 17.2, and the disassembly at the one the
+capture actually used reads:
+
+```text
+0002c1bc: 4eb90002fdd0         jsr        $2fdd0.l
+0002c1c2: 588f                 addq.l     #$4, a7
+0002c1c4: 33fc780000c00008     move.w     #$7800, $c00008.l   ; RELEASE halt
+0002c1cc: 33fc380000c00008     move.w     #$3800, $c00008.l   ; RELEASE halt
+0002c1d4: 427900608000         clr.w      $608000.l
+```
+
+**Confirmed:** the 68010 releases halt with a full-width `move.w` to
+`$C00008`, immediately after returning from a subroutine at `$2fdd0` (itself
+a `move.w #$b800` HLT-set site, section 17.2) -- i.e. upload, then release.
+
+### 17.4 Why the replayed core sits in CORE_RESET_HALT
+
+Because of 17.3 the core is halted from the first host write almost to the
+last. Two consequences, both *correct behaviour* that were previously
+misread as bugs:
+
+- `state=41` (`CORE_RESET_HALT`) for the whole lockstep run is the faithful
+  result. The earlier reading -- "HCS is wedging the core" -- was wrong; the
+  HCS fix (HCS low, matching MAME's `m_halt_on_reset=false`) was still needed
+  and still correct, but it is not what releases the core. HSTCTL.HLT is.
+- VRAM ends the replay with no program in it, because a halted core never
+  fetched its entry vector from `$FFFF_FFE0`. This is the state the board
+  would really be in at 68010 cycle 51.1M.
+
+The recorded PC in the stream is the address of the instruction *after* the
+store (0x2c1c4 + 8 = 0x2c1cc), because the bus callback fires after the
+instruction has been dispatched.
+
+### 17.5 What this means for the frame-600 goal
+
+The lockstep machinery is now correct -- a full replay advances
+**306,639,804 GSP cycles over 51,106,634 68010 cycles, a ratio of exactly
+6.0**, matching 48 MHz / ~8 MHz. Zero host-transaction timeouts.
+
+But this particular capture cannot demonstrate "reproduces MAME's frame-600
+GSP state", because in it the GSP never ran. The honest claim is narrower:
+
+> The core faithfully executes the captured host-write stream in lockstep at
+> the correct clock ratio, and remains halted exactly as long as the 68010
+> holds HSTCTL.HLT set.
+
+To close the original goal the capture itself has to change: sample a window
+in which the GSP is running. Section 17.3 gives the test for such a window --
+68010 PC in the `$2c1c4` / `$1094c` / `$2dcbc` release neighbourhood, or
+after a `$2fdd0`-style upload-return -- rather than during the bulk upload
+that dominates the current trace.
+
+### 17.6 Tools
+
+The two analysis passes behind 17.1-17.3 are committed as tools rather than
+left as throwaway scripts, per the reusable-tooling rule in `AGENTS.md`:
+
+- `tools/build-maincpu-image` — assembles the 786 KiB MC68010 image the native
+  shell actually executes, from `roms/stunrun.manifest.json`. Its docstring
+  leads with the `ROM_LOAD16_BYTE` ⇒ `ROM_SKIP(1)` interleave, because
+  assembling by copying files to byte offsets yields an image that decodes into
+  meaningless instructions rather than failing. The tell is the reset vector:
+  `SP=0xFFFFC000 PC=0x00000216` when right, garbage when wrong.
+- `tools/analyze-gsp-hstctl` — byte-pattern scan for every 16-bit store to the
+  host window, separating the 12 HLT-setting sites from the 8 HLT-clearing
+  ones from the 96 that merely preserve it, and cross-referencing a captured
+  `gsp_bus_events.bin` for the halt timeline and the fraction of the capture
+  the GSP was frozen.
+
+Cross-checked against an independent capstone disassembly of the same image:
+identical site addresses, identical set/clear/preserve classification. The
+scan is a byte-pattern match rather than a disassembler so the tool stays
+dependency-free and deterministic, and its three encodings
+(`33FC` move.w, `0079` ori.w, `0279` andi.w) are verified against the real
+bytes at the known `$C00008` sites.
+
+Both are covered by `tests/test_public_tools.py`, and each test was checked
+against a deliberately broken tool: concatenating instead of interleaving the
+ROM, treating every store as halt-changing, and disabling the stride guard
+each produce failures rather than passing silently.

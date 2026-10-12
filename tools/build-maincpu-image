@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Assemble the MC68010 ROM image the native shell actually executes.
+
+Why this exists
+---------------
+`gsp_bus_events.bin` records the 68010 PC at every GSP bus event. Reading
+those PCs as offsets into a flat ROM image is the obvious thing to do and it
+is wrong in a way that produces *garbage* rather than an error: a linear
+disassembly of the wrong bytes still emits plausible-looking instructions,
+it just never lands on a real code boundary.
+
+The interleave is the trap. MAME loads these with
+
+    ROM_LOAD16_BYTE("136070-2102.200r", 0x000000, 0x010000, ...)
+    ROM_LOAD16_BYTE("136070-2101.210r", 0x000001, 0x010000, ...)
+
+and `ROM_LOAD16_BYTE` implies `ROM_SKIP(1)`: the even file's byte *i* lands at
+base+2*i and the odd file's byte *i* at base+2*i+1. The manifest's `offset`
+field is that ROM_LOAD16_BYTE start address, NOT a byte offset to copy the
+whole file to -- so placing the files whole at base and base+1 overwrites
+everything after the first two bytes and yields an image that cannot be
+decoded at all. The tell is the reset vector: assembled correctly it reads
+`SP=0xFFFFC000 PC=0x00000216`, assembled wrongly it reads garbage.
+
+`native/musashi_loader.c` does the same interleave at load time, and
+`native/musashi_cpu.c` addresses ROM flat across 6 x 128 KiB banks, so the
+image this tool writes is directly usable as `rom_banks[0..5]` concatenated.
+
+Usage:
+    tools/build-maincpu-image [-o IMAGE] [--json]
+"""
+
+import argparse
+import json
+import pathlib
+import sys
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+CPU_REGION = "mainpcb:maincpu"
+# 6 banks x 128 KiB: the 68010-visible ROM in the native shell's flat model.
+ROM_SIZE = 0xC0000
+
+
+def build(roms_dir, manifest_path):
+    manifest = json.loads(manifest_path.read_text())
+    by_offset = {
+        r["offset"]: r
+        for r in manifest["roms"]
+        if r["region"] == CPU_REGION
+    }
+    image = bytearray(ROM_SIZE)
+    banks = []
+    for base in sorted(o for o in by_offset if o % 2 == 0):
+        even_r, odd_r = by_offset[base], by_offset[base + 1]
+        even = (roms_dir / even_r["filename"]).read_bytes()
+        odd = (roms_dir / odd_r["filename"]).read_bytes()
+        if len(even) != len(odd):
+            raise SystemExit(
+                f"{even_r['filename']} is {len(even)} bytes but "
+                f"{odd_r['filename']} is {len(odd)}"
+            )
+        # ROM_LOAD16_BYTE => ROM_SKIP(1): interleave, do not concatenate.
+        for i in range(len(even)):
+            image[base + 2 * i] = even[i]
+            image[base + 2 * i + 1] = odd[i]
+        banks.append({
+            "base": base,
+            "even": even_r["filename"],
+            "odd": odd_r["filename"],
+        })
+    if not banks:
+        raise SystemExit(f"{manifest_path}: no {CPU_REGION} ROM entries")
+    return bytes(image), banks
+
+
+def reset_vector(image):
+    if len(image) < 8:
+        return None
+    return {
+        "sp": int.from_bytes(image[0:4], "big"),
+        "pc": int.from_bytes(image[4:8], "big"),
+    }
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--roms", type=pathlib.Path, default=REPO / "roms/stunrun",
+                   help="directory holding the ROM files")
+    p.add_argument("--manifest", type=pathlib.Path,
+                   default=REPO / "roms/stunrun.manifest.json")
+    p.add_argument("-o", "--output", type=pathlib.Path,
+                   help="write the raw image here")
+    p.add_argument("--json", action="store_true",
+                   help="emit a machine-readable summary instead")
+    a = p.parse_args()
+
+    image, banks = build(a.roms, a.manifest)
+    vec = reset_vector(image)
+
+    if a.output:
+        a.output.write_bytes(image)
+
+    if a.json:
+        print(json.dumps({
+            "schema": "stunrun-maincpu-image/v1",
+            "size": len(image),
+            "banks": banks,
+            "reset_vector": vec,
+            "output": str(a.output) if a.output else None,
+        }, indent=2))
+        return
+
+    print(f"maincpu image: {len(image)} bytes ({len(image) >> 17} x 128 KiB banks)")
+    for b in banks:
+        print(f"  base 0x{b['base']:05x}: {b['even']} + {b['odd']}")
+    if vec:
+        print(f"reset vector: SP=0x{vec['sp']:08x}  PC=0x{vec['pc']:08x}")
+        # A plausible 68010 reset SP is 0xFFFFxxxx in the top of the map. If
+        # this is garbage the interleave is wrong.
+        if not (0xFFFF0000 <= vec["sp"] <= 0xFFFFFFFF):
+            print("WARNING: reset SP is not in the top of the map -- the "
+                  "even/odd interleave is probably wrong", file=sys.stderr)
+    if a.output:
+        print(f"wrote {a.output}")
+
+
+if __name__ == "__main__":
+    main()
