@@ -218,6 +218,40 @@ The test definition must state whether equality is exact or normalized.
 
 Steal Playwright's fixture concept directly.
 
+### Full GSP VRAM image, not a checksum
+
+`tools/mame-gsp-state-snapshot` reports `vram_high_sum32`, which is a
+stride-`0x4000` sweep of the share. That is the right shape for a checksum and
+the wrong shape for an image -- it cannot answer "are these 512 KiB identical",
+which is the question `tools/check-gsp-replay` asks when it compares a native
+board-model replay against the original machine. For that, capture the image:
+
+```text
+tools/mame-gsp-vram-dump roms /tmp/stunrun-oracle \
+  --frames 600 --target 600 --input none --nothrottle
+```
+
+Writes `gsp_vram.bin` (little-endian, the byte order
+`native/gsp_rtl/gsp_board.c` stores), `result.json` with the capture's frame,
+PC, nonzero-word count and the image's sha256, and `mame.log`.
+
+`-nvram_directory` is **required for a usable capture** and this tool always
+passes one. The tools carry `-nonvram_save`, which stops MAME *writing* NVRAM
+but not *loading* it, so a run without an explicit directory silently inherits
+`~/.mame/nvram/stunrun/` from a previous run. Measured here at frame 600,
+headless: without the flag, 0 of 262144 words are nonzero; with it, 262128.
+That difference is invisible in the artifact's size, so the tool treats an
+all-zero capture as a failure rather than a result.
+
+The host window mirrors with period 4 MiB (mask bit 22): the 512 KiB page at
+`n * 0x400000` is identical for `n` = 0..3, and the four 512 KiB pages inside
+one period differ from each other. The default capture is the first 512 KiB,
+matching the native board model's share; raise `--words` to take more.
+
+Input modes are the same names, and the same frame timings, as
+`tools/mame-gsp-state-snapshot`, so a dump and a state snapshot can describe the
+same machine state.
+
 ### Save-state RAM forks
 
 For expensive deterministic setup paths, `tools/mame-memory-snapshot` can

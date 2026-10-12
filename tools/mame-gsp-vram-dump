@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Dump the full GSP VRAM share from MAME as one consecutive image.
+
+tools/mame-gsp-state-snapshot reports vram_high_sum32, which is a stride sweep
+of the share. That is the right shape for a checksum and the wrong shape for an
+image: it cannot answer "are these 512 KiB identical", which is the question
+tools/check-gsp-replay asks when it compares a native board-model replay
+against the original machine.
+
+This captures every word consecutively from 0xff800000 and writes it
+little-endian, the byte order native/gsp_rtl/gsp_board.c stores, so the two are
+directly comparable.
+
+The capture is rejected if it contains no nonzero word. A misconfigured read
+produces a correctly sized file full of zeros that otherwise looks like a
+successful capture -- that is exactly what happens here when MAME is run
+without -nvram_directory, which is why this tool always passes one.
+
+Measured on this driver at frame 600, headless:
+
+  * -nvram_directory omitted -> 0 of 262144 words nonzero.
+  * -nvram_directory set     -> 262128 of 262144 nonzero, 546 distinct values.
+
+The host window mirrors with period 4 MiB (mask bit 22): the 512 KiB page at
+n * 0x400000 is identical for n = 0, 1, 2, 3, and the four 512 KiB pages inside
+one period differ from each other. The default capture is the first 512 KiB,
+matching the native board model's share; raise --words to take more.
+
+Usage:
+    tools/mame-gsp-vram-dump roms /tmp/stunrun-oracle \
+        --frames 600 --target 600 --input none
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "mame_harness"))
+from process import run_mame
+
+
+DUMP = re.compile(
+    r"M1_GSP_VRAM frame=(\d+) base=([0-9A-Fa-f]+) words=(\d+) nonzero=(\d+) "
+    r"out=(\S+) pc=([0-9A-Fa-f]+)"
+)
+
+# Same names and timing as mame-gsp-state-snapshot, so a dump and a state
+# snapshot can describe the same machine state.
+INPUT_MODES = ("none", "service", "service_probe", "sw_off_prestart", "drive",
+               "late", "late_drive", "fork_hold_left", "fork_hold_right",
+               "fork_center")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("rompath", type=pathlib.Path)
+    parser.add_argument("output", type=pathlib.Path)
+    parser.add_argument("--frames", type=int, default=600,
+                        help="emulated frames to run (bounds the MAME process)")
+    parser.add_argument("--target", type=int, default=600,
+                        help="frame to capture the share at")
+    parser.add_argument("--words", type=int, default=0x40000,
+                        help="words to capture; default 262144 = the whole 512 KiB share")
+    parser.add_argument("--input", choices=INPUT_MODES, default="none")
+    parser.add_argument("--mame", default="mame")
+    parser.add_argument("--nothrottle", action="store_true",
+                        help="run MAME as fast as possible while preserving emulated frame numbers")
+    parser.add_argument("--windowed", action="store_true",
+                        help="run with a visible window instead of the headless video backend")
+    parser.add_argument("--isolated-display", action="store_true",
+                        help="run SDL on a private Xvfb display, never the physical desktop")
+    args = parser.parse_args()
+    if args.frames <= 0:
+        parser.error("--frames must be positive")
+    if args.target <= 0:
+        parser.error("--target must be positive")
+    if args.words <= 0:
+        parser.error("--words must be positive")
+    if args.target > args.frames:
+        parser.error(f"--target {args.target} is past --frames {args.frames}")
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    dump_path = args.output / "gsp_vram.bin"
+    log = args.output / "mame.log"
+    # Per-run, never a shared /tmp path: a stale shared cfg/nvram directory
+    # makes runs contaminate each other.
+    run_dir = args.output / "mame-state"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    video_args = ["-video", "sdl", "-window"] if args.windowed else ["-video", "none"]
+    command = [
+        args.mame, "-rompath", str(args.rompath), "stunrun", *video_args,
+        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
+        "-cfg_directory", str(run_dir), "-nvram_directory", str(run_dir),
+        "-nonvram_save",
+        "-seconds_to_run", str(max(2, (args.frames + 59) // 60 + 1)),
+        "-autoboot_script",
+        str(pathlib.Path(__file__).resolve().parents[1] / "mame/lua/gsp-vram-dump.lua"),
+    ]
+    if args.nothrottle:
+        command.insert(command.index("-seconds_to_run"), "-nothrottle")
+    environment = {
+        **os.environ,
+        "STUNRUN_GSP_VRAM_OUT": str(dump_path),
+        "STUNRUN_GSP_VRAM_FRAME": str(args.target),
+        "STUNRUN_GSP_VRAM_WORDS": str(args.words),
+        "STUNRUN_GSP_VRAM_INPUT": args.input,
+        "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "x11") if args.windowed else "dummy",
+    }
+    with log.open("w", encoding="utf-8") as handle:
+        completed = run_mame(command, stdout=handle, stderr=subprocess.STDOUT,
+                             env=environment, isolated_display=args.isolated_display)
+    text = log.read_text(encoding="utf-8")
+    match = DUMP.search(text)
+    canonical = re.sub(r"out=[^\s]+", "out=<dump>", text)
+    result = {
+        "schema": "stunrun-gsp-vram-dump-result/v1",
+        "frames": args.frames, "target": args.target, "words": args.words,
+        "input": args.input, "nothrottle": args.nothrottle,
+        "returncode": completed.returncode,
+        "capture": None,
+        "dump": str(dump_path),
+        "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    }
+    if match:
+        result["capture"] = {
+            "frame": int(match.group(1)),
+            "base": int(match.group(2), 16),
+            "words": int(match.group(3)),
+            "nonzero_words": int(match.group(4)),
+            "pc": int(match.group(6), 16),
+        }
+    (args.output / "result.json").write_text(
+        json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    if completed.returncode or match is None:
+        raise SystemExit(f"GSP VRAM dump failed; see {log}")
+    capture = result["capture"]
+    if capture["frame"] != args.target:
+        raise SystemExit(
+            f"captured frame {capture['frame']} but --target was {args.target}; see {log}")
+    expected_bytes = args.words * 2
+    if not dump_path.is_file():
+        raise SystemExit(f"MAME did not produce a VRAM dump: {dump_path}")
+    actual_bytes = dump_path.stat().st_size
+    if actual_bytes != expected_bytes:
+        raise SystemExit(
+            f"VRAM dump is {actual_bytes} bytes, expected {expected_bytes} "
+            f"({args.words} words); see {log}")
+    if capture["nonzero_words"] == 0:
+        raise SystemExit(
+            f"VRAM dump at {dump_path} is entirely zero: the share was not read. "
+            f"A stride-sampled reader of 0xff800000 returns zeros here while the "
+            f"program is present, so this is a failed capture, not a valid image. "
+            f"See {log}")
+    result["dump_sha256"] = hashlib.sha256(dump_path.read_bytes()).hexdigest()
+    (args.output / "result.json").write_text(
+        json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(result, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

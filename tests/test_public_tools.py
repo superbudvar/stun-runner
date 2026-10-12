@@ -559,6 +559,66 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn("screen:snapshot", lua)
         self.assertIn("fine_scroll", lua)
 
+    def test_gsp_vram_dump_reads_the_share_consecutively(self):
+        tool = (ROOT / "tools" / "mame-gsp-vram-dump").read_text(encoding="utf-8")
+        lua = (ROOT / "mame" / "lua" / "gsp-vram-dump.lua").read_text(encoding="utf-8")
+        # The whole point: a consecutive read, not the stride sweep that
+        # gsp-state-snapshot.lua uses for its checksum.
+        self.assertIn("space:read_u16(base + index * 2)", lua)
+        self.assertIn("local base = 0xff800000", lua)
+        self.assertIn("STUNRUN_GSP_VRAM_WORDS", tool)
+        self.assertIn("STUNRUN_GSP_VRAM_OUT", tool)
+        self.assertIn('"stunrun-gsp-vram-dump-result/v1"', tool)
+        # A misconfigured read yields a correctly sized all-zero file, so the
+        # nonzero count is reported and the wrapper rejects it.
+        self.assertIn("nonzero", lua)
+        self.assertIn("entirely zero", tool)
+        self.assertIn("dump_sha256", tool)
+
+    def test_gsp_vram_dump_always_sets_an_nvram_directory(self):
+        # -nonvram_save stops MAME writing NVRAM but not loading it, so a run
+        # without an explicit directory inherits ~/.mame/nvram/stunrun/ and the
+        # share reads as 262144 zero words at the correct size.
+        tool = (ROOT / "tools" / "mame-gsp-vram-dump").read_text(encoding="utf-8")
+        self.assertIn('"-nvram_directory"', tool)
+        self.assertIn('"-cfg_directory"', tool)
+        self.assertNotIn('"/tmp/stunrun-mame-cfg"', tool)
+        self.assertIn("mame-state", tool)
+
+    def test_gsp_vram_dump_agrees_with_state_snapshot_input_modes(self):
+        wrapper = (ROOT / "tools" / "mame-gsp-vram-dump").read_text(encoding="utf-8")
+        lua = (ROOT / "mame" / "lua" / "gsp-vram-dump.lua").read_text(encoding="utf-8")
+        sibling = (ROOT / "mame" / "lua" / "gsp-state-snapshot.lua").read_text(
+            encoding="utf-8")
+        for mode in ("service", "sw_off_prestart", "drive", "late",
+                     "late_drive", "fork_hold_left", "fork_hold_right",
+                     "fork_center"):
+            self.assertIn(f"input_mode == '{mode}'", lua)
+            self.assertIn(f'"{mode}"', wrapper)
+        # 'none' is the fallback, not a branch, in both scripts.
+        self.assertIn('} or {}', lua)
+        self.assertIn('} or {}', sibling)
+        self.assertIn('"none"', wrapper)
+        # Same timing as the sibling tool, or a dump and a snapshot would
+        # silently describe different machine states.
+        self.assertIn("frame = 60, port = ':mainpcb:IN0', field = 'Service Mode'", lua)
+        self.assertIn("emu.register_prestart", lua)
+        self.assertIn("emu.register_frame_done", lua)
+        self.assertIn("machine:exit()", lua)
+
+    def test_gsp_vram_dump_refuses_impossible_and_empty_captures(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            output = temp / "out"
+            # --target past --frames is rejected before MAME is spawned.
+            failed = subprocess.run(
+                [str(ROOT / "tools" / "mame-gsp-vram-dump"), "roms", str(output),
+                 "--frames", "60", "--target", "600"],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("--target 600 is past --frames 60", failed.stderr)
+            self.assertFalse(output.exists())
+
     def test_export_gsp_native_state_writes_little_endian_fixture(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = pathlib.Path(temp)
