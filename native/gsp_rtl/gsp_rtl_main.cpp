@@ -107,7 +107,10 @@ void usage(const char *argv0)
     std::fprintf(stderr,
         "usage: %s [--cycles N] [--image FILE] [--trace N] [--addr-shift N]\n"
         "       [--reset-pc ADDR] [--quiet]\n"
-        "       [--boot FILE [--vram-out FILE]]\n", argv0);
+        "       [--boot FILE [--vram-out FILE]]\n"
+        "  GSP_BOARD_TRACE=1 prints the first 40 host-window writes with the\n"
+        "  decoded register, HSTADR/HSTCTL and the VRAM/unmapped counters.\n",
+        argv0);
 }
 
 bool parse_u64(const char *s, unsigned long long *out)
@@ -673,6 +676,16 @@ int boot_from_events(const std::string &path, unsigned long long cycles,
              * HSTCTL=3. */
             host_txn(gsp_board_host_reg(byte_off), ev.data);
             gsp_board_host_write(&board, byte_off, ev.data);
+            if (getenv("GSP_BOARD_TRACE") && count <= 40) {
+                std::printf("    [trace] seq=%llu off=%u reg=%u data=0x%04x "
+                            "hstadr=0x%08x hstctl=0x%04x vram_writes=%llu "
+                            "unmapped_w=%llu\n",
+                            (unsigned long long)count, byte_off,
+                            gsp_board_host_reg(byte_off), ev.data,
+                            board.hstadr, board.hstctl,
+                            (unsigned long long)board.vram_writes,
+                            (unsigned long long)board.unmapped_writes);
+            }
         }
     }
     std::fclose(f);
@@ -715,11 +728,13 @@ int boot_from_events(const std::string &path, unsigned long long cycles,
                 (unsigned long long)(board.vram_writes - vram_before),
                 (unsigned long long)(board.word_reads - reads_before));
     std::printf("  board totals: word_reads=%llu word_writes=%llu unmapped_r=%llu "
-                "unmapped_w=%llu\n",
+                "unmapped_w=%llu vram_writes=%llu host_writes=%llu\n",
                 (unsigned long long)board.word_reads,
                 (unsigned long long)board.word_writes,
                 (unsigned long long)board.unmapped_reads,
-                (unsigned long long)board.unmapped_writes);
+                (unsigned long long)board.unmapped_writes,
+                (unsigned long long)board.vram_writes,
+                (unsigned long long)board.host_writes);
     std::printf("  vram: %u of %u words non-zero (program present?)\n",
                 gsp_board_vram_nonzero_words(&board),
                 (unsigned)(GSP_BOARD_VRAM_BYTES / 2u));
