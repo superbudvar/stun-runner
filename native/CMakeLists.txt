@@ -49,6 +49,18 @@ add_executable(stunrun-mc68010-text-writer-test
   mc68010_text_writer.c mc68010_text_writer_test.c)
 set_target_properties(stunrun-mc68010-text-writer-test PROPERTIES C_STANDARD 99)
 add_test(NAME mc68010-text-writer-slice-c COMMAND stunrun-mc68010-text-writer-test)
+# Agent 1 (this session): road FIFO write routines at $22EC-$24B8.
+add_executable(stunrun-mc68010-road-writer-test
+  mc68010_road_writer.c mc68010_road_writer_test.c)
+target_include_directories(stunrun-mc68010-road-writer-test PRIVATE .)
+set_target_properties(stunrun-mc68010-road-writer-test PROPERTIES C_STANDARD 99)
+add_test(NAME mc68010-road-writer-slice-c COMMAND stunrun-mc68010-road-writer-test)
+# Agent 1 (this session): text selector dispatch at $196 and text-from-descriptor at $2580.
+add_executable(stunrun-mc68010-text-selector-writer-test
+  mc68010_text_selector_writer.c mc68010_text_selector_writer_test.c)
+target_include_directories(stunrun-mc68010-text-selector-writer-test PRIVATE .)
+set_target_properties(stunrun-mc68010-text-selector-writer-test PROPERTIES C_STANDARD 99)
+add_test(NAME mc68010-text-selector-writer-slice-c COMMAND stunrun-mc68010-text-selector-writer-test)
 add_test(NAME adsp-init-slice-c COMMAND stunrun-adsp-init-slice-test)
 add_test(NAME adsp-control-slice-c COMMAND stunrun-adsp-control-slice-test)
 add_test(NAME adsp-upload-slice-c COMMAND stunrun-adsp-upload-slice-test)
@@ -160,6 +172,7 @@ add_executable(stunrun-native-shell
 target_link_libraries(stunrun-native-shell PRIVATE
   m
   stunrun_backends
+  stunrun_gsp_board
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kcpu.o
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kdasm.o
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/softfloat/softfloat.o)
@@ -167,7 +180,8 @@ target_include_directories(stunrun-native-shell PRIVATE
   . ../reproduction/adsp ../reproduction/maincpu ../reproduction/gsp
   ../reproduction/sound ../backend
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi
-  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/stb)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/stb
+  ${CMAKE_CURRENT_SOURCE_DIR}/gsp_rtl)
 set_target_properties(stunrun-native-shell PROPERTIES C_STANDARD 99)
 add_test(NAME native-shell COMMAND stunrun-native-shell)
 set_tests_properties(native-shell PROPERTIES
@@ -753,3 +767,26 @@ target_link_libraries(stunrun-musashi-text-log-test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/softfloat/softfloat.o)
 set_target_properties(stunrun-musashi-text-log-test PROPERTIES C_STANDARD 99)
 add_test(NAME musashi-text-log-c COMMAND stunrun-musashi-text-log-test)
+
+# GSP RTL driver (C++20, links the Verilated core).
+# Only available when Verilator was found (same check as gsp_rtl subdirectory).
+# The shell links against it only when STUNRUN_GSP_RTL=1, guarded by the same
+# find_program result so the ROM-free build never requires Verilator.
+find_program(STUNRUN_VERILATOR NAMES verilator
+  HINTS
+    "$ENV{HOME}/.local/share/verilator-5.052/bin"
+    "$ENV{HOME}/opt/verilator/bin"
+    "$ENV{HOME}/.local/bin")
+if(STUNRUN_VERILATOR)
+  add_library(stunrun_gsp_rtl_driver STATIC
+    gsp_rtl_driver.cpp)
+  target_include_directories(stunrun_gsp_rtl_driver PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/tms34010_sv)
+  target_link_libraries(stunrun_gsp_rtl_driver PUBLIC
+    stunrun_tms34010_sv
+    stunrun_gsp_board
+    ${VERILATOR_LIBS})
+  set_target_properties(stunrun_gsp_rtl_driver PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+endif()
