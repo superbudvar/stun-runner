@@ -3475,3 +3475,93 @@ observed 16-byte cell stride by inspection and needs a trace. Filed as
 One caution for whoever ports it: the same `$25E8` prologue runs before any
 glyph is written, and `clr.w $608000.l` plus `andi.w #$e7ff,$c00008.l` are part
 of the routine's observable effect, not incidental.
+
+## 21. The text path closes end to end, in service mode
+
+Section 20 mapped the `$25E8` structure statically. This closes the chain by
+observation: service mode, `0xC00000`-`0xC00020` tapped on the MC68010, and the
+result checked against a committed screen capture.
+
+### 21.1 The capture
+
+Every `$25E8` character draw executes `move.l D0,$c00002.l` at PC `$2656`, so
+filtering on that PC alone yields exactly one event per character drawn. 1040
+taps, 520 host-address writes, service mode, frames 60-900:
+
+```sh
+tools/mame-ram-write-trace roms <out> --device :mainpcb:maincpu \
+  --base 0xC00000 --end 0xC00020 --frames 900 --start-frame 60 --end-frame 900 \
+  --pc 0x2656 --registers --input service_f2 --nothrottle
+```
+
+Recorded under `reference/experiments/stunrun/service-f2-text-host-writes/`.
+This capture is only possible after the f084039 harness fix: before it,
+`--registers` on the MC68010 dropped every event, so the one tool that could
+watch the text being drawn reported nothing.
+
+### 21.2 Reading the registers confirms the decode
+
+```text
+frame 214  A0=00006C58  A1=0000221C
+```
+
+* `A1 = $221C`. The font pointer is `$1FBC + 16*(ch-$2A)`, so
+  `$221C - $1FBC = $260 = 38` glyphs in, giving `$2A + 38 = $50` = `P`. The
+  first character of the string. Exact.
+* `A0 = $06C58`, and `$2638` is `move.b (A0)+,D1` -- it post-increments *before*
+  the write at `$2656`. So `descriptor = A0 - 5 = $06C53`, which is exactly
+  selector `$47`'s table entry, and `A0` increments by one per character, which
+  is also the reliable way to segment a draw.
+
+### 21.3 Two selectors resolved from live traffic
+
+```text
+frame 214-216   A0-5 = $06C53   selector $47   count_byte=30   PRESS*START*TO*BYPASS*SELFTEST
+frame 334-336   A0-5 = $06BE7   selector $43   count_byte=14   PROGRAM*ROM*OK
+```
+
+Both `count_byte` values equal the string length, both `first_glyph` values are
+`P`, and both descriptors are real table entries rather than offsets guessed
+from the data. `$43` and `$47` are also both in the 30-call-site list from
+section 20.5, at `$062A2` and `$05092` respectively.
+
+### 21.4 The screen agrees
+
+`reference/experiments/stunrun/service-f2-3600-stages/screens/frame-000300.png`
+shows:
+
+```text
+PRESS  START  TO  BYPASS  SELFTEST
+```
+
+That is selector `$47`, spelled with spaces where the ROM has `*` -- the blank
+glyph, as section 20.6 established. The committed screens were captured with
+input mode `service`; this capture used `service_f2`; the two schedules are
+byte-identical in intent (press Service Mode at frame 60, release at 120) and
+were checked to be, which is what makes the comparison legitimate rather than
+coincidental.
+
+So the chain is now evidenced at every hop, each by a different artifact:
+
+```text
+ROM descriptor $06C53  = 01 0f df 1e + "PRESS*START*TO*BYPASS*SELFTEST"
+selector table $10136  -> $6C53                                       (section 20.4)
+$25E8 decode           -> base $FF896040, colour 00DF/DF00, 30 chars  (section 13)
+host-port writes       -> observed live, A0/A1 match the decode       (21.2, 21.3)
+GSP VRAM               -> receives them at $FF896040
+screen                 -> "PRESS  START  TO  BYPASS  SELFTEST"        (21.4)
+```
+
+### 21.5 What is still missing, precisely
+
+The VRAM-contents hop is evidenced by address but not yet by comparison: the
+68010 writes HSTADR `$FF896040`, and MAME maps that into the share, but
+confirming the resulting bytes requires the 4 MiB extent fix in section 19 --
+under the shipped 512 KiB mask that address lands at offset `$16040` instead of
+`$96040`. That is `stun-runner-2ua`, and it is the only thing between here and a
+byte-level check of the text region.
+
+The port itself remains `stun-runner-txt1`. What section 21 adds is that its
+oracle now exists and is committed: the ordered `(HSTADR, HSTDAT)` stream plus
+the `A0`/`A1` samples per character, which together pin the loop nesting that
+section 20.7 flagged as not reconcilable by inspection.

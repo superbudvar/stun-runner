@@ -1,0 +1,41 @@
+{
+  "schema": "stunrun-reference-experiment/v1",
+  "experiment": "service-f2-text-host-writes",
+  "authority": "controlled-replay",
+  "rom_set": "stunrun rev 6",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "command": "./tools/mame-ram-write-trace roms /tmp/opencode/svc-text --device :mainpcb:maincpu --base 0xC00000 --end 0xC00020 --frames 900 --start-frame 60 --end-frame 900 --pc 0x2656 --registers --max-events 4000 --input service_f2 --nothrottle --mame /mnt/build/mame-ref/mame",
+  "input_schedule": {
+    "note": "identical to the 'service' mode of mame-gsp-state-snapshot.lua and to the service-f2-3600-stages screens, which is what makes those screens comparable with this capture",
+    "events": [
+      {"frame": 60, "port": ":mainpcb:IN0", "field": "Service Mode", "action": "press"},
+      {"frame": 120, "port": ":mainpcb:IN0", "field": "Service Mode", "action": "release"}
+    ]
+  },
+  "tap": {
+    "processor": ":mainpcb:maincpu",
+    "space": "program",
+    "range": "0xC00000-0xC00020",
+    "pc_filter": "0x2656",
+    "captures": ["pc", "address", "data", "a0", "a1", "a5"],
+    "installed_after_frame": 10
+  },
+  "artifacts": [
+    {
+      "path": "result.json",
+      "bytes": 178387,
+      "sha256": "c4b2757f99ce9f5b015647468c71817f403ae1f3b12509af89dc0f7be79fe035",
+      "committed": true
+    },
+    {
+      "path": "mame.log",
+      "bytes": 120975,
+      "sha256": "bf9008e7ebc5da97a0e1322c54ed0cf1514df529273853692c18e6603a8fd499",
+      "committed": true
+    }
+  ],
+  "notes": "Oracle for docs/mc68010-boot-findings.md section 21. Every $25E8 character draw executes 'move.l D0,$c00002.l' at PC $2656, so filtering on that PC alone captures one event per character drawn; 1040 taps = 520 host-address writes (each 32-bit move.l splits into two 16-bit taps). Requires the f084039 harness fix: before it, --registers dropped every event on the MC68010 because ram-write-trace.lua indexed device.state['A10'].value, which only the TMS34010 has. Frames 214-216 draw selector $47 and frames 334-336 draw selector $43, with A0 = descriptor+5+char_index (move.b (A0)+ at $2638 runs before the write) and A1 = $1FBC + 16*(char-$2A), which is how the first glyph reads 'P'. Cross-checked against the committed screens/frame-000300.png in service-f2-3600-stages, which show 'PRESS START TO BYPASS SELFTEST' -- selector $47."
+}
