@@ -967,6 +967,21 @@ ug.txt:4591–4595:
 
 **Take HSTCTLL's address from MAME / the datasheet** — the OCR is self-contradictory.
 
+**STUN Runner board: host port address mapping (confirmed from Ghidra).**
+The MC68010 accesses the GSP host port through a board-level address window at
+`$C00000–$C0000F`. The ROM write sequences confirm this mapping:
+
+| 68010 access | Ghidra label | 68010 address | Function |
+|---|---|---|---|
+| `move.w Dx, $c00002.l` | `HSTADR_HI` | `$C00002` | Host address register, high word |
+| `move.w Dx, $c00004.l` | `HSTADR_LO` | `$C00004` | Host address register, low word |
+| `andi.w #$e7ff, $c00008` | `HSTCTL` | `$C00008` | Host control (HLT at bit 15, INCR at bit 12, INCW at bit 11) |
+| `move.w Dx, $c0000c.l` | `HSTDAT` | `$C0000C` | Host data port |
+
+The GSP also has internal GSP-register space at `$604xxx` (confirmed from
+`movep` accesses in the boot sequence: `$6040C`, `$6041C`, `$60410`, `$60402`,
+`$60412` — used for GSP control, palette, and video timing).
+
 #### Local memory interface registers
 
 | Reg | Address | Bit fields | Function |

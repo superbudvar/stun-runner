@@ -63,6 +63,81 @@ palette bank zero. With the captured MAME VRAM/palette dump, the acceptance
 test checks the 512×240 output, 47 distinct colours, and dominant RGB
 `(177,46,36)` at 21.71%.
 
+## GSP host port registers (MC68010 → GSP)
+
+The MC68010 talks to the GSP entirely through the host port. The relevant
+registers, confirmed from Ghidra disassembly of the GSP boot and text-draw
+routines (`s_000003F8_gsp_boot_reset_main`, `s_000025E8_mc68010_text_draw`):
+
+| Ghidra label | Address | Access | Purpose |
+|---|---|---|---|
+| `HSTADR_HI` | `$C00002` | write | Host address register, high word. Write first of two words to set a 32-bit GSP local-memory pointer. |
+| `HSTADR_LO` | `$C00004` | write | Host address register, low word. Write second. |
+| `HSTCTL` | `$C00008` | read-modify-write | Host control. `bit 15 = HLT` (halt GSP), `bit 12 = INCR` (auto-increment address on read), `bit 11 = INCW` (auto-increment on write), `bit 13 = LBL` (low byte last). |
+| `HSTDAT` | `$C0000C` | read/write | Host data port. One 16-bit word per indirect GSP local-memory access. |
+
+Address and data are always written as two 16-bit words (big-endian 68010 store).
+
+## GSP boot / reset sequence
+
+The full reset sequence is `s_000003F8_gsp_boot_reset_main` (`$3F8`).
+Transcribed from Ghidra decompilation:
+
+```
+$C00008 = 0xA000       ; HSTCTL: HLT=1 (halt GSP), HLT preserved on read-modify-write
+call $370              ; 400-cycle delay (s_00000370_gsp_boot_delay_400)
+call $37C              ; load palette entries from RAM table via host port (s_0000037C_gsp_boot_load_palette)
+call $34A              ; write (address, word) record pairs to FIFO (s_0000034A_gsp_boot_write_fifo_records)
+call $7C2              ; write GSP control table (s_000007C2_gsp_boot_write_gsp_table)
+call $3BE              ; set VRAM base 0xF4800000 (s_000003BE_gsp_boot_set_vram_base_F4800000)
+call $37C              ; load palette x2
+call $37C
+call $48E              ; init FIFO write mode: HLT|INCR, delay, fill with incrementing values (s_0000048E_gsp_boot_init_fifo_write)
+$C00002 = 0xF4800090  ; HSTADR = frame-buffer base
+$C0000C = 0xFFFF      ; HSTDAT = colour
+call $67A              ; fill VRAM 0xFF800000–0xFF9FFFFF with colour (s_0000067A_gsp_boot_fill_vram_color)
+rts
+```
+
+**Palette loading** (`$37C`): reads 3-byte entries from a RAM table
+(indexed by `D0 & 0xFFFF * 10 + 0x32C`), shifts each entry by
+`entry[2]` bits (0–63), and ORs the result into `HSTDAT`. The table is
+supplied by the MC68010 via shared RAM.
+
+**FIFO record write** (`$34A`): writes `(address, word)` pairs from a table
+to `HSTADR`/`HSTDAT` in a loop.
+
+## Per-frame pipeline: MC68010 writes, GSP halts during scanout
+
+The GSP is halted (`HSTCTL.HLT = 1`) for the majority of each frame.
+The MC68010 owns VRAM during this time and writes:
+
+- **Text** — `s_000025E8_mc68010_text_draw` (`$25E8`): writes 8-pixel cells via
+  `HSTADR`/`HSTDAT`, incrementing by `0x10` per pixel and `0x1000` per row.
+  Text glyphs live in the GSP's local-addressed glyph table at `DAT_00001FBC`
+  (word-aligned 8×8 bitmaps, one 16-bit word per row, 16 words per glyph).
+- **Road polygons** — `s_000022EC_mc68010_road_write_fifo_words` (`$22EC`):
+  writes 8 words per poly to the FIFO, stride `0x400` between calls.
+
+At end of frame the GSP is briefly released (`HSTCTL.HLT = 0`) to execute
+its display list and scan out the frame. The display list blits from the
+offscreen text/road buffer into the visible frame buffer.
+
+**Service mode** (`STUNRUN_IN0` bit 5 held): the GSP is halted throughout.
+Text is written to VRAM base `0x016040` (confirmed by MAME capture of
+selector `$47` "PRESS START TO BYPASS SELFTEST"). The rasterizer in
+`render_live_gsp_frame` must be pointed at `0x16000` word base
+(`rowaddr` = `0x3C`, `DPYSTRT` = `0x00F000`) for service mode text to appear.
+
+## BAD GSP VRAM diagnostic
+
+`s_00004F82_mc68010_gsp_vram_test_main` (`$4F82`) is the "BAD GSP VRAM"
+self-test. It writes `0x01010101` eight times to `0xFF945E` via the host
+port, then calls `$010932` and `$004A48` before entering an infinite loop.
+A correct read-back should return `0xFFFF` for each write (host port
+mirrors/acks). If any bit reads back as 0, the test fails. This is the
+MAME debugger hook for MD-09 ("BAD GSP VRAM") in `BUGS.md`.
+
 ## Provenance
 
 The implementation is transcribed from the pinned MAME 0.289 source:
