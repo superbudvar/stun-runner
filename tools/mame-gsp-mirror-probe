@@ -1,0 +1,382 @@
+#!/usr/bin/env python3
+"""Measure the GSP VRAM share size, mapped set and offset function.
+
+multisync_gsp_map (harddriv.cpp:628) declares
+
+    map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram")
+
+Both VRAM paths in native/ instead mask the offset with (size - 1) = 0x7FFFF,
+because GSP_BOARD_VRAM_BYTES and MUSASHI_GSP_VRAM_BYTES are both 0x80000.  The
+declared window is 0xff800000-0xffbfffff, which is 0x400000 bytes, so the share
+is 4 MiB and the mask is wrong by a factor of eight.  Measured effect on the
+captured bus stream: 745,384 of 843,688 0xFFxxxxxx HSTDAT writes land in a
+different cell.  See docs/mc68010-boot-findings.md section 19.
+
+The trap this tool exists to avoid, in three forms:
+
+  * Reading the map and measuring the decoder are different acts.  Both the code
+    comment and the map declaration have been misread here; one used our own
+    0x80000 constant to size the window under suspicion, and another compared
+    512 KiB *pages* of share content and reported the resulting 2 MiB content
+    period as a mirror period.  Make MAME do the write.
+
+  * A plain round-trip cannot bound the share.  Write a marker at base+off and
+    read it back at base+off, and base+0x400000 passes the test perfectly while
+    being nothing but the bit-22 alias of offset 0.  The probe parks a sentinel
+    at offset 0, writes the candidate at base+off, then re-reads offset 0: if it
+    holds the candidate, base+off was never distinct storage.  That is what
+    makes the reported size a measurement rather than an echo of the
+    declaration.
+
+  * "Reads zero" means nothing without a baseline.  An unmapped read returns the
+    floating bus (0xffff here), so baseline is captured before any write.
+
+The probe writes eight distinct markers at addresses 2 MiB apart across
+0xFF000000-0xFFFFFFFF, reading all eight back after each, then scans for where
+each marker actually landed.  A read returning marker k proves address j aliases
+address k; an address whose marker lands nowhere is one MAME does not map.
+
+The reported verdict compares the measurement against both the declared decode
+and the as-shipped 512 KiB decode, so the result shows what the map specifies
+and what the code does rather than quietly substituting one for the other.
+
+Always passes -cfg_directory and -nvram_directory on a per-run directory.
+Without -nvram_directory a run inherits ~/.mame/nvram/stunrun/ and reads a
+machine state nobody pinned down; on this driver that flips the share between
+fully populated and entirely zero without changing its 524288-byte size.
+
+This probe writes program memory and leaves the machine in a state not worth
+screenshotting.  It answers one question and exits.  Not a test harness.
+
+Usage:
+    tools/mame-gsp-mirror-probe roms /tmp/stunrun-mirror
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "mame_harness"))
+from process import run_mame
+
+HEADER = re.compile(r"M1_MIRROR base=([0-9A-Fa-f]+) step=([0-9A-Fa-f]+) "
+                    r"count=(\d+) frame=(\d+) pc=([0-9A-Fa-f]+)")
+SHARE = re.compile(r"M1_MIRROR share_name=(\w+) share_bytes=(\d+) "
+                   r"share_first_bad=(\w+) share_why=(\w+)")
+
+# `wrote` is absent on baseline/write lines and present on read lines, so it
+# has to be optional or the write half of the matrix is silently dropped and
+# classify() has nothing to compare the reads against.
+# `wrote` and `ok` are absent on some phases, so both are optional or whole
+# halves of the matrix are silently dropped.
+LINE = re.compile(r"M1_MIRROR phase=(\w+) (?:wrote=(\d+) )?k=(\d+) "
+                  r"addr=([0-9A-Fa-f]+) value=(\w+)(?: ok=(\d+))?")
+
+# The decisive line: which offsets inside the share the write at `addr` reached.
+OFFSET = re.compile(r"M1_MIRROR phase=offset k=(\d+) addr=([0-9A-Fa-f]+) "
+                    r"value=(\w+) hits=(\d+) first=(\w+)")
+OFFSET_AT = re.compile(r"M1_MIRROR phase=offset_at k=(\d+) addr=([0-9A-Fa-f]+) "
+                       r"index=(\d+) off=([0-9A-Fa-f]+)")
+
+INPUT_MODES = ("none", "service", "service_probe", "sw_off_prestart", "drive",
+               "late", "late_drive", "fork_hold_left", "fork_hold_right",
+               "fork_center")
+
+
+def parse_matrix(text: str):
+    """Return (header, baseline, writes, reads, share, offsets).
+
+    reads[(wrote, k)]  -- value address k held after the write at `wrote`
+    writes[k]          -- (addr, marker) written at the 2 MiB probe addresses
+    baseline[k]        -- value address k held before any write
+    offsets[k]         -- every share offset the marker written at probe k
+                          was found at
+    """
+    header = None
+    baseline = {}
+    reads = {}
+    writes = {}
+    share = None
+    offsets = {}
+    for line in text.splitlines():
+        m = HEADER.search(line)
+        if m:
+            header = {"base": int(m.group(1), 16), "step": int(m.group(2), 16),
+                      "count": int(m.group(3)), "frame": int(m.group(4)),
+                      "pc": int(m.group(5), 16)}
+            continue
+        m = SHARE.search(line)
+        if m:
+            share = {"name": m.group(1), "bytes": int(m.group(2)),
+                     "first_bad_offset": (None if m.group(3) == "none"
+                                          else int(m.group(3), 16)),
+                     "why": m.group(4)}
+            continue
+        m = OFFSET.search(line)
+        if m:
+            k, a, v, hits, first = int(m.group(1)), int(m.group(2), 16), \
+                m.group(3), int(m.group(4)), m.group(5)
+            offsets.setdefault(k, {"addr": a, "value": v, "hits": hits,
+                                   "first": None if first == "none" else int(first, 16),
+                                   "all": []})["hits"] = hits
+            continue
+        m = OFFSET_AT.search(line)
+        if m:
+            offsets[int(m.group(1))]["all"].append(int(m.group(4), 16))
+            continue
+        m = LINE.search(line)
+        if not m:
+            continue
+        phase = m.group(1)
+        wrote = int(m.group(2)) if m.group(2) is not None else -1
+        k = int(m.group(3))
+        a, v = int(m.group(4), 16), m.group(5)
+        value = None if v == "ERR" else int(v, 16)
+        if phase == "baseline":
+            baseline[k] = value
+        elif phase == "write":
+            writes[k] = (a, value)
+        elif phase == "read":
+            reads[(wrote, k)] = value
+    return header, baseline, writes, reads, share, offsets
+
+
+def model_offsets(share_bytes):
+    """The offset functions to compare against measurement.
+
+    native/musashi_cpu.c:925 and native/gsp_rtl/gsp_board.c both compute
+    `(addr - 0xff800000) & (size - 1)`, and both declare size = 0x80000.
+
+    That 0x80000 is the number measurement rejects: the share is 4194304 bytes.
+    With the shipped 512 KiB constant the mask disagrees with MAME wherever bit
+    21 is set, which is 492,544 of the 843,688 captured 0xFFxxxxxx writes.
+    Both variants are returned so the result shows what the code does *and*
+    what the map specifies, rather than quietly substituting one for the other.
+    """
+    def model(addr, size):
+        return ((addr - 0xFF800000) & (size - 1)) & ~0xF
+
+    return {
+        "declared": lambda a: model(a, share_bytes),
+        "as_shipped_512k": lambda a: model(a, 0x80000),
+    }
+
+
+def classify(header, baseline, writes, reads):
+    """Turn the matrix into an alias verdict.
+
+    An address j is a live alias of address k when writing at k makes j read
+    marker k.  A write that changes nothing anywhere means the address is not
+    writable at all -- MAME drops it, and the reads stay at their baseline.
+    """
+    count = header["count"]
+    missing = [k for k in range(count) if k not in writes]
+    if missing:
+        raise ValueError(f"probe logged no write for indices {missing}")
+    marker_of = {k: writes[k][1] for k in writes}
+    landed = {}
+    for k in range(count):
+        # A write that reads back its own marker at its own address definitely
+        # landed; anything else showing that marker is an alias of it.
+        landed[k] = sorted(j for j in range(count)
+                           if reads.get((k, j)) == marker_of[k])
+
+    writable = sorted(k for k in range(count) if landed[k])
+    silent = sorted(k for k in range(count) if not landed[k])
+
+    # The alias period is the smallest positive delta between two addresses
+    # that provably share storage.
+    periods = set()
+    for k in writable:
+        a = writes[k][0]
+        for j in writable:
+            b = writes[j][0]
+            if b > a and j in landed[k]:
+                periods.add(b - a)
+    return {
+        "writable_indices": writable,
+        "silent_indices": silent,
+        "alias_sets": {str(k): landed[k] for k in writable},
+        "observed_alias_deltas": sorted(periods),
+        "alias_period": min(periods) if periods else None,
+    }
+
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("rompath", type=pathlib.Path)
+    parser.add_argument("output", type=pathlib.Path)
+    parser.add_argument("--frames", type=int, default=600,
+                        help="emulated frames to run (bounds the MAME process)")
+    parser.add_argument("--target", type=int, default=600,
+                        help="frame to run the probe at")
+    parser.add_argument("--input", choices=INPUT_MODES, default="none")
+    parser.add_argument("--mame", default="mame")
+    parser.add_argument("--nothrottle", action="store_true",
+                        help="run MAME as fast as possible while preserving emulated frame numbers")
+    parser.add_argument("--windowed", action="store_true",
+                        help="run with a visible window instead of the headless video backend")
+    parser.add_argument("--isolated-display", action="store_true",
+                        help="run SDL on a private Xvfb display, never the physical desktop")
+    args = parser.parse_args()
+    if args.frames <= 0:
+        parser.error("--frames must be positive")
+    if args.target <= 0:
+        parser.error("--target must be positive")
+    if args.target > args.frames:
+        parser.error(f"--target {args.target} is past --frames {args.frames}")
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    log = args.output / "mame-mirror.log"
+    run_dir = args.output / "mame-mirror-cfg"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    video_args = ["-video", "sdl", "-window"] if args.windowed else ["-video", "none"]
+    command = [
+        args.mame, "-rompath", str(args.rompath), "stunrun", *video_args,
+        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
+        "-cfg_directory", str(run_dir), "-nvram_directory", str(run_dir),
+        "-nonvram_save",
+        "-seconds_to_run", str(max(2, (args.frames + 59) // 60 + 1)),
+        "-autoboot_script",
+        str(pathlib.Path(__file__).resolve().parents[1] / "mame/lua/gsp-mirror-probe.lua"),
+    ]
+    if args.nothrottle:
+        command.insert(command.index("-seconds_to_run"), "-nothrottle")
+    environment = {
+        **os.environ,
+        "STUNRUN_MIRROR_FRAME": str(args.target),
+        "STUNRUN_MIRROR_INPUT": args.input,
+        "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "x11") if args.windowed else "dummy",
+    }
+    with log.open("w", encoding="utf-8") as handle:
+        completed = run_mame(command, stdout=handle, stderr=subprocess.STDOUT,
+                             env=environment, isolated_display=args.isolated_display)
+
+    text = log.read_text(encoding="utf-8", errors="replace")
+    (header, baseline, writes, reads, share, offsets) = parse_matrix(text)
+    result = {
+        "schema": "stunrun-gsp-mirror-probe-result/v1",
+        "frames": args.frames, "target": args.target, "input": args.input,
+        "nothrottle": args.nothrottle,
+        "returncode": completed.returncode,
+        "capture": None,
+        "canonical_log_sha256": hashlib.sha256(
+            re.sub(r"pc=[0-9A-Fa-f]+", "pc=<pc>", text).encode("utf-8")).hexdigest(),
+    }
+    if header is not None and writes:
+        result["capture"] = {"frame": header["frame"], "pc": header["pc"],
+                             "count": header["count"], "step": header["step"]}
+        result["baseline"] = {str(k): v for k, v in sorted(baseline.items())}
+        result["writes"] = {str(k): {"addr": a, "value": v}
+                            for k, (a, v) in sorted(writes.items())}
+        result["reads"] = {f"{w},{j}": reads[(w, j)]
+                           for (w, j) in sorted(reads) if (w, j) in reads}
+        result["verdict"] = classify(header, baseline, writes, reads)
+    if share:
+        result["share"] = share
+    if offsets:
+        result["offsets"] = {str(k): v for k, v in sorted(offsets.items())}
+        # The comparison that matters: does the function native/ implements
+        # place each probe write where MAME actually put it?
+        if share and share["bytes"]:
+            # The scan reports the ADDRESSES holding the marker.  Convert to a
+            # share offset before comparing, or this compares an address against
+            # an offset and disagrees about everything.
+            window_base = header["base"]
+            models = model_offsets(share["bytes"])
+            agree = {name: [] for name in models}
+            disagree = {name: [] for name in models}
+            unmapped = []
+            for k, v in sorted(offsets.items()):
+                entry = {"k": k, "addr": f"0x{v['addr']:08x}"}
+                if not v["all"]:
+                    # MAME does not map this address at all, so there is no
+                    # offset to compare.  Whether native/ folds it into VRAM is
+                    # a predicate question, answered by gsp_region(), not here.
+                    unmapped.append(dict(entry, measured_offset=None,
+                                         native_model_offset={
+                                             n: f"0x{fn(v['addr']):08x}"
+                                             for n, fn in models.items()}))
+                    continue
+                measured = min(v["all"]) - window_base
+                for name, fn in models.items():
+                    modeled = fn(v["addr"])
+                    (agree if measured == modeled else disagree)[name].append({
+                        "k": k, "addr": entry["addr"],
+                        "measured_offset": f"0x{measured:08x}",
+                        f"native_{name}_offset": f"0x{modeled:08x}",
+                    })
+            result["offset_agreement"] = {
+                "window_base": f"0x{window_base:08x}",
+                "share_bytes": share["bytes"],
+                "agree": agree, "disagree": disagree, "not_mapped": unmapped,
+                "native_model_correct": {n: not disagree[n] for n in models},
+            }
+    (args.output / "result.json").write_text(
+        json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+    if completed.returncode or result["capture"] is None:
+        raise SystemExit(f"GSP mirror probe failed; see {log}")
+    if result["capture"]["frame"] != args.target:
+        raise SystemExit(
+            f"probe ran at frame {result['capture']['frame']} but --target was "
+            f"{args.target}; see {log}")
+
+    verdict = result["verdict"]
+    print(json.dumps(result, separators=(",", ":")))
+    print()
+    print(f"writable indices : {verdict['writable_indices']}")
+    print(f"silent indices   : {verdict['silent_indices']}  (writes that changed nothing)")
+    for k in verdict["writable_indices"]:
+        alias = verdict["alias_sets"][str(k)]
+        a = result["writes"][str(k)]["addr"]
+        others = [result["writes"][str(j)]["addr"] for j in alias if j != k]
+        print(f"  write 0x{a:08x} readable at "
+              f"{['0x%08x' % o for o in others] or 'only itself'}")
+    if verdict["alias_period"]:
+        print(f"alias period    : 0x{verdict['alias_period']:X} "
+              f"({verdict['alias_period'] // 1024} KiB)")
+    if "share" in result:
+        s = result["share"]
+        print(f"share           : {s['name']} {s['bytes']} bytes "
+              f"({s['bytes'] // 1024 // 1024} MiB), first bad offset "
+              f"{s['first_bad_offset'] and hex(s['first_bad_offset']) or 'none'} "
+              f"({s['why']})")
+    if "offset_agreement" in result:
+        a = result["offset_agreement"]
+        print()
+        print(f"offset(a) vs native/ models (offsets from {a['window_base']}, "
+              f"share {a['share_bytes']} bytes):")
+        for e in a["not_mapped"]:
+            shipped = e["native_model_offset"]["as_shipped_512k"]
+            print(f"  --  addr={e['addr']} not mapped by MAME; the 512 KiB "
+                  f"model would still write it to {shipped}")
+        for e in sorted(a["agree"]["declared"] + a["disagree"]["declared"],
+                         key=lambda r: r["addr"]):
+            shipped = next(r for r in (a["agree"]["as_shipped_512k"]
+                                       + a["disagree"]["as_shipped_512k"])
+                           if r["addr"] == e["addr"])
+            same = shipped["native_as_shipped_512k_offset"] == e["measured_offset"]
+            print("  %s addr=%s measured=%s declared=%s shipped_512k=%s" % (
+                "ok " if same else "BAD", e["addr"], e["measured_offset"],
+                e["native_declared_offset"],
+                shipped["native_as_shipped_512k_offset"]))
+        bad = a["disagree"]["as_shipped_512k"]
+        mapped_probes = len(a["agree"]["as_shipped_512k"]) + len(bad)
+        shipped_ok = a["native_model_correct"]["as_shipped_512k"]
+        shipped_verdict = ("agrees with MAME" if shipped_ok
+                           else "WRONG at %d/%d mapped probes" % (len(bad), mapped_probes))
+        print("=> declared decode  : %s" % (
+            "agrees with MAME" if a["native_model_correct"]["declared"] else "WRONG"))
+        print("=> shipped 512 KiB  : %s" % shipped_verdict)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,31 @@
+{
+  "schema": "stunrun-reference-experiment/v1",
+  "experiment": "gsp-vram-mirror-probe-600",
+  "authority": "controlled-replay",
+  "rom_set": "stunrun rev 6",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "command": "./tools/mame-gsp-mirror-probe roms /tmp/opencode/mirror12 --mame /mnt/build/mame-ref/mame --frames 600 --target 600 --nothrottle",
+  "artifacts": [
+    {
+      "path": "mame.log",
+      "bytes": 24667,
+      "sha256": "a395374a775a1b413ec9a8df3227ec4bc47cebbd15640aefcba2044a03cbbea8"
+    },
+    {
+      "path": "result.json",
+      "bytes": 6404,
+      "sha256": "9379a21732004626301175582971da659132978d6e1a62e369f29602d6f2e21c"
+    }
+  ],
+  "notes": "Measures the GSP VRAM decode by writing markers into live MAME at frame 600, rather than by reading multisync_gsp_map. Share is 4194304 bytes, first non-distinct offset 0x400000; mapped iff (addr & 0x7f800000) == 0x7f800000; offset = addr & 0x3fffff. Both native/ VRAM paths mask with 0x7ffff via a 0x80000 constant and therefore disagree with this for 745,384 of the 843,688 captured 0xFFxxxxxx writes. Confirms docs/mc68010-boot-findings.md section 19. Reproducible: two runs differed only in the GSP PC field.",
+  "result": {
+    "share_bytes": 4194304,
+    "share_first_bad_offset": 4194304,
+    "share_first_bad_why": "aliases_offset_0",
+    "declared_decode_agrees_with_mame": true,
+    "shipped_512k_decode_wrong_at": ["0xffa00000", "0xffe00000"]
+  }
+}

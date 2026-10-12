@@ -906,15 +906,30 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
 
     /* 0xFF000000-0xFFFFFFFF: the VRAM share.
      *
-     * KNOWN DIVERGENCE, unresolved -- docs/mc68010-boot-findings.md section 19.
+     * CONFIRMED DIVERGENCE, unfixed -- docs/mc68010-boot-findings.md section 19.
      * The comment this replaced said "the 4 MiB share ... 0xffc00000-0xffffffff
-     * aliases onto it".  That was wrong twice over: MUSASHI_GSP_VRAM_BYTES is
-     * 0x80000, so the offset below masks with 0x7FFFF (a 512 KiB period, not
-     * 4 MiB), and MAME's `.mirror(0x0400000)` over a 0xff800000-0xffbfffff
-     * window aliases only the 512 KiB at 0xffc00000-0xffc7ffff, leaving
-     * 0xffc80000-0xffffffff unmapped.  The predicate above accepts all of
-     * 0xff000000-0xffffffff and this mask folds the difference into VRAM
-     * instead of dropping it.  351,144 captured writes land in that gap.
+     * aliases onto it".  The conclusion happened to be right for the wrong
+     * reason, and so was my first correction of it: I read the declared window
+     * 0xff800000-0xffbfffff as 512 KiB when it is 0x400000 bytes, because
+     * MUSASHI_GSP_VRAM_BYTES below is 0x80000 and I used the constant under
+     * suspicion to size the thing being tested.
+     *
+     * Measured, by tools/mame-gsp-mirror-probe:
+     *
+     *     share   = 4194304 bytes, first offset aliasing 0 is 0x400000
+     *     mapped  iff (addr & 0x7f800000) == 0x7f800000
+     *     offset  =  addr & 0x003fffff
+     *
+     * The predicate at the top of this function accepts all of
+     * 0xff000000-0xffffffff (too wide, but the capture never goes below
+     * 0xff800000), and the mask below is 0x7FFFF (too narrow: 512 KiB where
+     * the share is 4 MiB).  745,384 of the 843,688 captured 0xffxxxxxx writes
+     * land in a different cell as a result.
+     *
+     * Do not fix the constant here.  It sizes this model's calloc and, in
+     * gsp_board.h, gsp_board.vram[] and the --vram-out dump; growing it to
+     * 0x400000 invalidates the 512 KiB frame-600 oracle fixture and is its own
+     * slice (stunrun-2ua).
      *
      * A host word write does NOT store two bytes.  MAME models GSP program
      * memory as a 32-bit-wide space with AddrShift = 3

@@ -3166,90 +3166,129 @@ against a deliberately broken tool: concatenating instead of interleaving the
 ROM, treating every store as halt-changing, and disabling the stride guard
 each produce failures rather than passing silently.
 
-## 19. The VRAM mirror is modelled wider than MAME declares it (KNOWN DIVERGENCE)
+## 19. The GSP VRAM share is 4 MiB, not 512 KiB (CONFIRMED, unfixed)
 
-Raised by another agent as a question, not a correction. It is a real
-divergence, it is larger than expected, and it is now the leading candidate for
-the VRAM mismatch. Left unfixed on purpose; see "why not fixed" below.
+Raised by another agent as a question: "the mirror period is 2 MiB, not 4 MiB",
+from a 4 MiB capture in which a 512 KiB page repeated four pages on. Measured
+to settle it. **The premise of the question was wrong, and so was my own first
+answer.** Both are recorded here because the wrong turns are the expensive part.
+
+### 19.0 What I got wrong first
+
+My first pass concluded the board model was "wider than MAME declares" and that
+351,144 captured writes addressed unmapped space. Every part of that was an
+arithmetic slip: I read the declared window `0xff800000-0xffbfffff` as 512 KiB.
+It is `0x400000` bytes -- **4 MiB**. The 512 KiB came from our own
+`GSP_BOARD_VRAM_BYTES`, which is the thing under suspicion, so I used the
+suspect constant to compute the thing that would exonerate it. Every derived
+claim in that draft -- the window size, the mirror period, the 351,144 count,
+the "MAME drops these writes" conclusion -- followed from that one error.
+
+The same slip reached the other agent: they compared 512 KiB *pages*, so their
+"delta exactly 0x200000" was 2 MiB of *content* repeating inside a 4 MiB share,
+not a mirror period. Neither number was ever about the mirror.
 
 ### 19.1 Which map STUN Runner selects
 
 `GAME(1989, stunrun, ..., stunrun_machine, ...)` -> `stunrun_machine` ->
 `STUNRUN_BOARD(config, "mainpcb")` -> `stunrun_board_device_state::
-device_add_mconfig`, which calls `multisync_nomsp(config)` (harddriv.cpp:1861).
-That installs:
+device_add_mconfig`, which calls `multisync_nomsp(config)` (harddriv.cpp:1861),
+installing:
 
 ```text
 harddriv.cpp:1545   m_gsp->set_addrmap(AS_PROGRAM, &harddriv_state::multisync_gsp_map);
 harddriv.cpp:628    map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram");
 ```
 
-So STUN Runner is the **512 KiB multisync** path -- not the 1 MiB multisync II
-path (`multisync2_gsp_map`), not the driver-generic map. That closes the
-board-selection thread: the 512 KiB arithmetic is the right arithmetic.
+So it is the 4 MiB multisync path, not the driver-generic map and not
+multisync II. That closes the board-selection thread.
 
-### 19.2 What our models actually do
+### 19.2 The decode, measured rather than read
 
-Both VRAM paths in this repository mask the offset with `(size - 1)` where size
-is `0x80000`, i.e. a **512 KiB aliasing period**:
-
-```text
-native/musashi_cpu.c:925   ((addr - 0xFF800000) & (MUSASHI_GSP_VRAM_BYTES - 1)) & ~0xF
-native/gsp_rtl/gsp_board.c ((addr - 0xff800000) & (GSP_BOARD_VRAM_BYTES - 1)) & ~0xf
-```
-
-and both predicates accept the whole `0xFF000000-0xFFFFFFFF` range.
-
-MAME's declaration is narrower on both counts. `.mirror(0x0400000)` over a
-512 KiB window gives **one** 512 KiB alias at `0xFFC00000-0xFFC7FFFF`. The rest
-of the top 256 MiB -- `0xFF000000-0xFF7FFFFF` and `0xFFC80000-0xFFFFFFFF` --
-is not part of this share.
-
-### 19.3 The difference is not marginal
-
-Grouping every `0xFFxxxxxx` HSTDAT target in the capture by 2 MiB page:
+`tools/mame-gsp-mirror-probe` (with `mame/lua/gsp-mirror-probe.lua`) writes
+markers into the live machine and reports what happened. Three results:
 
 ```text
-  0xFF800000-0xFF9FFFFF   262,144   <-- primary window, first half
-  0xFFA00000-0xFFBFFFFF   230,400   <-- primary window, second half
-  0xFFC00000-0xFFDFFFFF   139,264   <-- MAME maps only its first 512 KiB
-  0xFFE00000-0xFFFFFFFF   211,880   <-- MAME maps NONE of this
+share           : 4194304 bytes (4 MiB), first bad offset 0x400000 (aliases offset 0)
+  ok  addr=0xff800000 measured=0x00000000 declared=0x00000000 shipped_512k=0x00000000
+  BAD addr=0xffa00000 measured=0x00200000 declared=0x00200000 shipped_512k=0x00000000
+  ok  addr=0xffc00000 measured=0x00000000 declared=0x00000000 shipped_512k=0x00000000
+  BAD addr=0xffe00000 measured=0x00200000 declared=0x00200000 shipped_512k=0x00000000
+  --  addr=0xff000000..0xff600000  not mapped by MAME at all
 ```
 
-**351,144 of 843,688 VRAM-window writes (42%) address a range MAME does not
-map to this share.** Our model folds them into VRAM by 512 KiB aliasing;
-MAME drops them. The two therefore produce different VRAM from identical bus
-traffic, and the difference is not confined to unused padding -- the aliases
-land on cells the primary window also writes.
+The share-size probe deserves a note, because the obvious version of it lies.
+Writing a marker at `base+off` and reading it back at `base+off` cannot tell a
+real offset from a mirror: `0xff800000+0x400000` is the bit-22 alias of offset
+0, so it round-trips perfectly whether or not offset `0x400000` exists. The
+probe instead parks a sentinel at offset 0, writes the candidate at `base+off`,
+then reads offset 0. If offset 0 now holds the candidate, `base+off` was never
+distinct storage. That is what makes `4194304` a measurement rather than an
+echo of the declaration -- and it independently confirms the declared size.
 
-### 19.4 Why the existing check could never see it
+So the real decode is:
 
-`tools/check-gsp-replay` compares the board model against the native model.
-Both mask with `0x7FFFF`, so they agree by construction. §15.4's "the
-host-port write stream reproduces the reference VRAM byte-for-byte" is
-therefore *not* evidence about MAME, and the older comment in
-`gsp_board.c` that justified the wide predicate ("that predicate is exactly
-what native/musashi_cpu.c already tests") was circular for the same reason.
+```text
+mapped iff (addr & 0x7f800000) == 0x7f800000     i.e. 0xff800000-0xffffffff
+offset      =  addr & 0x003fffff
+```
 
-### 19.5 Why not fixed here
+which is exactly the declaration, and exactly what our two paths do *not*
+implement. `native/musashi_cpu.c:925` and `native/gsp_rtl/gsp_board.c` both
+compute `(addr - 0xff800000) & (0x80000 - 1)`:
 
-Narrowing the predicate and widening the mask to match the declaration is a
-two-line change, and it is exactly the kind of change that must not be made on
-reasoning alone. It would drop roughly 212,000 writes this board currently
-folds into VRAM. Which behaviour matches the machine is an empirical question:
-the declaration in `multisync_gsp_map` is strong evidence, but MAME's
-`.mirror()` decode has to be read (or an oracle run made) before concluding
-that `0xFFE00000` really is unmapped rather than folded.
+```c
+#define MUSASHI_GSP_VRAM_BYTES  0x80000u
+#define GSP_BOARD_VRAM_BYTES    0x80000u
+```
 
-The other agent's independent measurement -- a 4 MiB capture in which a page
-repeats 4 pages later, delta `0x200000` -- is consistent with a **2 MiB**
-period, which is neither 512 KiB nor 4 MiB. It agrees with MAME's declaration
-only if their page size was 1 MiB rather than the 512 KiB they state. That
-discrepancy is exactly what an oracle run settles.
+### 19.3 How much of the capture this touches
 
-### 19.6 What would settle it
+Far more than the mirror region. Within the primary window itself, only
+`0xff800000-0xff87ffff` is inside a 512 KiB share; from `0xff880000` upward the
+two masks already disagree. Replaying the captured stream through both masks:
 
-One MAME run, per the harness rules, writing a known pattern through the GSP
-program space at `0xFF800000`, `0xFFC00000`, `0xFFC80000` and `0xFFE00000`,
-then reading all four back. That distinguishes 512 KiB / 2 MiB / 4 MiB periods
-and tells us whether the upper pages are mapped or floating-bus.
+```text
+page        agree   differ
+0xff800000    65536  196608
+0xffa00000        0  230400
+0xffc00000    32768  106496
+0xffe00000        0  211880
+```
+
+**745,384 of 843,688 0xFFxxxxxx HSTDAT writes (88.4%) land in a different cell**
+under the shipped mask. The shipped mask can address 32,768 distinct cells; the
+real share has 524,288. This is the strongest candidate yet for the frame-600
+VRAM mismatch, and it is not subtle enough to have been hiding behind a
+`check-gsp-replay` comparison: board model and native model use the *same*
+0x80000 constant, so they agree with each other by construction and the check
+passes either way. That is why section 15.4's byte-for-byte VRAM match is not
+evidence about MAME.
+
+### 19.4 Why not fixed here
+
+The fix is a constant: `0x80000` -> `0x400000` in `native/musashi_cpu.h` and
+`native/gsp_rtl/gsp_board.h`. It is not one line of work. It grows
+`gsp_board.vram[]` from 512 KiB to 4 MiB, changes the `--vram-out` dump from
+524288 to 4194304 bytes, invalidates the frame-600 oracle fixture
+(`fixtures/oracle/frame_600/frame_600_gsp_vram.bin`, currently 512 KiB, so it
+can only ever describe a quarter of the share), and touches every test that
+asserts on VRAM extent. Filed as `stunrun-2ua` and made a blocker of
+`gsvp.4`.
+
+Doing it as its own slice is deliberate: the measurement above justifies the
+change completely, and that is exactly the condition under which it is
+tempting to edit the model and the oracle in one pass and declare victory. The
+oracle must be re-captured at the new extent *first*, from a run whose VRAM is
+known good, so that a green diff means the fix worked rather than that both
+sides moved together.
+
+### 19.5 What this does not explain
+
+This is the VRAM half. The other half of the frame-600 blocker is untouched and
+independent: section 18.2's finding that the capture ends 560,422 68010 cycles
+after the final HLT release, with the GSP halted for 99.61% of its window. Even
+with the share sized correctly, a replay of a stream in which the GSP never ran
+will not match a frame where it did. Fix the extent, then re-capture past the
+halt boundary; they are two separate problems and neither substitutes for the
+other.

@@ -916,6 +916,111 @@ class PublicToolTests(unittest.TestCase):
             # The release must be attributed back to the ROM site.
             self.assertEqual(st["hstctl_writes"][1]["rom_site"], 0x200)
 
+    # ---- tools/mame-gsp-mirror-probe -------------------------------------
+    #
+    # The VRAM share is 4 MiB, not the 512 KiB both native/ models assume, and
+    # 745,384 of the 843,688 captured 0xFFxxxxxx writes land in a different
+    # cell as a result (docs/mc68010-boot-findings.md section 19).  These tests
+    # exercise the classifier against a recorded probe log by pointing --mame
+    # at a stub that emits that log, so the verdict logic is checked without
+    # needing MAME or ROMs in the public suite.
+
+    # A real recorded probe log, not a hand-written one: this is the M1_MIRROR
+    # output of `tools/mame-gsp-mirror-probe roms <dir> --frames 600 --target
+    # 600` against the pinned driver, verbatim, committed under reference/ per
+    # the repository's raw-evidence rule.  Using the recording rather than a
+    # synthetic one means the test cannot pass by agreeing with a misreading
+    # baked into a literal.
+    MIRROR_PROBE_LOG_PATH = (ROOT / "reference" / "experiments" / "stunrun"
+                             / "gsp-vram-mirror-probe-600" / "mame.log")
+
+    def _mirror_probe_log(self):
+        return self.MIRROR_PROBE_LOG_PATH.read_text(encoding="utf-8")
+
+    def _run_mirror_probe_stub(self, temp, log=None, extra=()):
+        """Drive mame-gsp-mirror-probe with a stubbed MAME.
+
+        The stub ignores every argument and prints a recorded probe log, so the
+        tool's parse/classify/model path runs for real -- MAME is not stubbed
+        out inside the tool, only the emulator binary it launches.
+        """
+        stub = temp / "fake-mame"
+        stub.write_text("#!/bin/sh\ncat <<'EOF'\n" +
+                        (log if log is not None else self._mirror_probe_log()) +
+                        "\nEOF\n", encoding="utf-8")
+        stub.chmod(0o755)
+        out = temp / "out"
+        r = self.run_tool("mame-gsp-mirror-probe", ROOT / "roms", out,
+                          "--mame", stub, "--frames", "600", "--target", "600",
+                          *extra)
+        return r, out / "result.json"
+
+    def test_mirror_probe_reports_share_size_and_flags_shipped_mask(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            r, result_path = self._run_mirror_probe_stub(temp)
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["schema"],
+                             "stunrun-gsp-mirror-probe-result/v1")
+            self.assertEqual(result["share"]["bytes"], 4194304)
+            self.assertEqual(result["share"]["why"], "aliases_offset_0")
+            agree = result["offset_agreement"]
+            # The declared decode must agree with MAME on every mapped probe.
+            self.assertTrue(agree["native_model_correct"]["declared"])
+            self.assertEqual(agree["disagree"]["declared"], [])
+            # The shipped 512 KiB constant must be shown to be wrong, and wrong
+            # exactly at the bit-21 probes.  If this ever passes, the tool has
+            # stopped measuring the thing it exists to measure.
+            self.assertFalse(agree["native_model_correct"]["as_shipped_512k"])
+            bad = agree["disagree"]["as_shipped_512k"]
+            self.assertEqual([e["addr"] for e in bad],
+                             ["0xffa00000", "0xffe00000"])
+            # Addresses MAME does not map at all are reported as such rather
+            # than compared: 0xff000000-0xff7fffff is outside the window.
+            self.assertEqual([e["addr"] for e in agree["not_mapped"]],
+                             ["0xff000000", "0xff200000",
+                              "0xff400000", "0xff600000"])
+            self.assertIn("WRONG at 2/4", r.stdout)
+
+    def test_mirror_probe_measure_share_is_not_a_naive_round_trip(self):
+        # A marker written at base+off and read back at base+off round-trips
+        # just as happily when base+off is the bit-22 alias of offset 0, so a
+        # plain round-trip cannot bound the share.  The probe must distinguish
+        # real storage from a mirror by re-reading offset 0 afterwards.
+        lua = (ROOT / "mame" / "lua" / "gsp-mirror-probe.lua").read_text(
+            encoding="utf-8")
+        self.assertIn("read(space, base) == cand", lua)
+        self.assertIn("aliases_offset_0", lua)
+        # The reported size must come from the sentinel probe, not from the
+        # declaration.  Checking the assignment rather than searching for a
+        # number, because the declaration is legitimately named in the
+        # surrounding comment.
+        self.assertRegex(lua, r"local share_bytes[^=]*=\s*measure_share\(space\)")
+
+    def test_mirror_probe_always_sets_an_nvram_directory(self):
+        # Same trap as mame-gsp-vram-dump: -nonvram_save stops MAME writing
+        # NVRAM but not loading it, so an unpinned directory silently
+        # contaminates the machine state under measurement.
+        tool = (ROOT / "tools" / "mame-gsp-mirror-probe").read_text(encoding="utf-8")
+        self.assertIn('"-nvram_directory"', tool)
+        self.assertIn('"-cfg_directory"', tool)
+        self.assertNotIn('"/tmp/stunrun-mame-cfg"', tool)
+
+    def test_mirror_probe_fails_when_the_probe_did_not_run(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            stub = temp / "fake-mame"
+            stub.write_text("#!/bin/sh\necho 'no probe output here'\n",
+                            encoding="utf-8")
+            stub.chmod(0o755)
+            r = subprocess.run(
+                [str(ROOT / "tools" / "mame-gsp-mirror-probe"),
+                 str(ROOT / "roms"), str(temp / "out"),
+                 "--mame", str(stub), "--frames", "600", "--target", "600"],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("GSP mirror probe failed", r.stdout + r.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
