@@ -6,9 +6,14 @@ and does not define FIFO or geometry records.
 
 ## Board state
 
-- VRAM share: `0x40000` 16-bit words (512 KiB). The GSP address window is
-  larger and mirrors this share; consumers must mask word indices with
-  `0x3ffff`.
+- VRAM backing store: `0x200000` 16-bit words (4 MiB). This is the actual
+  GSP local-memory address range `0xFF800000–0xFFBFFFFF`. Consumers must mask
+  word indices with `0x1fffff`.  **This was 512 KiB in older documentation
+  (§12.1, now superseded by §19).** The GSP address window is 4 MiB and is
+  mirrored every 4 MiB (`mirror(0x0400000)`); the offset decode is
+  `addr & 0x003fffff`.  Measured by `tools/mame-gsp-mirror-probe`: the
+  share is 4,194,304 bytes and the first alias of offset 0 is at
+  `base+0x400000`.  See `docs/mc68010-boot-findings.md` §19.
 - Each word supplies two 8-bit indexed pixels: low byte first, then high byte.
 - Palette state consists of two 1024-entry 16-bit planes. For entry `i`, the
   output colour is `R = lo[i] >> 8`, `G = lo[i] & 0xff`, `B = hi[i] & 0xff`.

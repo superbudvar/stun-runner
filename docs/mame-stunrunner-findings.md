@@ -19,7 +19,7 @@ Line numbers refer to the original `mame-ref/` snapshot and may drift.
 |---|---|
 | 68010 RAM "512KB" | `$FF8000-$FFFFFF` is **32 KiB**; boot findings §9. |
 | 1024 palette entries = "8 banks × 256" | **4 banks × 256**. Offset `$04`'s third bank bit is conditional on a larger family palette, not this target. |
-| GSP addresses treated as byte spans | TMS34010 addresses are **bit-addressed**. `gsp_vram` is a **512 KiB backing share**, not a 4 MiB allocation; boot findings §12.1. |
+| GSP addresses treated as byte spans | TMS34010 addresses are **bit-addressed**. `gsp_vram` is a **4 MiB backing share**; boot findings §19 (supersedes §12.1). |
 | Expansion-window size treated as independent RAM | `$02000000-$020FFFFF` is a handler window; do not derive backing bytes from its numeric span. |
 | Main CPU directly accesses GSP palette | Main CPU accesses the GSP host window; GSP addresses belong to a different space. |
 | SW1 described as "all ON" | Target definitions default to `$00`; do not infer switch labels from that number. |
