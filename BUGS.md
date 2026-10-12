@@ -509,3 +509,54 @@ dumps belong there. Two consequences:
 * Anything needing `m_cache`/`m_vram` cannot go in `get_display_params()` at all:
   those are members of the derived `tms34010_device` (`tms34010.h:991`), not of
   the base `tms340x0_device` whose method this is (`tms34010.h:112`, `:168`).
+
+### MD-09 — Service mode "BAD GSP VRAM" in MAME
+
+- **Kind:** driver defect **or** original ROM behavior — **unresolved**
+- **Where:** MAME `stunrun` service mode, and/or ROM `136070-2102.200r` @$004F82
+- **Symptom:** MAME's service mode (IN0 bit 5 held) displays "BAD GSP VRAM" text
+  rendered by the GSP, indicating a GSP VRAM diagnostic failure. The MC68010
+  diagnostic at `$004F82` fills `$FF945E` with eight longwords of `0x01010101`
+  (confirmed by live Musashi trace, §13.1) then reads 16 words back via the GSP
+  host port — all 16 words return `0xFFFF` instead of the expected non-zero
+  values, causing the test to fail.
+- **Evidence:**
+  - GSP PC = `0x00000000`, ST = `0x00000010` throughout service mode frames
+    60–130 (halted, confirmed by MAME debugger). The halt is set by the GSP boot
+    ROM at `$0216`: `stop #$2700`.
+  - GSP program space has a `noprw()` hole at `0x00000000–0x0000200f` in
+    `multisync_gsp_map` (`harddriv.cpp:106`), confirming the self-test window.
+  - `host_r()` in `tms34010.cpp:1931–1986` reads via
+    `TMS34010_RDMEM_WORD(addr & 0xfffffff0)` using `m_program.read_word(A)`:
+    it does **not** check the GSP halt state.
+  - The GSP reset at `$003F8` (called from `$004F88` and `$005008`) writes
+    `0xB800` to GSP HSTCTLH (halt line asserted) and the GSP halts.
+  - MAME VRAM mapping: `map(0xff800000, 0xffbfffff).mirror(0x0400000).ram()`
+    in both GSP and 68k program spaces, both sharing `"gsp_vram"`.
+  - The MC68010 `movea.l #$FF945E, A1` instruction at `$004F96` has a
+    non-canonical encoding (`0x2279 00FF945E`) that does not match standard
+    `movea.l #<long>`.L encoding (`0x2079 <long>`). The MAME disassembler
+    decodes it as `movea.l #$FF945E, A1`, but the byte pattern suggests
+    `movea.w #$FF945E, A1` (word, sign-extended → `$FFFF945E`), which would
+    write to a different address. The boot findings claim the fill correctly
+    reaches `$FF945E`, implying either the encoding is a special longword form
+    or the listing transcription is inaccurate.
+- **Confidence:** partially confirmed by measurement (GSP halt state, host port
+  path, VRAM mapping confirmed); MC68010 instruction encoding is inferred from
+  byte pattern and contradicts the listing.
+- **Impact on us:** if this is a MAME driver defect, the TMS34010 host port
+  does not correctly relay MC68010 writes into GSP VRAM when the GSP is halted.
+  The MC68010 diagnostic writes through the GSP host port, but VRAM at
+  `$FF945E` reads back as `0xFFFF`, meaning the write never reaches the
+  expected location. Possible fix: verify the GSP program space `host_w` path
+  correctly dispatches to the shared VRAM share when the GSP is halted, and
+  confirm the MC68010 `movea.l` encoding actually sets A1 to `$FF945E` (not
+  `$FFFF945E`). If it is a ROM behavior, the GSP NAND tree test (which runs
+  during the GSP reset sequence) is expected to fail in MAME because the GSP
+  is halted before VRAM is populated.
+- **Blocked by:** a live capture of the GSP VRAM diagnostic run at frames 1–59
+  (before service mode is pressed), which would show whether the fill actually
+  reaches `$FF945E` and whether the subsequent read returns `0x0101` or `0xFFFF`.
+  Also blocked by verification of the actual bytes at `$004F96` in the ROM and
+  a confirmatory live trace of the MC68010 writing to `$FF945E` during the
+  diagnostic call from `$009B80`.
