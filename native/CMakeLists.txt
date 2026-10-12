@@ -7,6 +7,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ---- Backend library (SDL2 / Vulkan / Metal / null) ----
 add_subdirectory(../backend backend_build)
 
+# ---- ymfm library (YM2151 FM synthesis) ----------------------------------
+# BSD-3-Clause, Aaron Giles.  Compiling all ymfm sources since internal
+# dependencies (ssg_engine, adpcm_engine) are linked by misc.cpp.
+file(GLOB YMFM_ALL_SRC
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/ymfm/src/ymfm_*.cpp
+)
+set(YMFM_OPM_SOURCES ${YMFM_ALL_SRC})
+set(YMFM_INC
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/ymfm/src
+)
+
 add_executable(stunrun-native-smoke smoke.cpp)
 # Agent 2 M3 slice: the native target consumes the same C init-slice
 # sources as the reproduction target (single canonical implementation,
@@ -113,11 +124,15 @@ add_executable(stunrun-sound-dispatch-slice-test
   ../reproduction/sound/jsa_latch.c
   ../reproduction/sound/oki6295.c
   ../reproduction/sound/oki_cmdmap.c
+  ../reproduction/sound/ym2151.c
+  ../reproduction/sound/ymfm_chip.cpp
   ../reproduction/sound/sound_dispatch.c
-  ../reproduction/sound/sound_dispatch_test.c)
+  ../reproduction/sound/sound_dispatch_test.c
+  ${YMFM_OPM_SOURCES})
 target_include_directories(stunrun-sound-dispatch-slice-test PRIVATE
-  ../reproduction/sound)
-set_target_properties(stunrun-sound-dispatch-slice-test PROPERTIES C_STANDARD 99)
+  ../reproduction/sound ${YMFM_INC})
+set_target_properties(stunrun-sound-dispatch-slice-test PROPERTIES
+  C_STANDARD 99 CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 add_test(NAME sound-dispatch-slice-c COMMAND stunrun-sound-dispatch-slice-test)
 # 68010 sound-command queue ($301CA enqueue / $3013C drain) feeding
 # the JSA latch transport; resolves the jsa_latch.h producer-buffer
@@ -167,8 +182,11 @@ add_executable(stunrun-native-shell
   ../reproduction/sound/jsa_latch.c
   ../reproduction/sound/oki6295.c
   ../reproduction/sound/oki_cmdmap.c
+  ../reproduction/sound/ym2151.c
+  ../reproduction/sound/ymfm_chip.cpp
   ../reproduction/sound/sound_dispatch.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kops.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kops.c
+  ${YMFM_OPM_SOURCES})
 target_link_libraries(stunrun-native-shell PRIVATE
   m
   stunrun_backends
@@ -181,8 +199,10 @@ target_include_directories(stunrun-native-shell PRIVATE
   ../reproduction/sound ../backend
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/stb
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/ymfm/src
   ${CMAKE_CURRENT_SOURCE_DIR}/gsp_rtl)
-set_target_properties(stunrun-native-shell PROPERTIES C_STANDARD 99)
+set_target_properties(stunrun-native-shell PROPERTIES
+  C_STANDARD 99 CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 add_test(NAME native-shell COMMAND stunrun-native-shell)
 set_tests_properties(native-shell PROPERTIES
   ENVIRONMENT "STUNRUN_BACKEND=null;STUNRUN_VIDEO_BACKEND=null;STUNRUN_AUDIO_BACKEND=null")
@@ -692,18 +712,23 @@ add_executable(stunrun-jsa-transport-musashi-test
   ../reproduction/sound/jsa_latch.c
   ../reproduction/sound/oki6295.c
   ../reproduction/sound/oki_cmdmap.c
+  ../reproduction/sound/ym2151.c
+  ../reproduction/sound/ymfm_chip.cpp
   ../reproduction/sound/sound_dispatch.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kops.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kops.c
+  ${YMFM_OPM_SOURCES})
 target_include_directories(stunrun-jsa-transport-musashi-test PRIVATE
   . ../reproduction/sound ../backend
-  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi)
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi
+  ${YMFM_INC})
 target_link_libraries(stunrun-jsa-transport-musashi-test PRIVATE
   m
+  stunrun_gsp_board
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kcpu.o
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kdasm.o
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/softfloat/softfloat.o)
 set_target_properties(stunrun-jsa-transport-musashi-test PROPERTIES
-  C_STANDARD 99)
+  C_STANDARD 99 CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
 add_test(NAME jsa-transport-musashi-c
   COMMAND stunrun-jsa-transport-musashi-test)
 set_tests_properties(jsa-transport-musashi-c PROPERTIES TIMEOUT 120)
