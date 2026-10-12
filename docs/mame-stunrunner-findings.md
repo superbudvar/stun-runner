@@ -96,7 +96,7 @@ The GSP has two distinct VRAM regions:
 
 **Multisync board (STUN Runner, Steel Talons, Hard Drivin' Compact, Race Drivin' Compact):**
 - `0x02000000–0x020fffff`: 2bpp expansion-handler window (bit addresses, not independent 512 KiB RAM)
-- `0xff800000–0xffbfffff`: 16bpp VRAM (512KB, mirrored via `mirror(0x0400000)`)
+- `0xff800000–0xffbfffff`: 16bpp VRAM (4 MiB, mirrored via `mirror(0x0400000)`; MAME models this as 512KB with the same mirror, which is too small — mirror-probe §19 found 4 MiB backing)
 
 From `harddriv.cpp:619-629`:
 ```cpp
@@ -253,7 +253,7 @@ STUN Runner uses the **multisync board without MSP** (`multisync_nomsp` + `stunr
 0xf4800000-0xf48000ff  R/W   GSP control registers (hi)
 0xf5000000-0xf5000fff  R/W   Palette RAM lo (2048 bytes)
 0xf5800000-0xf5800fff  R/W   Palette RAM hi (2048 bytes)
-0xff800000-0xffbfffff  RAM   Main VRAM (512KB, mirrored to 0xffc00000-0xffffffff via mirror)
+0xff800000-0xffbfffff  RAM   Main VRAM (4 MiB, MAME models as 512KB with same mirror; mirror-probe §19 found 4 MiB)
 ```
 
 ### ADSP Map (adsp, harddriv.cpp:1594-1601)
@@ -342,7 +342,7 @@ Communication between the main 68010 and the JSA II 6502 uses the `soundcomm` de
 | Board | VRAM Size | GSP VRAM Map |
 |-------|-----------|--------------|
 | Driver (Hard Drivin') | 1MB | `0xff800000-0xffffffff` |
-| Multisync (STUN Runner) | 512KB | `0xff800000-0xffbfffff` (mirrored) |
+| Multisync (STUN Runner) | 4 MiB | `0xff800000-0xffbfffff` (mirror-probe §19; MAME models as 512KB) |
 | Multisync II (Hard Drivin's Airborne) | 1MB | `0xff800000-0xffffffff` |
 
 ### GSP Clock / Pixel Clock
@@ -446,7 +446,7 @@ STUN Runner input ports (`harddriv.cpp:1084-1170`):
 | Palette size | 1024 entries (4 banks × 256) | harddriv.cpp:1508 |
 | Palette bank control | control_hi offsets 0x02/0x03; 0x04 conditional on ≥2048 entries | harddriv_v.cpp:222-256 |
 | VRAM address | 0xff800000 | harddriv.cpp:628 |
-| VRAM size | 512KB | harddriv.cpp:628 |
+| VRAM size | 4 MiB (MAME models as 512KB with mirror) | harddriv.cpp:628 / mirror-probe §19 |
 | 2bpp VRAM area | 0x02000000-0x020fffff | harddriv.cpp:623 |
 | Display origin | (0,0) | tms34010.cpp:1154 |
 | Row stride (multisync) | 1024 × uint16_t | harddriv_v.cpp:439 |
