@@ -3565,3 +3565,52 @@ The port itself remains `stun-runner-txt1`. What section 21 adds is that its
 oracle now exists and is committed: the ordered `(HSTADR, HSTDAT)` stream plus
 the `A0`/`A1` samples per character, which together pin the loop nesting that
 section 20.7 flagged as not reconcilable by inspection.
+
+## 22. The capture is not budget-truncated; the 68010 simply stops writing (§18.2 corrected)
+
+Section 18.2 said the capture "is 384.6 frames because the shell's `STUNRUN_FRAMES`
+budget ran out", and the next move was "re-capture past the halt boundary" with a
+larger frame count. That is wrong, and the wrong belief was acting as a dead end:
+raising the budget cannot help, because nothing is truncating it.
+
+```sh
+STUNRUN_MC68010=1 STUNRUN_STUNRUN_DIR=roms/stunrun \
+STUNRUN_FRAMES=600 STUNRUN_DUMP_DIR=/tmp/opencode/gsp600 \
+  native/build/stunrun-native-shell
+```
+
+At 600 frames the dump is **901,354 bus events, 36,054,160 bytes** -- byte-for-byte
+the same count as the 384-frame capture. The last record's cycle stamp is
+51,106,634, which is 384.6 frames at `STUNRUN_FRAME_CYCLES` 132,886. The walk
+genuinely runs to frame 600 (`shell.c:1267` loops to `g_terminal`, which is 600);
+the 68010 simply issues no further host-window writes after frame 384.6.
+
+Two corrections to what section 18.2 concluded:
+
+**The 68010 does release the GSP.** `tools/analyze-gsp-hstctl --stream` on the
+600-frame capture reports `hstctl_releases = 4`, `first_release_cycle = 50,351,440`
+(frame 379.0) and `last_hstctl_cycle = 50,547,212` (frame 380.4). The GSP is not
+held halted for the whole window -- it is halted for 99.61% of it and then
+released, roughly four frames before the ROM goes quiet.
+
+**The capture is not cut short by the harness.** It ends 559,422 cycles after the
+final HSTCTL write because that is when the 68010 stops writing. A missing dump in
+a run with `STUNRUN_DUMP_DIR` set is a different thing entirely, and is what
+actually cost time here: the dump block is guarded on `g_cpu != NULL`
+(`shell.c:1743`), so a run without `STUNRUN_MC68010=1` takes the transport-model
+path, logs `image=init-state` and `mode=blank-scaffold`, and silently writes
+nothing while still reporting RESULT PASS.
+
+So the actual blocker after the release is not a short capture. The most
+consistent reading of the numbers is that the ROM releases the GSP and then waits
+on it -- the last 559,422 cycles produce no host-port traffic at all, which is
+what waiting looks like from the bus. If the GSP is released and then never
+signals the condition the ROM is polling for, the ROM sits there forever, and no
+frame budget will produce another byte. That is a question about what the ROM
+reads after the release and what it expects back, and it needs a read trace across
+the boundary, not a longer run.
+
+One operational note for whoever runs this next, since it cost two wasted runs:
+`STUNRUN_MC68010=1` is the flag that selects ROM execution. Without it the shell
+runs the C-slice `game_loop_step`, exits cleanly, and still prints RESULT PASS.
+Check for `gsp_writes=` in the output, not just the exit status.
