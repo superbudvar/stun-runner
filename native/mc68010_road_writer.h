@@ -1,4 +1,4 @@
-/* MC68010 road/FIFO routines at ROM $22EC-$24B8.
+/* MC68010 road/FIFO routines at ROM $22EC-$24B8 and $21462-$23898.
  * See docs/mc68010-boot-findings.md for provenance.
  *
  * These routines write road polygon glyphs to the GSP host port FIFO.
@@ -14,6 +14,21 @@
  *   $245A  road_draw_n_polys_masked   — calls $2326 (masked)
  *   $2496  road_draw_n_polys_masked2   — calls $2326 (masked, 2nd site)
  *   $24B8  road_draw_quad             — calls $22EC × 4
+ *   $21462 road_fill_pattern          — fill VRAM regions with 0xFF pattern
+ *   $215DC road_table_write_loop      — write table entries to GSP host port
+ *   $21602 road_delay                — simple delay loop (150 iterations)
+ *   $2166E road_lookup_and_write     — table lookup and write
+ *   $216EA road_set_color_1          — set colour to 1
+ *   $216B0 road_setup_strip          — setup for road strip
+ *   $21700 road_enable_hstctl         — enable HSTCTL and fill VRAM
+ *   $22370 road_clear_hardware        — clear hardware registers
+ *   $22382 road_sequence              — main road drawing sequence
+ *   $22468 road_trigger_fill          — trigger fill operation
+ *   $2256C road_sr_swap              — SR swap stub
+ *   $22578 road_copy_words           — memory copy routine
+ *   $2347E road_process_strip_data   — process road strip data
+ *   $234B6 road_expand_bits          — bit expansion helper
+ *   $23898 road_draw_strips          — main road strip drawer
  *
  * Register names in comments are the ROM's (D0-D7, A0-A1).
  */
@@ -152,6 +167,103 @@ stunrun_mc68010_road_draw_quad(stunrun_mc68010_road_port_t *port,
                                  const uint8_t *rom,
                                  uint32_t vram_base,
                                  const uint8_t *characters);
+
+/* ── $22370: clear hardware registers ─────────────────────────────── */
+
+/* Clears 0x60400c and 0x60401c, calls delay routine. */
+void
+stunrun_mc68010_road_clear_hardware(stunrun_mc68010_road_port_t *port);
+
+/* ── $215DC: table write loop ─────────────────────────────────────── */
+
+/* Writes sequence of (address, word) pairs from ROM table to GSP host port. */
+void
+stunrun_mc68010_road_table_write_loop(stunrun_mc68010_road_port_t *port,
+                                       const uint8_t *rom);
+
+/* ── $2166E: lookup and write ─────────────────────────────────────── */
+
+/* Table lookup at 0x21650, indexed by count. Writes address and data. */
+void
+stunrun_mc68010_road_lookup_and_write(stunrun_mc68010_road_port_t *port,
+                                       const uint8_t *rom,
+                                       uint16_t index);
+
+/* ── $21462: fill VRAM with pattern ───────────────────────────────── */
+
+/* Fills two VRAM regions with 0xFF pattern. */
+void
+stunrun_mc68010_road_fill_pattern(stunrun_mc68010_road_port_t *port);
+
+/* ── $216EA: set colour to 1 ─────────────────────────────────────── */
+
+/* Writes colour value 1 to GSP host port. */
+void
+stunrun_mc68010_road_set_color_1(stunrun_mc68010_road_port_t *port);
+
+/* ── $216B0: setup road strip ─────────────────────────────────────── */
+
+/* Sets up VRAM region for road strip drawing. */
+void
+stunrun_mc68010_road_setup_strip(stunrun_mc68010_road_port_t *port,
+                                  const uint8_t *rom);
+
+/* ── $21700: enable HSTCTL and fill ─────────────────────────────── */
+
+/* Enables HSTCTL auto-increment and fills VRAM region with 0xFFFF.
+ * Clears watchdog at completion. */
+void
+stunrun_mc68010_road_enable_hstctl(stunrun_mc68010_road_port_t *port);
+
+/* ── $2347E: process road strip data ─────────────────────────────── */
+
+/* Reads from ROM strip table and writes processed data to GSP.
+ * D0 = VRAM base, D1.B = table index. */
+void
+stunrun_mc68010_road_process_strip_data(stunrun_mc68010_road_port_t *port,
+                                         const uint8_t *rom,
+                                         uint32_t vram_base,
+                                         uint8_t table_index);
+
+/* ── $23898: main road strip drawer ──────────────────────────────── */
+
+/* Main entry point for road strip rendering.
+ * Reads strip data and draws to VRAM via subroutines. */
+void
+stunrun_mc68010_road_draw_strips(stunrun_mc68010_road_port_t *port,
+                                  const uint8_t *rom,
+                                  const uint8_t *strip_data,
+                                  uint16_t count,
+                                  uint16_t x,
+                                  uint16_t y);
+
+/* ── $22382: main road sequence ─────────────────────────────────── */
+
+/* Main road drawing sequence. Calls all subroutines in order. */
+void
+stunrun_mc68010_road_sequence(stunrun_mc68010_road_port_t *port,
+                               const uint8_t *rom);
+
+/* ── $22468: trigger fill ───────────────────────────────────────── */
+
+/* Wrapper calling road_enable_hstctl. */
+void
+stunrun_mc68010_road_trigger_fill(stunrun_mc68010_road_port_t *port);
+
+/* ── $2256C: SR swap ─────────────────────────────────────────────── */
+
+/* SR swap stub for interrupt handling. */
+void
+stunrun_mc68010_road_sr_swap(void);
+
+/* ── $22578: memory copy ─────────────────────────────────────────── */
+
+/* Copies count words from src to dst, disables interrupts during copy. */
+void
+stunrun_mc68010_road_copy_words(stunrun_mc68010_road_port_t *port,
+                                 const uint16_t *src,
+                                 uint16_t *dst,
+                                 uint16_t count);
 
 #ifdef __cplusplus
 }
