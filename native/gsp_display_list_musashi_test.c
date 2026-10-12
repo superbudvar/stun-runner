@@ -56,14 +56,21 @@ static const uint16_t expected_words[] = {
     0x0099u, 0x0099u
 };
 
-static void check_replicated_cell(const uint8_t *vram, size_t cell,
-                                  uint16_t word)
+/* PACKED storage check (post fcf1eab): the display list writes one PACKED
+ * 16-bit word per 16-byte cell (with bump=16 host auto-increment).  Each cell
+ * gets exactly 2 bytes of valid data: the low byte of `word` at offset 0 and
+ * the high byte at offset 1.  The rest of the cell is zero. */
+static void check_packed_cell(const uint8_t *vram, size_t cell,
+                               uint16_t word)
 {
     size_t base = cell * 16u;
     unsigned i;
-    for (i = 0; i < 8u; i++) {
-        CHECK(vram[base + i] == (uint8_t)word);
-        CHECK(vram[base + 8u + i] == (uint8_t)(word >> 8));
+    /* The first two bytes are the packed word. */
+    CHECK(vram[base + 0u] == (uint8_t)(word & 0xFFu));
+    CHECK(vram[base + 1u] == (uint8_t)(word >> 8));
+    /* The rest of the cell is zero (unwritten). */
+    for (i = 2u; i < 16u; i++) {
+        CHECK(vram[base + i] == 0u);
     }
 }
 
@@ -207,8 +214,8 @@ int main(void)
 
     CHECK(musashi_cpu_gsp_memory(cpu, &memory) == 0);
     for (i = 0; i < sizeof(expected_words) / sizeof(expected_words[0]); i++)
-        check_replicated_cell((const uint8_t *)memory.vram, i,
-                              expected_words[i]);
+        check_packed_cell((const uint8_t *)memory.vram, i,
+                          expected_words[i]);
 
     CHECK(stunrun_mem_read8(&ports, STUNRUN_GSP_DL_TABLE_LO, &byte));
     CHECK(byte == 0xA0u);

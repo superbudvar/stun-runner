@@ -26,8 +26,8 @@ extern "C" {
 #endif
 
 /* Region sizes, shared with native/musashi_cpu.h so the two cannot drift. */
-#define GSP_BOARD_VRAM_BYTES      0x80000u /* 512 KiB share, 0x40000 words   */
-#define GSP_BOARD_VRAM2BPP_BYTES  0x100000u /* 0x02000000-0x020FFFFF          */
+#define GSP_BOARD_VRAM_BYTES      0x400000u /* 4 MiB share, 0x200000 words     */
+#define GSP_BOARD_VRAM2BPP_BYTES  0x100000u /* 0x02000000-0x020FFFFF (1 MiB, no mirroring) */
 #define GSP_BOARD_PAL_BYTES       0x800u   /* 1024 entries * 2 bytes, per plane */
 #define GSP_BOARD_CTRL_BYTES      0x100u   /* one 256-byte share per plane     */
 

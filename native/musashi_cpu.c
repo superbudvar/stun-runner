@@ -927,8 +927,9 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
      *     mapped  iff (addr & 0x7f800000) == 0x7f800000
      *     offset  =  addr & 0x003fffff
      *
-     * The mask below is 0x7FFFF (512 KiB) where the share is 4 MiB; this
-     * is the confirmed divergence from section 19, not fixed here.
+     * The MAME mirror formula is: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF
+     * (4 MiB share, mirroring every 4 MiB).  The old & 0x7FFFF was 512 KiB
+     * aliasing (88.4% of writes landed in wrong cells).
      *
      * PACKED STORAGE (not byte-replicated): the rasterizer reads packed
      * 16-bit pixels from this region via the frame buffer base address.  The
@@ -942,8 +943,9 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
      * store via gsp_board_read16(), so making host writes packed here makes
      * the 2bpp window consistent too. */
     if ((addr & 0xFF000000u) == 0xFF000000u) {
-        uint32_t off = ((addr - 0xFF800000u) &
-                        (MUSASHI_GSP_VRAM_BYTES - 1u)) & ~1u;
+        /* MAME mirror formula: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF */
+        uint32_t off = ((addr - 0xFF800000u) % 0x400000u) & 0x3FFFFFu;
+        off = (off & ~1u);
         cpu->gsp_vram[off + 0u] = (uint8_t)(value & 0xFFu);
         cpu->gsp_vram[off + 1u] = (uint8_t)(value >> 8);
         cpu->gsp_counts.vram++;
@@ -1025,14 +1027,13 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
 static uint16_t gsp_mem_read_word(musashi_cpu_t *cpu, uint32_t addr)
 {
     if ((addr & 0xFF000000u) == 0xFF000000u) {
-        uint32_t off = ((addr - 0xFF800000u) &
-                        (MUSASHI_GSP_VRAM_BYTES - 1u)) & ~0xFu;
-        /* Reads broadcast the same way: every 2-byte offset inside the cell
-         * returns the word that was written to it, so the value has to be
-         * reassembled from the replicated bytes rather than read as a pair.
-         * Cells the 2bpp expander touched with raw dwords are the one case
-         * this mis-reports; the 68010 does not poll those through this path. */
-        return (uint16_t)(((uint16_t)cpu->gsp_vram[off + 8u] << 8) |
+        /* MAME mirror formula: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF */
+        uint32_t off = ((addr - 0xFF800000u) % 0x400000u) & 0x3FFFFFu;
+        off = (off & ~1u);  /* word-aligned */
+        /* PACKED storage: reads return the 16-bit word at the offset.
+         * The auto-increment side effect of bumping the address latch is
+         * handled by the caller (gsp_host_read_word). */
+        return (uint16_t)(((uint16_t)cpu->gsp_vram[off + 1u] << 8) |
                           cpu->gsp_vram[off]);
     }
     if ((addr & 0xFFF00000u) == 0x02000000u) {

@@ -63,14 +63,15 @@ static void test_address_map(void)
     CHECK(!gsp_board_is_mapped(0xf5801000u));
 
     /* map(0xff800000, 0xffbfffff).mirror(0x0400000): mirror bit 22 doubles
-     * the declared window, so 0xFF000000-0xFFFFFFFF is mapped.  This is the
-     * same predicate native/musashi_cpu.c:347 uses for this share. */
-    CHECK(gsp_board_is_mapped(0xff000000u));
-    CHECK(gsp_board_is_mapped(0xff7fffffu));
-    CHECK(gsp_board_is_mapped(0xff800000u));
-    CHECK(gsp_board_is_mapped(0xfff00000u));
-    CHECK(gsp_board_is_mapped(0xffff0000u));
-    CHECK(gsp_board_is_mapped(0xffffffffu));
+     * the declared window.  The correct predicate is (addr & 0x7F800000) ==
+     * 0x7F800000, which means bits 31-23 must be 0x3FF.  This is NOT the
+     * same as "all 0xFFxxxxxx addresses are mapped" (that was the old bug). */
+    CHECK(!gsp_board_is_mapped(0xff000000u));   /* & 0x7F800000 = 0x7F000000 */
+    CHECK(!gsp_board_is_mapped(0xff7fffffu));   /* & 0x7F800000 = 0x7F000000 */
+    CHECK(gsp_board_is_mapped(0xff800000u));    /* & 0x7F800000 = 0x7F800000 */
+    CHECK(gsp_board_is_mapped(0xfff00000u));    /* & 0x7F800000 = 0x7F800000 */
+    CHECK(gsp_board_is_mapped(0xffff0000u));    /* & 0x7F800000 = 0x7F800000 */
+    CHECK(gsp_board_is_mapped(0xffffffffu));   /* & 0x7F800000 = 0x7F800000 */
 
     /* Bit 30 is NOT part of the mirror: 0xFC800000 sits below the expanded
      * window and must stay unmapped rather than being folded in. */
@@ -82,36 +83,39 @@ static void test_address_map(void)
 /* Aliasing inside the GSP VRAM share.
  *
  * MAME declares a 4 MiB window with `map(0xff800000, 0xffbfffff)
- * .mirror(0x0400000)`, but the share behind it is only 0x80000 bytes.  That
- * mismatch is the whole point of findings section 12.1 ("The `gsp_vram` share
- * is 512 KiB, not 4 MiB"): the window wraps within 512 KiB.  So the physical
- * offset is `addr & 0x7FFFF`, and several high addresses legitimately share
- * offset 0. */
+ * .mirror(0x0400000)`, and the share behind it is now 4 MiB (not 512 KiB).
+ * The offset formula is ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF.
+ *
+ * Note: the predicate for MAPPED is (addr & 0x7F800000) == 0x7F800000.
+ * Only addresses where bits 31-23 are 0x3FF are mapped.  Within that, the
+ * formula maps different addresses to different offsets -- addresses that
+ * share the same offset are true aliases (e.g. 0xFF800000 and 0xFFC00000
+ * both give offset 0). */
 static void test_vram_mirroring_is_one_share(void)
 {
-    static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
+    static gsp_board_t b;   /* 4 MiB model: static, never on the stack */
     gsp_board_reset(&b);
 
+    /* Write to 0xFF800000 (offset 0 in the 4 MiB share).  Addresses that
+     * compute offset 0 will read back the same value:
+     * - 0xFF800000: offset 0
+     * - 0xFFC00000: offset 0 (since 0x400000 % 0x400000 = 0)
+     * But 0xFFFF0000 gives offset 0x3F0000, NOT 0. */
     gsp_board_write16(&b, 0xff800000u, 0x1234u);
-
-    /* Every one of these resolves to physical offset 0. */
     CHECK_EQ(gsp_board_read16(&b, 0xff800000u), 0x1234u);
-    CHECK_EQ(gsp_board_read16(&b, 0xff000000u), 0x1234u);
-    CHECK_EQ(gsp_board_read16(&b, 0xff400000u), 0x1234u);
     CHECK_EQ(gsp_board_read16(&b, 0xffc00000u), 0x1234u);
-    CHECK_EQ(gsp_board_read16(&b, 0xfff00000u), 0x1234u);
+    CHECK_EQ(gsp_board_read16(&b, 0xffff0000u), 0x0000u);  /* offset 0x3F0000, not 0 */
 
-    /* 0xFFFF0000 is mapped but lands on offset 0x70000, NOT offset 0.  This
-     * is the distinction the earlier assumption got wrong: "high address"
-     * is not the same as "aliases the window base". */
-    CHECK(gsp_board_is_mapped(0xffff0000u));
-    CHECK_EQ(gsp_board_read16(&b, 0xffff0000u), 0x0000u);
+    /* 0xFF000000 is NOT mapped (bits 31-23 = 0x7F0, not 0x3FF), so writes
+     * are dropped and reads return 0. */
+    CHECK(!gsp_board_is_mapped(0xff000000u));
+    CHECK_EQ(gsp_board_read16(&b, 0xff000000u), 0x0000u);
 
-    /* The declared window ends at 0xFFBFFFFF, which is the last word of the
-     * 512 KiB share.  It is not a wrap back to offset 0. */
+    /* The declared window ends at 0xFFBFFFFF, which is 2 MiB into the 4 MiB
+     * share (offset 0x3FFFFF). */
     gsp_board_write16(&b, 0xffbffffeu, 0xbeefu);
     CHECK_EQ(gsp_board_read16(&b, 0xffbffffeu), 0xbeefu);
-    CHECK_EQ(gsp_board_read16(&b, 0xff800000u), 0x1234u);
+    CHECK_EQ(gsp_board_read16(&b, 0xff800000u), 0x1234u);  /* different cell */
 }
 
 /* The 2bpp window writes INTO the main VRAM share.
