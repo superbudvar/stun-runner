@@ -128,6 +128,51 @@ All waits must be bounded. Timeouts must produce useful diagnostics.
 
 ---
 
+# Naming conventions
+
+## Ghidra function names
+
+When creating or renaming functions in the Ghidra MCP (`maincpu.bin` program), use:
+
+```
+s_<addr>_<subsystem>_<friendly_name>
+```
+
+Examples:
+
+| Ghidra name | ROM addr | Subsystem | Friendly name |
+|---|---|---|---|
+| `s_000025E8_mc68010_text_draw` | `$25E8` | mc68010_text | text draw |
+| `s_00004F82_mc68010_gsp_vram_test` | `$4F82` | mc68010 | GSP VRAM diagnostic |
+| `s_000003F8_gsp_boot` | `$3F8` | gsp_boot | GSP reset handler |
+| `s_0000196_mc68010_text_selector_dispatch` | `$196` | mc68010_text | selector dispatch |
+
+The ROM address is always part of the name so it is instantly visible in both Ghidra's function list and in any C slice that references it. Subsystem rough categories: `mc68010`, `mc68010_text`, `mc68010_road`, `gsp_boot`, `mc68010_diag`.
+
+Rename via Ghidra MCP:
+
+```
+rename_function(old_name="FUN_000025E8", new_name="s_000025E8_mc68010_text_draw", strict_mode="off")
+```
+
+## Native C slice names
+
+Ported C slices use `stunrun_<subsystem>_<friendly_name>` (no address in the C name — the address lives in the file header comment and the Ghidra symbol):
+
+```
+native/gsp_boot.c       → stunrun_gsp_boot_*()
+native/mc68010_text_writer.c → stunrun_mc68010_text_draw()
+native/gsp_2bpp_glyph.c → stunrun_gsp_2bpp_emit_row()
+```
+
+Each slice gets `native/<name>.{h,c}` + `native/<name>_test.c`, registered in `native/CMakeLists.txt`.
+
+## Symbols directory
+
+XREF CSV files under `symbols/` use the Ghidra name (with address) as the canonical identifier, not a C symbol name.  The `s_` prefix in Ghidra maps to `stunrun_` in C (the C prefix is longer to avoid namespace collisions with system headers).
+
+---
+
 # Investigator instructions
 
 Before broad semantic annotation:
