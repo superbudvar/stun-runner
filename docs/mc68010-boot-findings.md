@@ -3270,11 +3270,10 @@ evidence about MAME.
 The fix is a constant: `0x80000` -> `0x400000` in `native/musashi_cpu.h` and
 `native/gsp_rtl/gsp_board.h`. It is not one line of work. It grows
 `gsp_board.vram[]` from 512 KiB to 4 MiB, changes the `--vram-out` dump from
-524288 to 4194304 bytes, invalidates the frame-600 oracle fixture
-(`fixtures/oracle/frame_600/frame_600_gsp_vram.bin`, currently 512 KiB, so it
-can only ever describe a quarter of the share), and touches every test that
-asserts on VRAM extent. Filed as `stunrun-2ua` and made a blocker of
-`gsvp.4`.
+524288 to 4194304 bytes, and touches every test that asserts on VRAM extent.
+The frame-600 oracle fixture needs replacing first, for a reason that has
+nothing to do with its size -- see 19.5. Filed as `stunrun-2ua` and made a
+blocker of `gsvp.4`.
 
 Doing it as its own slice is deliberate: the measurement above justifies the
 change completely, and that is exactly the condition under which it is
@@ -3292,3 +3291,59 @@ with the share sized correctly, a replay of a stream in which the GSP never ran
 will not match a frame where it did. Fix the extent, then re-capture past the
 halt boundary; they are two separate problems and neither substitutes for the
 other.
+
+### 19.5 The committed frame-600 VRAM fixture is not VRAM
+
+`fixtures/oracle/frame_600/frame_600_gsp_vram.bin` cannot be used as the GSP
+VRAM oracle. Three independent reasons, none of which requires knowing what it
+actually contains:
+
+```text
+size                     1048576 bytes
+                         -- neither the 512 KiB the models assume
+                            nor the 4194304 the share actually is
+first 8 bytes            ffffc000 00000216
+                         -- MC68010 reset SP and PC at address 0: main RAM
+byte agreement with a fresh, pinned mame-gsp-vram-dump capture
+                         1876 / 1048576  =  0.2%
+```
+
+It has no provenance metadata: it was added in `5b9b13b` "Establish reproducible
+harness and evidence workflows" and nothing records how it was produced. Its
+first 8 bytes are the MC68010's reset stack pointer and vector, which live in
+main CPU RAM, so whatever it is it is not the `gsp_vram` share. It also has no
+internal 256 KiB, 512 KiB or 1 MiB periodicity, and its two 512 KiB halves have
+very different density (230,103 and 99,692 nonzero words), so it is not a
+truncated or tiled capture of a repeating share either.
+
+**What does *not* rest on it.** Worth stating explicitly, because the failure
+mode here is to assume the blast radius is the whole suite: no CTest and no
+python test references `fixtures/oracle/`, so no green check currently depends
+on this file. And section 15.4's "byte-identical, 0 / 524,288 bytes differ"
+claim did **not** compare against this fixture -- 15.4's reference was a 512 KiB
+`/tmp` capture, which is why 15.4 is a comparison at an extent this board's own
+model already had wrong. Two different references, two different extents, one
+file committed under a name that suggests it is the oracle.
+
+**The replacement already exists.** `tools/mame-gsp-vram-dump` captures the
+share consecutively from 0xff800000 with a per-run `-nvram_directory`. At frame
+600 with `--words 2097152` it yields a 4194304-byte image with 1664200 of
+2097152 words nonzero -- a genuinely 4 MiB share. That cross-check is what
+confirms section 19 from the oracle side rather than only from the probe side.
+
+**One finding from the other agent survives here, correctly.** Their page
+comparison, redone on the 4 MiB dump:
+
+```text
+page 0: identical to pages [0, 4]
+page 1: identical to pages [1]
+...
+page 4: identical to pages [0, 4]
+```
+
+Page 0 equals page 4 exactly, delta 0x200000, and pages 0-3 all differ -- their
+measurement, reproduced bit for bit. What it measures is a 2 MiB **content**
+period inside the 4 MiB share, which is a real property of what the ROM wrote and
+not a mirror period. The data was right; only the interpretation moved it onto
+the wrong question. Recorded because "their 2 MiB was wrong" would be the wrong
+thing to remember.

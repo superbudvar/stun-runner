@@ -1,0 +1,34 @@
+{
+  "schema": "stunrun-reference-experiment/v1",
+  "experiment": "gsp-vram-dump-4mib-600",
+  "authority": "controlled-replay",
+  "rom_set": "stunrun rev 6",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "command": "./tools/mame-gsp-vram-dump roms /tmp/opencode/oracle4m --mame /mnt/build/mame-ref/mame --frames 600 --target 600 --words 2097152 --nothrottle",
+  "artifacts": [
+    {
+      "path": "mame.log",
+      "bytes": 18827,
+      "sha256": "5a85de0bb7a6334aed666e455656181d3b1599e45c83a9e95bbc01606e8e7183",
+      "committed": true
+    },
+    {
+      "path": "result.json",
+      "bytes": 0,
+      "sha256": null,
+      "committed": false,
+      "note": "regenerable from the command above"
+    },
+    {
+      "path": "gsp_vram.bin",
+      "bytes": 4194304,
+      "sha256": "35c9262190d8ec85183af255ba1962429897dec157a95793d61d06feee2210ba",
+      "committed": false,
+      "note": "4194304-byte share capture. Regenerable from the command above; not committed because it is large and fully regenerable. Re-derive it to compare."
+    }
+  ],
+  "notes": "Oracle-side cross-check of docs/mc68010-boot-findings.md section 19. Confirms from the capture direction that the gsp_vram share is 4 MiB and not the 512 KiB both native/ models assume: 1664200 of 2097152 words nonzero at frame 600, over a contiguous 4194304-byte read from 0xff800000 with a pinned -nvram_directory. Also reproduces the other agent's page-comparison observation -- 512 KiB page 0 is byte-identical to page 4 (delta 0x200000) while pages 0-3 all differ -- showing it is a 2 MiB content period in the share, not a mirror period. Supersedes fixtures/oracle/frame_600/frame_600_gsp_vram.bin, which is 1048576 bytes, starts with the MC68010 reset SP/PC, and agrees with this capture on 0.2% of bytes."
+}
