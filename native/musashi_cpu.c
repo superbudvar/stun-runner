@@ -904,9 +904,17 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
         cpu->gsp_wlog_len++;
     }
 
-    /* 0xFF800000-0xFFBFFFFF: the 4 MiB share.  multisync_gsp_map uses
-     * .mirror(0x0400000) over a 0x400000 range, which repeats once, so the
-     * share is the whole 4 MiB and 0xffc00000-0xffffffff aliases onto it.
+    /* 0xFF000000-0xFFFFFFFF: the VRAM share.
+     *
+     * KNOWN DIVERGENCE, unresolved -- docs/mc68010-boot-findings.md section 19.
+     * The comment this replaced said "the 4 MiB share ... 0xffc00000-0xffffffff
+     * aliases onto it".  That was wrong twice over: MUSASHI_GSP_VRAM_BYTES is
+     * 0x80000, so the offset below masks with 0x7FFFF (a 512 KiB period, not
+     * 4 MiB), and MAME's `.mirror(0x0400000)` over a 0xff800000-0xffbfffff
+     * window aliases only the 512 KiB at 0xffc00000-0xffc7ffff, leaving
+     * 0xffc80000-0xffffffff unmapped.  The predicate above accepts all of
+     * 0xff000000-0xffffffff and this mask folds the difference into VRAM
+     * instead of dropping it.  351,144 captured writes land in that gap.
      *
      * A host word write does NOT store two bytes.  MAME models GSP program
      * memory as a 32-bit-wide space with AddrShift = 3

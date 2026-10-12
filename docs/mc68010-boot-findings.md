@@ -3165,3 +3165,91 @@ Both are covered by `tests/test_public_tools.py`, and each test was checked
 against a deliberately broken tool: concatenating instead of interleaving the
 ROM, treating every store as halt-changing, and disabling the stride guard
 each produce failures rather than passing silently.
+
+## 19. The VRAM mirror is modelled wider than MAME declares it (KNOWN DIVERGENCE)
+
+Raised by another agent as a question, not a correction. It is a real
+divergence, it is larger than expected, and it is now the leading candidate for
+the VRAM mismatch. Left unfixed on purpose; see "why not fixed" below.
+
+### 19.1 Which map STUN Runner selects
+
+`GAME(1989, stunrun, ..., stunrun_machine, ...)` -> `stunrun_machine` ->
+`STUNRUN_BOARD(config, "mainpcb")` -> `stunrun_board_device_state::
+device_add_mconfig`, which calls `multisync_nomsp(config)` (harddriv.cpp:1861).
+That installs:
+
+```text
+harddriv.cpp:1545   m_gsp->set_addrmap(AS_PROGRAM, &harddriv_state::multisync_gsp_map);
+harddriv.cpp:628    map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram");
+```
+
+So STUN Runner is the **512 KiB multisync** path -- not the 1 MiB multisync II
+path (`multisync2_gsp_map`), not the driver-generic map. That closes the
+board-selection thread: the 512 KiB arithmetic is the right arithmetic.
+
+### 19.2 What our models actually do
+
+Both VRAM paths in this repository mask the offset with `(size - 1)` where size
+is `0x80000`, i.e. a **512 KiB aliasing period**:
+
+```text
+native/musashi_cpu.c:925   ((addr - 0xFF800000) & (MUSASHI_GSP_VRAM_BYTES - 1)) & ~0xF
+native/gsp_rtl/gsp_board.c ((addr - 0xff800000) & (GSP_BOARD_VRAM_BYTES - 1)) & ~0xf
+```
+
+and both predicates accept the whole `0xFF000000-0xFFFFFFFF` range.
+
+MAME's declaration is narrower on both counts. `.mirror(0x0400000)` over a
+512 KiB window gives **one** 512 KiB alias at `0xFFC00000-0xFFC7FFFF`. The rest
+of the top 256 MiB -- `0xFF000000-0xFF7FFFFF` and `0xFFC80000-0xFFFFFFFF` --
+is not part of this share.
+
+### 19.3 The difference is not marginal
+
+Grouping every `0xFFxxxxxx` HSTDAT target in the capture by 2 MiB page:
+
+```text
+  0xFF800000-0xFF9FFFFF   262,144   <-- primary window, first half
+  0xFFA00000-0xFFBFFFFF   230,400   <-- primary window, second half
+  0xFFC00000-0xFFDFFFFF   139,264   <-- MAME maps only its first 512 KiB
+  0xFFE00000-0xFFFFFFFF   211,880   <-- MAME maps NONE of this
+```
+
+**351,144 of 843,688 VRAM-window writes (42%) address a range MAME does not
+map to this share.** Our model folds them into VRAM by 512 KiB aliasing;
+MAME drops them. The two therefore produce different VRAM from identical bus
+traffic, and the difference is not confined to unused padding -- the aliases
+land on cells the primary window also writes.
+
+### 19.4 Why the existing check could never see it
+
+`tools/check-gsp-replay` compares the board model against the native model.
+Both mask with `0x7FFFF`, so they agree by construction. §15.4's "the
+host-port write stream reproduces the reference VRAM byte-for-byte" is
+therefore *not* evidence about MAME, and the older comment in
+`gsp_board.c` that justified the wide predicate ("that predicate is exactly
+what native/musashi_cpu.c already tests") was circular for the same reason.
+
+### 19.5 Why not fixed here
+
+Narrowing the predicate and widening the mask to match the declaration is a
+two-line change, and it is exactly the kind of change that must not be made on
+reasoning alone. It would drop roughly 212,000 writes this board currently
+folds into VRAM. Which behaviour matches the machine is an empirical question:
+the declaration in `multisync_gsp_map` is strong evidence, but MAME's
+`.mirror()` decode has to be read (or an oracle run made) before concluding
+that `0xFFE00000` really is unmapped rather than folded.
+
+The other agent's independent measurement -- a 4 MiB capture in which a page
+repeats 4 pages later, delta `0x200000` -- is consistent with a **2 MiB**
+period, which is neither 512 KiB nor 4 MiB. It agrees with MAME's declaration
+only if their page size was 1 MiB rather than the 512 KiB they state. That
+discrepancy is exactly what an oracle run settles.
+
+### 19.6 What would settle it
+
+One MAME run, per the harness rules, writing a known pattern through the GSP
+program space at `0xFF800000`, `0xFFC00000`, `0xFFC80000` and `0xFFE00000`,
+then reading all four back. That distinguishes 512 KiB / 2 MiB / 4 MiB periods
+and tells us whether the upper pages are mapped or floating-bus.

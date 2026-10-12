@@ -29,17 +29,33 @@ static gsp_region_t gsp_region(uint32_t a)
     if (a >= 0xf4800000u && a <= 0xf48000ffu) return GSP_REGION_CTRL_HI;
     if (a >= 0xf5000000u && a <= 0xf5000fffu) return GSP_REGION_PAL_LO;
     if (a >= 0xf5800000u && a <= 0xf5800fffu) return GSP_REGION_PAL_HI;
-    /* map(0xff800000, 0xffbfffff).mirror(0x0400000)
+    /* map(0xff800000, 0xffbfffff).mirror(0x0400000)  [harddriv.cpp:628]
      *
-     * The declared window is 0xFF800000-0xFFBFFFFF and mirror mask bit 22
-     * doubles it, so the pair covers 0xFF000000-0xFFFFFFFF.  That predicate is
-     * exactly what native/musashi_cpu.c:347 already tests for this same share.
+     * MAME declares a 512 KiB window and mirrors it through mask bit 22, so
+     * the share is reachable at 0xFF800000-0xFFBFFFFF *and* at its bit-22
+     * alias 0xFFC00000-0xFFC7FFFF.  Addresses in the rest of the top 256 MiB
+     * (0xFF000000-0xFF7FFFFF, and 0xFFC80000-0xFFFFFFFF) are NOT part of
+     * this share.
      *
-     * For any address at or above the window start the physical offset is
-     * simply `addr & (size - 1)`: 0xFF800000 is a whole number of 512 KiB
-     * cells, so masking the raw address and masking the offset from the base
-     * agree.  The mirror therefore needs no special offset arithmetic, only
-     * the wider "is it mapped" test. */
+     * KNOWN DIVERGENCE, unresolved -- see docs/mc68010-boot-findings.md
+     * section 19.  The predicate below accepts the WHOLE 0xFF000000-0xFFFFFFFF
+     * range, and the read/write offset path masks with (size - 1) = 0x7FFFF,
+     * i.e. a 512 KiB aliasing period rather than MAME's 4 MiB.  Those two
+     * choices are not the same thing, and the captured bus stream is full of
+     * the difference: 351,144 of 843,688 0xFFxxxxxx HSTDAT writes address
+     * 0xFFC00000-0xFFFFFFFF, of which MAME maps only the first 512 KiB.
+     *
+     * Both native/musashi_cpu.c and this file use the same 0x7FFFF mask, so
+     * they agree with each other -- which is why tools/check-gsp-replay
+     * (board model vs native model) cannot see this.  The earlier comment
+     * here claimed the 0xFF000000-0xFFFFFFFF predicate "is exactly what
+     * native/musashi_cpu.c:347 already tests for this same share"; that was
+     * true of the native model and therefore not evidence about MAME.
+     *
+     * Do not "fix" the mask without an oracle run: narrowing the predicate to
+     * MAME's exact set would drop ~212k writes this board currently aliases
+     * into VRAM, and which behaviour matches the machine is an empirical
+     * question, not a reading of the map. */
     if ((a & 0xff000000u) == 0xff000000u) return GSP_REGION_VRAM;
     return GSP_REGION_UNMAPPED;
 }
@@ -293,10 +309,16 @@ static void gsp_board_hstdat_store(gsp_board_t *b, uint16_t data)
 {
     const uint32_t addr = b->hstadr;
 
-    /* 0xFF000000-0xFFFFFFFF: the 512 KiB VRAM share.  A host word write does
+    /* 0xFF000000-0xFFFFFFFF: the VRAM share.  A host word write does
      * NOT store two bytes -- MAME's program space is a 32-bit view over a
      * 16-bit share, so one 16-bit write covers a 16-byte cell with each
-     * source byte replicated eight times. */
+     * source byte replicated eight times.
+     *
+     * The offset below masks with (size - 1), a 512 KiB aliasing period.
+     * MAME's `.mirror(0x0400000)` implies a 4 MiB period with a single
+     * 512 KiB alias at 0xFFC00000.  Those disagree for every address in
+     * 0xFFC80000-0xFFFFFFFF.  KNOWN DIVERGENCE, unresolved -- see the note on
+     * gsp_region() above and docs/mc68010-boot-findings.md section 19. */
     if ((addr & 0xff000000u) == 0xff000000u) {
         uint32_t off = ((addr - 0xff800000u) &
                         (GSP_BOARD_VRAM_BYTES - 1u)) & ~0xfu;
