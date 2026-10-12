@@ -145,7 +145,6 @@ Examples:
 | `s_000025E8_mc68010_text_draw` | `$25E8` | mc68010_text | main text draw loop |
 | `s_0000452A_mc68010_text_write_glyphs` | `$452A` | mc68010_text | glyph write via host port |
 | `s_00004A48_mc68010_text_poll_gsp` | `$4A48` | mc68010_text | poll GSP ready (delay loop) |
-| `s_0000196_mc68010_text_selector_dispatch` | `$196` | mc68010_text | selector dispatch table |
 | `s_00004F82_mc68010_gsp_vram_test_main` | `$4F82` | mc68010 | BAD GSP VRAM diagnostic entry |
 | `s_000003F8_gsp_boot_reset_main` | `$3F8` | gsp_boot | GSP reset orchestrator |
 | `s_00000370_gsp_boot_delay_400` | `$370` | gsp_boot | 400-cycle delay |
