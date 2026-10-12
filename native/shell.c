@@ -99,6 +99,15 @@ static void mkpath(const char *path, mode_t mode)
 #include "render.h"
 #include "gsp_display.h"
 #include "gsp_video.h"
+/*** GSP RTL driver: only available when Verilator was found at configure time. ***/
+#ifdef STUNRUN_GSP_RTL
+#include "gsp_rtl_driver.h"
+#define GSP_RTL_SYNC_AND_STEP(mem) do { \
+    if ((mem).vram) gsp_rtl_driver_sync_and_step((mem).vram, MUSASHI_GSP_VRAM_WORDS); \
+} while (0)
+#else
+#define GSP_RTL_SYNC_AND_STEP(mem) do { } while (0)
+#endif
 #include "text_cursor.h"
 #include "text_record.h"
 #include "fake_ports.h"
@@ -497,7 +506,28 @@ static int render_live_gsp_frame(void)
 
     if (g_cpu == NULL || musashi_cpu_gsp_memory(g_cpu, &mem) != 0)
         return -1;
+
+    /* Read display registers from the GSP RTL.  When the GSP is halted (service
+     * mode, or before it has been uploaded a program), fall back to the
+     * frame-600 constants so the rasterizer still shows something.
+     * Only available when STUNRUN_GSP_RTL is defined (Verilator build). */
+#ifdef STUNRUN_GSP_RTL
+    if (!gsp_rtl_driver_is_halted()) {
+        gsp_rtl_driver_get_display_regs(&dregs.dpystrt, &dregs.dpyadr,
+                                         &dregs.dpytap, &dregs.dpyctl);
+        /* Fill in the timing constants that the RTL does not track. */
+        dregs.heblnk   = 110;
+        dregs.hsblnk   = 622;
+        dregs.veblnk   = 19;
+        dregs.vsblnk   = 19;
+        dregs.finescroll = 7;
+        dregs.palbank    = 0;
+    } else {
+        stunrun_gsp_display_frame600_regs(&dregs);
+    }
+#else
     stunrun_gsp_display_frame600_regs(&dregs);
+#endif
 
     /* STUNRUN_FORCE_FRAMEBUF=<hex>: override the rasterizer's frame-buffer base.
      * Value is a musashi VRAM byte offset (packed 16-bit words).
@@ -1475,6 +1505,14 @@ static int run_walk(void)
          * 600 frames do not all rasterise when a coarse cadence is enough. */
         if (g_live_video && g_cpu != NULL &&
             (frame % g_live_video_stride) == 0) {
+            /* Step the GSP RTL to process display lists from the MC68010 frame.
+             * musashi and the GSP board share the same VRAM array, so the GSP's
+             * pixel writes appear directly in musashi VRAM.
+             * Guarded by STUNRUN_GSP_RTL (Verilator build only). */
+            musashi_gsp_memory_t mem;
+            if (musashi_cpu_gsp_memory(g_cpu, &mem) == 0) {
+                GSP_RTL_SYNC_AND_STEP(mem);
+            }
             if (render_live_gsp_frame() == 0) {
                 g_live_video_presented++;
                 render_mode = "live-gsp-share";

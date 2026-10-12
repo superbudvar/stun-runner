@@ -32,12 +32,12 @@
 #define STUNRUN_GSP_DISPLAY_V_TOTAL 262u
 #define STUNRUN_GSP_DISPLAY_PIXPERCLOCK 2u
 
-/* The gsp_vram share is 512 KiB -- 0x40000 words -- NOT the 4 MiB address
- * window that mirrors it. A row base is (rowaddr << 10) words masked here.
- * Getting this wrong shifts the whole picture, which is exactly what the old
- * 2048-byte row assumption in render.c did. */
-#define STUNRUN_GSP_VRAM_WORDS 0x40000u
-#define STUNRUN_GSP_VRAM_MASK (STUNRUN_GSP_VRAM_WORDS - 1u)
+/* The gsp_vram backing store is 4 MiB -- 0x200000 words.  A row base is
+ * (rowaddr << 10) words and must be masked here to the backing store extent.
+ * Getting this wrong shifts the whole picture (the old 2048-byte row
+ * assumption in render.c did exactly this). */
+#define STUNRUN_GSP_VRAM_WORDS 0x200000u   /* 4 MiB / 2 */
+#define STUNRUN_GSP_VRAM_MASK (STUNRUN_GSP_VRAM_WORDS - 1u)  /* 0x1FFFFF */
 
 /* paletteram is 8 banks of 256 pens; gsp_palette_change() indexes all 1024. */
 #define STUNRUN_GSP_PALETTE_ENTRIES 1024u

@@ -58,14 +58,49 @@ noise. All three were required.
 **NMI = `$57E3`, RESET = `$4000`, IRQ = `$41C1`.** [C]
 
 Board memory map, from `mame-ref/src/mame/atari/atarijsa.cpp:103-143` (`atarijsa2_map`):
-`$2000` YM2151 data, `$2001` YM2151 address, `$2800` OKI status (`/RDV`), `$2802` sound
+`$2000` YM2151 address, `$2001` YM2151 data, `$2800` OKI status (`/RDV`), `$2802` sound
 command (`/RDP`), `$2804` JSA I/O (`/RDIO`), `$2806` mixer (`/MIX`), `$2808` WRIO write
 mirror, `$2A00` OKI write (`/WRV`), `$2A02` 6502→68010 response (`/WRP`), `$2A04` WRIO,
 `$2A06` `/MIX`.
 
+**Correction, 2026-10-12:** the previous draft had the YM2151 address/data ports
+reversed. The ROM writes register selectors to `$2000` and the corresponding
+values to `$2001` (for example `$427F-$4289`, `$4EAF-$4EB8`, and
+`$4EFC-$4F08`); this is also the address-then-data order for the YM2151's
+two-port interface. This corrects our documentation, not an original-game or
+MAME defect.
+
+### 1.1 Ghidra cross-check and symbols
+
+The raw 64 KiB sound program was imported into the `stunrunner` Ghidra project
+as `136070-2123.10c`, language `6502:LE:16:default`, at image base zero. Thus
+Ghidra address `$NNNN` corresponds to ROM file offset `$NNNN`, matching the
+MAME `ROM_LOAD` placement noted above. The following names were added to the
+Ghidra program after checking the instructions and table uses:
+
+| Ghidra address | Name | Grounding |
+|---|---|---|
+| `$4238` | `s_00004238_jsa_ym2151_initialize` | Initializes YM registers and mixer/control state. |
+| `$4371` | `s_00004371_jsa_command_class_dispatch` | Bounds command to `$00-$6C`, reads class from `$6100`, argument from `$616D`, and pushes a handler address from `$472F/$4730` for the RTS dispatch. |
+| `$4E79` | `s_00004E79_jsa_ym2151_music_channel_tick` | Per-channel update writes YM register/data pairs while updating channel state; exact music-event semantics remain partly inferred. |
+| `$5026` | `s_00005026_jsa_ym2151_wait_ready` | Polls YM status at `$2001` unless the caller's `$000E` flag requests skipping the wait. |
+| `$559A` | `s_0000559A_jsa_ym2151_voice_program` | Programs multiple YM registers and their shadow bytes from the selected voice data. |
+| `$5BC6` | `s_00005BC6_jsa_oki_voice_maintenance` | Ages four voice state slots and emits per-voice OKI stop bytes when a voice expires. |
+| `$57E3` | `s_000057E3_jsa_nmi_command_handler` | NMI vector; consumes the JSA command latch and routes special commands or queues work. |
+| `$41C1` | `s_000041C1_jsa_irq_handler` | IRQ vector; examines YM/JSA status and services sound state. Exact IRQ source composition is not inferred from this handler alone. |
+
+ROM-resident lookup labels were added for the command-handler vectors
+(`$472F/$4730`), NMI special-command classes (`$6093`), command classes
+(`$6100`), command arguments (`$616D`), OKI sample (`$6532`), OKI voice/volume
+flags (`$6567`), effect priority (`$659C`), and the per-voice OKI start/busy/stop
+tables (`$5C63/$5C67/$5C6B`). The zero-page RAM variables and memory-mapped
+registers are deliberately not labeled as if they were ROM globals: this Ghidra
+program maps the sound ROM itself at those numeric addresses, not the 6502's
+separate runtime RAM/I/O spaces.
+
 `$0200-$024F` is the firmware's RAM work area (§2.4).
 
-### 1.1 Reset
+### 1.2 Reset
 
 ```
 $4000: sei / $4001: cld / $4002: ldx #$ff / $4004: txs
@@ -78,7 +113,7 @@ $4024: jsr $41bd / $4027: jmp $4113
 ```
 [C] Three `$2A04` writes bracket a RAM clear.
 
-### 1.2 Clocks — and the sample rate our port invented
+### 1.3 Clocks — and the sample rate our port invented
 
 `#define JSA_MASTER_CLOCK XTAL(3'579'545)` (`atarijsa.cpp:80`) [M]
 
