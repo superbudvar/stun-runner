@@ -210,6 +210,21 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
 
 ## Current blockers
 
+- **The GSP VRAM share is 4 MiB and both `native/` VRAM paths model it as
+  512 KiB.** `GSP_BOARD_VRAM_BYTES` and `MUSASHI_GSP_VRAM_BYTES` are both
+  `0x80000`, so both mask with `0x7FFFF` where MAME's share is `0x400000`.
+  Measured by `tools/mame-gsp-mirror-probe` against live MAME and confirmed
+  from the capture direction by `tools/mame-gsp-vram-dump`: 745,384 of 843,688
+  captured `0xFFxxxxxx` HSTDAT writes (88.4%) land in a different cell.
+  `tools/check-gsp-replay` cannot see this because both models carry the same
+  constant, which is also why section 15.4's byte-for-byte VRAM match is not
+  evidence about MAME. Blocked behind adopting a correct 4 MiB oracle first;
+  see `docs/mc68010-boot-findings.md` section 19 and `stun-runner-2ua`.
+- **`fixtures/oracle/frame_600/frame_600_gsp_vram.bin` is not VRAM.** 1048576
+  bytes, first 8 bytes are the MC68010 reset SP/PC (`ffffc000 00000216`), no
+  provenance metadata, and 0.2% byte agreement with a fresh pinned capture.
+  No test references it, so nothing green depends on it, but it must not be
+  used as the VRAM oracle. Section 19.5.
 - M0 is complete; the installed package's unavailable upstream source commit remains documented in `analysis/m0-audit.md`.
 - Installed MAME reports `0.289 (mame0289-dirty)` and exposes no source commit; its binary hash is recorded in `mame/system-baseline.json`.
 - Static-listing generation recipe works for all four active programmable processors; generated listings remain local and are hash-recorded in `reference/listings/stunrun.metadata.json`.
