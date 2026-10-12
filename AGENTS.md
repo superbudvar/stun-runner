@@ -142,10 +142,23 @@ Examples:
 
 | Ghidra name | ROM addr | Subsystem | Friendly name |
 |---|---|---|---|
-| `s_000025E8_mc68010_text_draw` | `$25E8` | mc68010_text | text draw |
-| `s_00004F82_mc68010_gsp_vram_test` | `$4F82` | mc68010 | GSP VRAM diagnostic |
-| `s_000003F8_gsp_boot` | `$3F8` | gsp_boot | GSP reset handler |
-| `s_0000196_mc68010_text_selector_dispatch` | `$196` | mc68010_text | selector dispatch |
+| `s_000025E8_mc68010_text_draw` | `$25E8` | mc68010_text | main text draw loop |
+| `s_0000452A_mc68010_text_write_glyphs` | `$452A` | mc68010_text | glyph write via host port |
+| `s_00004A48_mc68010_text_poll_gsp` | `$4A48` | mc68010_text | poll GSP ready (delay loop) |
+| `s_0000196_mc68010_text_selector_dispatch` | `$196` | mc68010_text | selector dispatch table |
+| `s_00004F82_mc68010_gsp_vram_test_main` | `$4F82` | mc68010 | BAD GSP VRAM diagnostic entry |
+| `s_000003F8_gsp_boot_reset_main` | `$3F8` | gsp_boot | GSP reset orchestrator |
+| `s_00000370_gsp_boot_delay_400` | `$370` | gsp_boot | 400-cycle delay |
+| `s_0000037C_gsp_boot_load_palette` | `$37C` | gsp_boot | load palette from RAM table |
+| `s_0000034A_gsp_boot_write_fifo_records` | `$34A` | gsp_boot | write (address,word) pairs to FIFO |
+| `s_000007C2_gsp_boot_write_gsp_table` | `$7C2` | gsp_boot | write GSP control table |
+| `s_0000048E_gsp_boot_init_fifo_write` | `$48E` | gsp_boot | init FIFO + write incrementing words |
+| `s_00000570_gsp_boot_composite_fill` | `$570` | gsp_boot | composite: clear + palette + fill |
+| `s_00000636_gsp_boot_fill_vram_FFFF_rect` | `$636` | gsp_boot | fill VRAM rect with 0xFFFF |
+| `s_0000067A_gsp_boot_fill_vram_color` | `$67A` | gsp_boot | fill VRAM rect with colour word |
+| `s_000022EC_mc68010_road_write_fifo_words` | `$22EC` | mc68010_road | write 8 words to FIFO (road poly) |
+| `s_000024B8_mc68010_road_draw_quad` | `$24B8` | mc68010_road | draw 4 road polys |
+| `s_000053F2_gsp_boot_ready_sequence` | `$53F2` | gsp_boot | GSP boot: clear regs + delay + set mode |
 
 The ROM address is always part of the name so it is instantly visible in both Ghidra's function list and in any C slice that references it. Subsystem rough categories: `mc68010`, `mc68010_text`, `mc68010_road`, `gsp_boot`, `mc68010_diag`.
 
