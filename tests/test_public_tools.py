@@ -1034,5 +1034,75 @@ class PublicToolTests(unittest.TestCase):
             self.assertIn("GSP mirror probe failed", r.stdout + r.stderr)
 
 
+# ---- register capture must survive a CPU that lacks a register --------
+    #
+    # ram-write-trace.lua used to read device.state['A10'].value and
+    # device.state['A11'].value unconditionally.  A10/A11 exist on the
+    # TMS34010 but not on the MC68010, so indexing nil raised inside the tap
+    # callback and every event was dropped: --registers on the 68010 reported
+    # "no traffic" instead of "unsupported register".  That is the machine the
+    # GSP host window lives on, so it silently blocked every 68010 register
+    # trace -- including the text path at $25E8.
+
+    RAM_TRACE_LOG = """\
+M1_RAM_WRITE frame=10 pc=00002656 addr=00C00002 data=FF896040 mask=FFFF a0=00FF8960 a1=00001FBC a5=00000000
+M1_RAM_WRITE frame=10 pc=00002656 addr=00C00004 data=00000000 mask=FFFF a0=00FF8960 a1=00001FBC a5=00000000
+M1_RAM_WRITE frame=11 pc=00002666 addr=00C0000C data=000000DF mask=FFFF a0=00FF8960 a1=00001FBC a5=00000000
+M1_RAM_WRITE frame=11 pc=FFF46590 addr=00C0000C data=0000ABCD mask=FFFF a0=00FF1234 a1=00FD0040 a5=00000002 a10=0000DBC0 a11=00000040
+M1_RAM_WRITE_DONE frames=12 events=4 truncated=false output=/dev/null
+"""
+
+    def _run_ram_write_trace_stub(self, temp, log):
+        stub = temp / "fake-mame"
+        stub.write_text("#!/bin/sh\ncat <<'EOF'\n" + log + "\nEOF\n",
+                        encoding="utf-8")
+        stub.chmod(0o755)
+        out = temp / "out"
+        r = subprocess.run(
+            [str(ROOT / "tools" / "mame-ram-write-trace"),
+             str(ROOT / "roms"), str(out), "--device", ":mainpcb:maincpu",
+             "--base", "0xC00000", "--end", "0xC00020", "--frames", "12",
+             "--registers", "--mame", str(stub)],
+            cwd=ROOT, capture_output=True, text=True)
+        return r, out / "result.json"
+
+    def test_ram_write_trace_register_capture_without_a10_a11(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            r, result_path = self._run_ram_write_trace_stub(
+                temp, self.RAM_TRACE_LOG)
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["event_count"], 4,
+                             "--registers dropped every event")
+            mc68010, gsp = result["events"][0], result["events"][3]
+            # The 68010 has A0-A7 only: the keys must be absent, not zero,
+            # because a fabricated 0 would read as a real register sample.
+            self.assertEqual(mc68010["a0"], 0x00FF8960)
+            self.assertNotIn("a10", mc68010)
+            self.assertNotIn("a11", mc68010)
+            # The GSP line must still parse with all five, unchanged shape.
+            self.assertEqual(gsp["a10"], 0x0000DBC0)
+            self.assertEqual(gsp["a11"], 0x00000040)
+
+    def test_ram_write_trace_accepts_a_log_without_the_a10_a11_group(self):
+        # Covers the wrapper's end-to-end handling of a log whose a10/a11 group
+        # is absent.  It does NOT cover the Lua half: the stub MAME never runs
+        # ram-write-trace.lua, so reintroducing device.state['A10'].value there
+        # still passes here.  That half is verified by a real MAME run against
+        # :mainpcb:maincpu, recorded in the commit for this fix; keep this test
+        # scoped to what it can actually prove.
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            log = ("M1_RAM_WRITE frame=1 pc=00002566 addr=00C0000C data=00AB "
+                   "mask=FFFF a0=00FF8960 a1=00001FBC a5=00000000\n"
+                   "M1_RAM_WRITE_DONE frames=1 events=1 truncated=false "
+                   "output=/dev/null\n")
+            r, result_path = self._run_ram_write_trace_stub(temp, log)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(result["events"][0]["data"], 0x00AB)
+            self.assertNotIn("a10", result["events"][0])
+
+
 if __name__ == "__main__":
     unittest.main()

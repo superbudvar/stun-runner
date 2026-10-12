@@ -127,6 +127,22 @@ local function apply_event(event)
     else field:set_value(event.value) end
 end
 
+-- Read a register by name, or nil when the CPU does not have it.
+--
+-- A10/A11 exist on the TMS34010 but not on the MC68010, so reading
+-- device.state['A10'].value on the 68010 raises inside the tap callback and
+-- silently drops EVERY event: --registers looked like "no traffic at all"
+-- rather than "unsupported register".  That cost a capture on the GSP host
+-- window, which is where the 68010 writes its display and text.  Resolve each
+-- name once and let absent registers read as nil.
+local function regval(device, name)
+    local ok, r = pcall(function() return device.state[name] end)
+    if not ok or r == nil then return nil end
+    local okv, v = pcall(function() return r.value end)
+    if not okv then return nil end
+    return v
+end
+
 local function install_tap()
     local device = assert(machine.devices[device_tag], 'unknown device: ' .. device_tag)
     local space = assert(device.spaces[space_name], 'unknown space: ' .. space_name)
@@ -139,11 +155,11 @@ local function install_tap()
             events[#events + 1] = {frame = frame, pc = pc.value, address = offset,
                                    data = data, mask = mask,
                                    order = capture_order and next_order or nil,
-                                   a0 = capture_registers and device.state['A0'].value or nil,
-                                   a1 = capture_registers and device.state['A1'].value or nil,
-                                   a5 = capture_registers and device.state['A5'].value or nil,
-                                   a10 = capture_registers and device.state['A10'].value or nil,
-                                   a11 = capture_registers and device.state['A11'].value or nil}
+                                   a0 = capture_registers and regval(device, 'A0') or nil,
+                                   a1 = capture_registers and regval(device, 'A1') or nil,
+                                   a5 = capture_registers and regval(device, 'A5') or nil,
+                                   a10 = capture_registers and regval(device, 'A10') or nil,
+                                   a11 = capture_registers and regval(device, 'A11') or nil}
             if capture_order then next_order = next_order + 1 end
         end)
     if read_start_address ~= nil and read_end_address ~= nil then
@@ -159,11 +175,11 @@ local function install_tap()
                     frame = frame, pc = pc.value, address = offset,
                     data = data, mask = mask,
                     order = capture_order and next_order or nil,
-                    a0 = capture_registers and device.state['A0'].value or nil,
-                    a1 = capture_registers and device.state['A1'].value or nil,
-                    a5 = capture_registers and device.state['A5'].value or nil,
-                    a10 = capture_registers and device.state['A10'].value or nil,
-                    a11 = capture_registers and device.state['A11'].value or nil}
+                    a0 = capture_registers and regval(device, 'A0') or nil,
+                    a1 = capture_registers and regval(device, 'A1') or nil,
+                    a5 = capture_registers and regval(device, 'A5') or nil,
+                    a10 = capture_registers and regval(device, 'A10') or nil,
+                    a11 = capture_registers and regval(device, 'A11') or nil}
                 if capture_order then next_order = next_order + 1 end
             end)
     end
@@ -183,11 +199,24 @@ emu.register_frame_done(function()
         os.execute('sleep ' .. tostring(delay_seconds))
     end
     if frame >= limit then
+        -- Only emit the registers this CPU actually has.  A10/A11 exist on the
+        -- TMS34010 but not the MC68010, and string.format('%08X', nil) raises,
+        -- which would kill the whole dump at emit time rather than at capture
+        -- time.  The parser treats a10/a11 as optional so GSP traces keep
+        -- their existing five-register shape.
+        local function hex8(v)
+            if v == nil then return nil end
+            return string.format('%08X', v)
+        end
         for _, event in ipairs(events) do
             if capture_registers then
-                print(string.format('M1_RAM_WRITE frame=%d pc=%08X addr=%08X data=%08X mask=%08X a0=%08X a1=%08X a5=%08X a10=%08X a11=%08X%s',
+                local extra = ''
+                if event.a10 ~= nil and event.a11 ~= nil then
+                    extra = string.format(' a10=%08X a11=%08X', event.a10, event.a11)
+                end
+                print(string.format('M1_RAM_WRITE frame=%d pc=%08X addr=%08X data=%08X mask=%08X a0=%s a1=%s a5=%s%s%s',
                     event.frame, event.pc, event.address, event.data, event.mask,
-                    event.a0, event.a1, event.a5, event.a10, event.a11,
+                    hex8(event.a0), hex8(event.a1), hex8(event.a5), extra,
                     capture_order and (' order=' .. event.order) or ''))
             else
                 print(string.format('M1_RAM_WRITE frame=%d pc=%08X addr=%08X data=%08X mask=%08X%s',
@@ -200,10 +229,14 @@ emu.register_frame_done(function()
         if read_start_address ~= nil and read_end_address ~= nil then
             for _, event in ipairs(read_events) do
                 if capture_registers then
-                    print(string.format('M1_RAM_READ frame=%d pc=%08X addr=%08X data=%08X mask=%08X a0=%08X a1=%08X a5=%08X a10=%08X a11=%08X%s',
+                    local extra = ''
+                    if event.a10 ~= nil and event.a11 ~= nil then
+                        extra = string.format(' a10=%08X a11=%08X', event.a10, event.a11)
+                    end
+                    print(string.format('M1_RAM_READ frame=%d pc=%08X addr=%08X data=%08X mask=%08X a0=%s a1=%s a5=%s%s%s',
                         event.frame, event.pc, event.address, event.data,
-                        event.mask, event.a0, event.a1, event.a5, event.a10,
-                        event.a11, capture_order and (' order=' .. event.order) or ''))
+                        event.mask, hex8(event.a0), hex8(event.a1), hex8(event.a5),
+                        extra, capture_order and (' order=' .. event.order) or ''))
                 else
                     print(string.format('M1_RAM_READ frame=%d pc=%08X addr=%08X data=%08X mask=%08X%s',
                         event.frame, event.pc, event.address, event.data,

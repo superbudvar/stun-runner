@@ -21,7 +21,9 @@ EVENT = re.compile(
     r"M1_RAM_WRITE frame=(\d+) pc=([0-9A-Fa-f]+) addr=([0-9A-Fa-f]+) "
     r"data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+)"
     r"(?: a0=([0-9A-Fa-f]+) a1=([0-9A-Fa-f]+) a5=([0-9A-Fa-f]+)"
-    r" a10=([0-9A-Fa-f]+) a11=([0-9A-Fa-f]+))?"
+    # a10/a11 are optional: the TMS34010 has them and the MC68010 does not, and
+    # a 68010 trace is exactly what the GSP host-window captures need.
+    r"(?: a10=([0-9A-Fa-f]+) a11=([0-9A-Fa-f]+))?)?"
     r"(?: order=(\d+))?"
 )
 DONE = re.compile(r"M1_RAM_WRITE_DONE frames=(\d+) events=(\d+) truncated=(true|false) output=(.+)")
@@ -146,8 +148,11 @@ def main() -> int:
         if match.group(6) is not None:
             event.update({"a0": int(match.group(6), 16),
                           "a1": int(match.group(7), 16),
-                          "a5": int(match.group(8), 16),
-                          "a10": int(match.group(9), 16),
+                          "a5": int(match.group(8), 16)})
+        # a10/a11 only appear for a CPU that has them (TMS34010), so leave the
+        # keys absent rather than inventing a zero for the MC68010.
+        if match.group(9) is not None:
+            event.update({"a10": int(match.group(9), 16),
                           "a11": int(match.group(10), 16)})
         if match.group(11) is not None:
             event["order"] = int(match.group(11))
