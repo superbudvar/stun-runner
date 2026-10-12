@@ -103,9 +103,24 @@ typedef enum musashi_gsp_bus_event_kind {
  * CPU writes are exposed as two 16-bit host events.  For byte host writes,
  * `data` is the native effective 16-bit word after lane merge; consumers must
  * merge only lane_mask into their own register state.  Reset-control events
- * also carry the active-low board line's decoded released/asserted state. */
+ * also carry the active-low board line's decoded released/asserted state.
+ *
+ * `cycles` is the MC68010 cycle count at the bus callback.  It is what makes
+ * the captured stream replayable in lockstep rather than as two separate
+ * passes: a consumer advances the GSP to this point before applying the event,
+ * so each host write lands on the state the board actually had.
+ *
+ * This field is load-bearing for the on-disk ABI.  gsp_bus_events.bin is a raw
+ * dump_blob() of this struct, so the file's record stride is exactly
+ * sizeof(musashi_gsp_bus_event_t).  Removing `cycles` shrinks the struct from
+ * 40 to 32 bytes, and a 32-byte reader on a 40-byte file does NOT fail
+ * cleanly: it reads a plausible first record and then garbage, whose `kind`
+ * bytes are almost never HOST_WINDOW or RESET_CONTROL, so the replay loop
+ * spins over ~1.13M nonsense records and the run takes hours instead of
+ * minutes.  Anything that changes this struct must recapture the stream. */
 typedef struct musashi_gsp_bus_event {
     uint64_t sequence;        /* monotonically increasing within this CPU instance */
+    uint64_t cycles;          /* MC68010 cycles elapsed at this bus callback */
     uint32_t address;         /* original MC68010 byte address */
     uint32_t pc;              /* MC68010 PC at the bus callback */
     uint16_t data;            /* effective host word or reset bus value */

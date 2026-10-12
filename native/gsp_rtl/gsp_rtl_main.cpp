@@ -98,13 +98,16 @@ struct Options {
     std::string host_writes;
     std::string ref_vram;
     std::string boot;
+    /* Dump VRAM to a file so it can be compared against the MAME oracle. */
+    std::string vram_out;
 };
 
 void usage(const char *argv0)
 {
     std::fprintf(stderr,
         "usage: %s [--cycles N] [--image FILE] [--trace N] [--addr-shift N]\n"
-        "       [--reset-pc ADDR] [--quiet]\n", argv0);
+        "       [--reset-pc ADDR] [--quiet]\n"
+        "       [--boot FILE [--vram-out FILE]]\n", argv0);
 }
 
 bool parse_u64(const char *s, unsigned long long *out)
@@ -155,6 +158,8 @@ bool parse_args(int argc, char **argv, Options *o)
             o->host_writes = need("--replay-host-writes");
         } else if (a == "--boot") {
             o->boot = need("--boot");
+        } else if (a == "--vram-out") {
+            o->vram_out = need("--vram-out");
         } else if (a == "--ref-vram") {
             o->ref_vram = need("--ref-vram");
         } else if (a == "--quiet") {
@@ -240,7 +245,6 @@ int replay_host_writes(const std::string &path, const std::string &ref_vram)
                 path.c_str());
     unsigned long host = 0, reset_ctl = 0, released = 0, asserted = 0;
     unsigned long last_seq = 0;
-    int seq_ok = 1;
     for (long i = 0; i < count; i++) {
         musashi_gsp_bus_event_t ev;
         if (std::fread(&ev, sizeof ev, 1, f) != 1) {
@@ -248,7 +252,19 @@ int replay_host_writes(const std::string &path, const std::string &ref_vram)
             std::fclose(f);
             return 1;
         }
-        /* Skip sequence monotonicity check for boot replay */
+        /* Dense-sequence witness: the producer emits 0,1,2,..., so under the
+         * correct record stride ev.sequence must equal the record index.  This
+         * is what catches a stream written against a different
+         * musashi_gsp_bus_event_t than this harness was built with. */
+        if (ev.sequence != (unsigned long)i) {
+            std::fprintf(stderr,
+                "record %ld carries sequence=%lu: this stream was written "
+                "against a different musashi_gsp_bus_event_t than this harness "
+                "was built with (expected stride %ld)\n",
+                i, (unsigned long)ev.sequence, kRecord);
+            std::fclose(f);
+            return 1;
+        }
         last_seq = (unsigned long)ev.sequence;
 
         if (ev.kind == MUSASHI_GSP_BUS_HOST_WINDOW) {
@@ -264,8 +280,8 @@ int replay_host_writes(const std::string &path, const std::string &ref_vram)
     std::fclose(f);
 
     std::printf("  host-window events=%lu  reset-control events=%lu "
-                "(released=%lu asserted=%lu)  sequence monotonic=%s\n",
-                host, reset_ctl, released, asserted, seq_ok ? "yes" : "NO");
+                "(released=%lu asserted=%lu)  sequence dense 0..N-1\n",
+                host, reset_ctl, released, asserted);
     std::printf("  board: host_writes=%llu vram_writes=%llu "
                 "unmapped_writes=%llu\n",
                 (unsigned long long)board.host_writes,
@@ -487,11 +503,38 @@ int self_test(unsigned long long cycles)
  * Findings 14.3 covers the alternative (HCS low at reset, immediate ROM-less
  * fetch) and why it is not what the ROM does here.
  */
-int boot_from_events(const std::string &path, unsigned long long cycles)
+int boot_from_events(const std::string &path, unsigned long long cycles,
+                     const std::string &vram_out)
 {
     std::FILE *f = std::fopen(path.c_str(), "rb");
     if (!f) {
         std::fprintf(stderr, "cannot open bus-event stream %s\n", path.c_str());
+        return 1;
+    }
+
+    /* Stride guard.  gsp_bus_events.bin is a raw dump of
+     * musashi_gsp_bus_event_t, so its record size IS sizeof(that struct).  A
+     * reader built against a different struct revision silently misparses the
+     * stream rather than failing: the first record lands plausibly and every
+     * later one is garbage whose `kind` is almost never a known enum, so the
+     * replay loop burns its whole host-transaction budget on nonsense and the
+     * run appears to hang for hours.
+     *
+     * Both directions are caught: an exact multiple only proves the file was
+     * written at *some* stride, and a 40-byte file happens to divide evenly by
+     * 8 but not by 32, so the modulo alone is sufficient in practice.  The
+     * dense first `sequence` check below is the belt-and-braces witness. */
+    std::fseek(f, 0, SEEK_END);
+    const long fbytes = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    const long kRecord = (long)sizeof(musashi_gsp_bus_event_t);
+    if (fbytes % kRecord != 0) {
+        std::fprintf(stderr,
+            "%s: %ld bytes is not a multiple of the %ld-byte record; this "
+            "stream was written against a different musashi_gsp_bus_event_t "
+            "than this harness was built with (expected stride %ld)\n",
+            path.c_str(), fbytes, kRecord, kRecord);
+        std::fclose(f);
         return 1;
     }
 
@@ -509,7 +552,6 @@ int boot_from_events(const std::string &path, unsigned long long cycles)
     top->host_be_i = 3;      /* every captured event carries both bytes */
     top->host_reg_i = 0;
     top->host_wdata_i = 0;
-    std::printf("boot_from_events called\n",);
     top->host_we_i = 0;
     top->host_req_i = 0;
     top->hcs_n_i = 0;        /* HCS low = run mode (MAME default, m_halt_on_reset=false).\n     * The core fetches its level-0 vector from 0xffffffe0 on\n     * /GSPRES release and begins execution immediately. */
@@ -568,12 +610,56 @@ int boot_from_events(const std::string &path, unsigned long long cycles)
     std::printf("boot: replaying %s into core + board\n", path.c_str());
     musashi_gsp_bus_event_t ev;
     unsigned long long count = 0;
+    uint64_t last_cycles = 0;
+    uint64_t gsp_cycles = 0;
     while (std::fread(&ev, sizeof ev, 1, f) == 1) {
-        count++;
-        if (count % 100000 == 0) {
-            std::printf("  processed %lld events\n", count);
-            std::fflush(stdout);
+        /* Dense-sequence witness for the stride guard above.  The producer
+         * emits 0,1,2,... so under the correct stride ev.sequence must equal
+         * the record index.  A wrong stride breaks this on the second record
+         * and says so, instead of silently replaying garbage for an hour. */
+        if (ev.sequence != count) {
+            std::fprintf(stderr,
+                "record %llu carries sequence=%llu: this stream was written "
+                "against a different musashi_gsp_bus_event_t than this harness "
+                "was built with (expected stride %ld)\n",
+                count, (unsigned long long)ev.sequence, kRecord);
+            std::fclose(f);
+            top->final();
+            delete top;
+            return 1;
         }
+        count++;
+
+        /* Lockstep.  Advance the core to the cycle this event was captured at
+         * so the write lands on the state the board actually had, rather than
+         * on whatever the core reached after the previous event.  This is what
+         * makes the replay one interleaved run rather than two separate
+         * passes, and it is the whole reason `cycles` is recorded.
+         *
+         * The ratio is exact: the GSP core runs at 48 MHz (harddriv.h:39,
+         * HARDDRIV_GSP_CLOCK) and the MC68010 at ~8 MHz (shell.c:211,
+         * STUNRUN_FRAME_CYCLES), so 1 CPU cycle = 6 GSP cycles. */
+        if (count > 1 && ev.cycles > last_cycles) {
+            const uint64_t want_gsp = (ev.cycles - last_cycles) * 6u;
+            static uint64_t next_beat = 20000000;
+            for (uint64_t i = 0; i < want_gsp; i++) {
+                tick();
+                gsp_cycles++;
+                if (gsp_cycles >= next_beat) {
+                    std::printf("  lockstep: gsp_cycle=%llu 68k_cycle=%llu "
+                                "pc=0x%08x instr=0x%04x state=%u\n",
+                                (unsigned long long)gsp_cycles,
+                                (unsigned long long)ev.cycles,
+                                (unsigned)static_cast<uint32_t>(top->pc_o),
+                                (unsigned)static_cast<uint16_t>(top->instr_word_o),
+                                (unsigned)(top->state_o));
+                    std::fflush(stdout);
+                    next_beat = gsp_cycles + 20000000;
+                }
+            }
+        }
+        last_cycles = ev.cycles;
+
         if (ev.kind == MUSASHI_GSP_BUS_RESET_CONTROL) {
             /* /GSPRES is active low. */
             top->rst = ev.gsp_reset_released ? 0 : 1;
@@ -592,6 +678,8 @@ int boot_from_events(const std::string &path, unsigned long long cycles)
     std::fclose(f);
     std::printf("  events=%llu host_txns=%llu reset_events=%llu timeouts=%llu\n",
                 count, host_txns, resets, timeouts);
+    std::printf("  lockstep: %llu GSP cycles advanced over %llu 68010 cycles\n",
+                (unsigned long long)gsp_cycles, (unsigned long long)last_cycles);
 
     /* Run free. */
     std::printf("  running %llu cycles from the post-upload state\n", cycles);
@@ -632,6 +720,39 @@ int boot_from_events(const std::string &path, unsigned long long cycles)
                 (unsigned long long)board.word_writes,
                 (unsigned long long)board.unmapped_reads,
                 (unsigned long long)board.unmapped_writes);
+    std::printf("  vram: %u of %u words non-zero (program present?)\n",
+                gsp_board_vram_nonzero_words(&board),
+                (unsigned)(GSP_BOARD_VRAM_BYTES / 2u));
+    /* Name where the core left the map.  A bare "unmapped_r=117743" says the
+     * run went wrong but not where; the first few distinct addresses point at
+     * the missing region. */
+    {
+        unsigned i, shown = 0;
+        for (i = 0; i < GSP_BOARD_UNMAPPED_TRACK; i++) {
+            if (board.unmapped_read_at[i].count == 0) continue;
+            std::printf("    unmapped read 0x%08x x%llu\n",
+                        board.unmapped_read_at[i].addr,
+                        (unsigned long long)board.unmapped_read_at[i].count);
+            if (++shown == 6) break;
+        }
+    }
+
+    /* Dump VRAM so it can be compared against the MAME oracle.  This is the
+     * artifact that answers "does the core reproduce MAME's state", as opposed
+     * to the counters above, which only say the core ran. */
+    if (!vram_out.empty()) {
+        std::FILE *vf = std::fopen(vram_out.c_str(), "wb");
+        if (!vf) {
+            std::fprintf(stderr, "cannot write %s\n", vram_out.c_str());
+            top->final();
+            delete top;
+            return 1;
+        }
+        std::fwrite(board.vram, 1, GSP_BOARD_VRAM_BYTES, vf);
+        std::fclose(vf);
+        std::printf("  wrote %u bytes of VRAM to %s\n",
+                    GSP_BOARD_VRAM_BYTES, vram_out.c_str());
+    }
 
     top->final();
     delete top;
@@ -649,7 +770,7 @@ int main(int argc, char **argv)
     }
     if (opt.self_test) return self_test(opt.cycles);
     if (!opt.boot.empty())
-        return boot_from_events(opt.boot, opt.cycles);
+        return boot_from_events(opt.boot, opt.cycles, opt.vram_out);
     if (!opt.host_writes.empty())
         return replay_host_writes(opt.host_writes, opt.ref_vram);
 

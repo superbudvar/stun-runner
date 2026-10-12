@@ -1066,6 +1066,7 @@ static void gsp_emit_bus_event(musashi_cpu_t *cpu,
         return;
 
     event.sequence = cpu->gsp_bus_event_sequence++;
+    event.cycles = (uint64_t)cpu->total_cycles;
     event.address = address;
     event.pc = (uint32_t)m68k_get_reg(NULL, M68K_REG_PC);
     event.data = value;
