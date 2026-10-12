@@ -498,6 +498,32 @@ static int render_live_gsp_frame(void)
     if (g_cpu == NULL || musashi_cpu_gsp_memory(g_cpu, &mem) != 0)
         return -1;
     stunrun_gsp_display_frame600_regs(&dregs);
+
+    /* STUNRUN_FORCE_FRAMEBUF=<hex>: override the rasterizer's frame-buffer base.
+     * Value is a musashi VRAM byte offset (packed 16-bit words).
+     * rasterizer: base = rowaddr << 10,  rowaddr = base >> 10.
+     * musashi VRAM byte offset 0x016040 -> base = 0x016040 -> rowaddr = 0x58.
+     * With ORG=0: dpyadr = rowaddr ^ 0xFFFC. */
+    {
+        static unsigned s_force_row = 0xFFFFu;
+        const char *fb = getenv("STUNRUN_FORCE_FRAMEBUF");
+        if (fb && fb[0]) {
+            char *end = NULL;
+            unsigned long v = strtoul(fb, &end, 16);
+            /* v is a musashi byte offset.  rasterizer base = v.  rowaddr = v >> 10 */
+            if (end != fb && *end == '\0' && v < MUSASHI_GSP_VRAM_WORDS * 2u) {
+                unsigned row = (unsigned)(v >> 10);  /* base = row << 10 */
+                if (s_force_row == 0xFFFFu) {
+                    printf("shell: force-framebuf=0x%lX base=0x%lX row=0x%X dpyadr=0x%04X\n",
+                           v, v, row, (row ^ 0xFFFCu) & 0xFFFFu);
+                }
+                s_force_row = row;
+                dregs.dpyadr = (uint16_t)((row ^ 0xFFFCu) & 0xFFFFu);
+                dregs.dpyctl &= ~STUNRUN_DPYCTL_ORG;
+            }
+        }
+    }
+
     /* stunrun_gsp_display_render returns 0 on SUCCESS and -1 on error. */
     return stunrun_gsp_display_render(&renderer, mem.vram,
                                       MUSASHI_GSP_VRAM_WORDS,

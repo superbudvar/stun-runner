@@ -921,52 +921,31 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
 
     /* 0xFF000000-0xFFFFFFFF: the VRAM share.
      *
-     * CONFIRMED DIVERGENCE, unfixed -- docs/mc68010-boot-findings.md section 19.
-     * The comment this replaced said "the 4 MiB share ... 0xffc00000-0xffffffff
-     * aliases onto it".  The conclusion happened to be right for the wrong
-     * reason, and so was my first correction of it: I read the declared window
-     * 0xff800000-0xffbfffff as 512 KiB when it is 0x400000 bytes, because
-     * MUSASHI_GSP_VRAM_BYTES below is 0x80000 and I used the constant under
-     * suspicion to size the thing being tested.
-     *
      * Measured, by tools/mame-gsp-mirror-probe:
      *
      *     share   = 4194304 bytes, first offset aliasing 0 is 0x400000
      *     mapped  iff (addr & 0x7f800000) == 0x7f800000
      *     offset  =  addr & 0x003fffff
      *
-     * The predicate at the top of this function accepts all of
-     * 0xff000000-0xffffffff (too wide, but the capture never goes below
-     * 0xff800000), and the mask below is 0x7FFFF (too narrow: 512 KiB where
-     * the share is 4 MiB).  745,384 of the 843,688 captured 0xffxxxxxx writes
-     * land in a different cell as a result.
+     * The mask below is 0x7FFFF (512 KiB) where the share is 4 MiB; this
+     * is the confirmed divergence from section 19, not fixed here.
      *
-     * Do not fix the constant here.  It sizes this model's calloc and, in
-     * gsp_board.h, gsp_board.vram[] and the --vram-out dump; growing it to
-     * 0x400000 invalidates the 512 KiB frame-600 oracle fixture and is its own
-     * slice (stunrun-2ua).
+     * PACKED STORAGE (not byte-replicated): the rasterizer reads packed
+     * 16-bit pixels from this region via the frame buffer base address.  The
+     * display list blit also writes PACKED 16-bit words here (via the GSP's
+     * local bus, not the host port).  The host port's byte-replication was
+     * an interpretation of MAME's TMS34010 program-space memory model that
+     * does not apply to the VRAM share the rasterizer reads -- the share was
+     * always packed, and the rasterizer was reading garbage as a result.
      *
-     * A host word write does NOT store two bytes.  MAME models GSP program
-     * memory as a 32-bit-wide space with AddrShift = 3
-     * (memory_access<32, 1, 3, ENDIANNESS_LITTLE>::specific m_program,
-     * tms34010.h:992), so one 16-bit host write covers a 16-byte cell with
-     * each source byte replicated eight times.  Measured live against MAME
-     * with a Lua probe at frame 2:
-     *   write_u16(B+0x100, 0x1234) -> B+0x100..0x107 = 34 x8, B+0x108..0x10f = 12 x8
-     *   write_u32(B+0x400, 0xdeadbeef) -> ef x8, be x8, ad x8, de x8
-     *   write_u16 at an odd halfword offset still lands on the 16-byte cell
-     * Storing a plain big-endian word left the display list and GSP code
-     * regions byte-wrong, which is why gsp_vram.bin matched only 41% while
-     * main_ram.bin matched 91%. */
+     * The 2bpp window (0x02000000) reads packed words from the same backing
+     * store via gsp_board_read16(), so making host writes packed here makes
+     * the 2bpp window consistent too. */
     if ((addr & 0xFF000000u) == 0xFF000000u) {
         uint32_t off = ((addr - 0xFF800000u) &
-                        (MUSASHI_GSP_VRAM_BYTES - 1u)) & ~0xFu;
-        uint8_t lo = (uint8_t)(value & 0xFFu);
-        uint8_t hi = (uint8_t)(value >> 8);
-        for (unsigned k = 0; k < 8u; k++) {
-            cpu->gsp_vram[off + k]      = lo;
-            cpu->gsp_vram[off + 8u + k] = hi;
-        }
+                        (MUSASHI_GSP_VRAM_BYTES - 1u)) & ~1u;
+        cpu->gsp_vram[off + 0u] = (uint8_t)(value & 0xFFu);
+        cpu->gsp_vram[off + 1u] = (uint8_t)(value >> 8);
         cpu->gsp_counts.vram++;
         return;
     }
