@@ -31,6 +31,9 @@ extern "C" {
 #define GSP_BOARD_PAL_BYTES       0x800u   /* 1024 entries * 2 bytes, per plane */
 #define GSP_BOARD_CTRL_BYTES      0x100u   /* one 256-byte share per plane     */
 
+/* How many distinct unmapped addresses the board remembers. */
+#define GSP_BOARD_UNMAPPED_TRACK  12u
+
 /* Host port registers, indexed by the decoded HFS1:HFS0 selector.
  *
  * `gsp_board_host_reg()` yields these indices from a host-window byte
@@ -70,6 +73,17 @@ typedef struct {
     uint64_t word_writes;
     uint64_t unmapped_reads;
     uint64_t unmapped_writes;
+
+    /* A bare unmapped counter cannot be acted on: it says the core left the
+     * map but not where it went, and "117743" is not a diagnosis.  Track the
+     * first few distinct addresses with their counts, which is enough to name
+     * the missing region.  Bounded and fixed-size on purpose: this must not
+     * grow with a 478M-cycle run. */
+    struct {
+        uint32_t addr;
+        uint64_t count;
+    } unmapped_read_at[GSP_BOARD_UNMAPPED_TRACK];
+
     uint64_t vram_writes;
     uint64_t host_writes;
 } gsp_board_t;
@@ -103,6 +117,11 @@ uint16_t gsp_board_host_read(gsp_board_t *b, uint32_t byte_offset);
 /* True when the address falls in a mapped region.  Used by tests to assert
  * the map itself rather than just the effects of writes to it. */
 int gsp_board_is_mapped(uint32_t byte_addr);
+
+/* How many VRAM words are non-zero.  Used to decide when the GSP's program is
+ * actually present: the entry vector lives in VRAM, so "is the program
+ * uploaded yet" has no cheaper honest answer than looking at VRAM. */
+unsigned gsp_board_vram_nonzero_words(const gsp_board_t *b);
 
 #ifdef __cplusplus
 }

@@ -49,6 +49,14 @@ int gsp_board_is_mapped(uint32_t byte_addr)
     return gsp_region(byte_addr) != GSP_REGION_UNMAPPED;
 }
 
+unsigned gsp_board_vram_nonzero_words(const gsp_board_t *b)
+{
+    unsigned n = 0, i;
+    for (i = 0; i < GSP_BOARD_VRAM_BYTES; i += 2)
+        if (b->vram[i] || b->vram[i + 1]) n++;
+    return n;
+}
+
 void gsp_board_reset(gsp_board_t *b)
 {
     memset(b, 0, sizeof(*b));
@@ -150,6 +158,25 @@ uint16_t gsp_board_read16(gsp_board_t *b, uint32_t byte_addr)
     case GSP_REGION_UNMAPPED:
     default:
         b->unmapped_reads++;
+        {
+            /* Record the first few distinct unmapped addresses so a runaway
+             * PC names the region it left by, instead of reporting a bare
+             * count.  Bounded: once the table is full, later addresses are
+             * still counted by unmapped_reads but not tracked individually. */
+            unsigned i;
+            for (i = 0; i < GSP_BOARD_UNMAPPED_TRACK; i++) {
+                if (b->unmapped_read_at[i].count != 0 &&
+                    b->unmapped_read_at[i].addr == byte_addr) {
+                    b->unmapped_read_at[i].count++;
+                    break;
+                }
+                if (b->unmapped_read_at[i].count == 0) {
+                    b->unmapped_read_at[i].addr = byte_addr;
+                    b->unmapped_read_at[i].count = 1;
+                    break;
+                }
+            }
+        }
         return 0;
     }
 }
