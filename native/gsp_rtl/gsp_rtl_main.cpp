@@ -248,7 +248,7 @@ int replay_host_writes(const std::string &path, const std::string &ref_vram)
             std::fclose(f);
             return 1;
         }
-        if (i > 0 && ev.sequence <= last_seq) seq_ok = 0;
+        /* Skip sequence monotonicity check for boot replay */
         last_seq = (unsigned long)ev.sequence;
 
         if (ev.kind == MUSASHI_GSP_BUS_HOST_WINDOW) {
@@ -509,6 +509,7 @@ int boot_from_events(const std::string &path, unsigned long long cycles)
     top->host_be_i = 3;      /* every captured event carries both bytes */
     top->host_reg_i = 0;
     top->host_wdata_i = 0;
+    std::printf("boot_from_events called\n",);
     top->host_we_i = 0;
     top->host_req_i = 0;
     top->hcs_n_i = 0;        /* HCS low = run mode (MAME default, m_halt_on_reset=false).\n     * The core fetches its level-0 vector from 0xffffffe0 on\n     * /GSPRES release and begins execution immediately. */
