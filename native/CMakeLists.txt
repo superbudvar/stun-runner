@@ -219,6 +219,22 @@ add_executable(stunrun-gsp-2bpp-glyph-test gsp_2bpp_glyph.c gsp_2bpp_glyph_test.
 set_target_properties(stunrun-gsp-2bpp-glyph-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-2bpp-glyph-slice-c COMMAND stunrun-gsp-2bpp-glyph-test)
 
+# Agent 2: 3D track viewer - extracts track geometry from ROM and renders in OpenGL
+find_package(OpenGL QUIET)
+if(OpenGL_FOUND)
+  add_executable(stunrun-track-viewer-3d track_viewer_3d.c)
+  target_link_libraries(stunrun-track-viewer-3d PRIVATE m GL GLU glut)
+  target_include_directories(stunrun-track-viewer-3d PRIVATE .)
+  target_compile_definitions(stunrun-track-viewer-3d PRIVATE USE_OPENGL)
+  set_target_properties(stunrun-track-viewer-3d PROPERTIES C_STANDARD 99)
+else()
+  # Build without OpenGL if GL is not available
+  add_executable(stunrun-track-viewer-3d track_viewer_3d.c)
+  target_link_libraries(stunrun-track-viewer-3d PRIVATE m)
+  target_include_directories(stunrun-track-viewer-3d PRIVATE .)
+  set_target_properties(stunrun-track-viewer-3d PROPERTIES C_STANDARD 99)
+endif()
+
 add_executable(stunrun-geometry-fifo-emitter-test
   geometry_fifo_emitter.cpp geometry_fifo_emitter_test.cpp)
 set_target_properties(stunrun-geometry-fifo-emitter-test PROPERTIES
