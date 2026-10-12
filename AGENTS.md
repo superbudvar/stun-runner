@@ -198,6 +198,73 @@ The two existing examples are the pattern: `native/gsp_boot.{h,c}` (19 boot rout
 asserting the exact GSP FIFO word sequence) and `native/ram_march.{h,c}` (five RAM-march
 variants, asserting watchdog cadence, marker words and fault injection).
 
+## Delegate one routine per subagent
+
+**When a routine needs to be analysed or ported, spawn a subagent to do it
+rather than doing it in the main session.** One routine per subagent.
+
+The reason is the failure mode this repository has actually hit. Reading a
+disassembly is slow, and doing twenty of them in one context means the early
+ones get compressed into a summary that no longer distinguishes *confirmed*
+from *inferred*. By the time the reader reaches routine twenty, the standard
+is whatever the last confident sentence implied. Splitting the work gives each
+routine a fresh context that has to do the analysis properly, and it lets the
+lanes run in parallel because their write scopes do not overlap.
+
+### What a subagent owns
+
+Exactly this, and nothing else:
+
+```text
+native/<name>.h
+native/<name>.c
+native/<name>_test.c
+one appended section of ../docs/mc68010-boot-findings.md
+```
+
+**`native/CMakeLists.txt` is shared and the subagent does not touch it.** The
+parent registers the test. This is the same discipline the dual-GSP lanes used
+(`analysis/dual-gsp-comparison-plan.md`: the lanes "must not change shared
+top-level CMake or existing CPU/backend interfaces"), and it is what makes
+parallel lanes safe rather than merely fast.
+
+If two routines genuinely belong in one slice, that is one subagent's scope,
+not two subagents' — overlapping files are a merge conflict waiting to
+happen, and the second agent's test will silently stop testing the first
+agent's code.
+
+### What a subagent must return
+
+Not just files. Each subagent hands back:
+
+1. the verbatim transcription, with the ROM address range and source chip;
+2. **which parts are inference and which are confirmed**, stated separately;
+3. any ambiguity, with the alternative readings spelled out rather than one
+   chosen silently;
+4. the observable output its test asserts, and why that is the right thing to
+   assert rather than a weaker proxy;
+5. its own check facts — the exact command it ran and the actual result;
+6. anything it found that belongs in `BUGS.md` (a surprise in the original or
+   in MAME), as a finding rather than a silent fix.
+
+### What the parent owes before integrating
+
+A subagent's success is not a semantic pass. Before its work is committed:
+
+- read the transcription against the disassembly yourself;
+- confirm the test asserts observable output and that it **fails** when the
+  implementation is broken. A test that cannot fail is not a check — this
+  repository has already shipped three that passed for the wrong reason (see
+  `docs/mc68010-boot-findings.md` sections 15.5 and 15.6);
+- run the suite yourself, not just the agent's report of it;
+- resolve any contradiction the agent flagged against the oracle before
+  changing an expected value. **Never** redefine an oracle expectation to
+  make an implementation pass.
+
+If two subagents disagree about the same routine, that disagreement is the
+result. Resolve it against the original, and record the refuted reading in the
+findings doc rather than deleting it.
+
 ---
 
 # Implementer instructions
