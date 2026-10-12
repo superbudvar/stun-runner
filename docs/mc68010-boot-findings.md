@@ -3347,3 +3347,131 @@ period inside the 4 MiB share, which is a real property of what the ROM wrote an
 not a mirror period. The data was right; only the interpretation moved it onto
 the wrong question. Recorded because "their 2 MiB was wrong" would be the wrong
 thing to remember.
+
+## 20. The MC68010 text path: selector table, descriptor layout, 30 call sites
+
+Section 13 recorded the `$25E8` glyph loop as executed. This section maps the
+data it reads and the callers that reach it, from the assembled ROM image
+(`tools/build-maincpu-image`) rather than from a trace, so the whole structure
+is visible at once.
+
+### 20.1 There are two text paths, and they are not the same
+
+The GSP-side HUD text is already ported: `reproduction/gsp/text_cursor.c` and
+`text_record.c` model the eight-word record and the glyph cursor at GSP PC
+`0xFFF46590`, with CTest `gsp-text-cursor-slice-c` and
+`gsp-text-record-slice-c`. That path takes descriptors uploaded into VRAM and
+renders them with GSP code.
+
+This section is the *other* path: the MC68010 formats glyphs itself and pushes
+them at the GSP host port. It carries the attract-mode, operator-menu and
+self-test text. Neither path explains the other, and `$25E8` is the one with a
+68010-side reader.
+
+### 20.2 Record layout: four header bytes, not two
+
+Blocks are packed back to back in table order. Each is:
+
+```text
+byte 0      x / column byte
+byte 1      y / row byte
+byte 2      colour byte
+byte 3      character count
+byte 4..    N characters, '*' as the word separator
+```
+
+`byte 3` is the character count: it equals the string length for **388 of 394**
+blocks exactly, the remainder being padding or a table-end artifact.
+
+`byte 2` is a colour, not a marker. It takes exactly seven values across all 394
+blocks:
+
+```text
+0x00 0x3F 0x5F 0x70 0x9F 0xDF 0xFF
+```
+
+`$25E8` uses it twice -- `move.b ($2,A0),D7` becomes the low colour and
+`lsl.w #8` of it becomes the high colour -- so `0xDF` gives the `0x00DF`/`0xDF00`
+pair section 13 recorded.
+
+### 20.3 Reconciliation with `analysis/rom-text-strings.md`
+
+Another agent's uncommitted extraction (`analysis/extract_rom_strings.py`,
+`analysis/rom-text-strings.md`, `analysis/rom-text-strings.txt`) reports the
+service records as `0xFF`, length byte, then that many bytes, and finds 56 of
+them. That is the same data seen from the wrong edge, and the alignment proves
+it. For selector `$02`:
+
+```text
+this section:   block at $066AE, header 03 00 ff 09, string at $066B2
+their record:                     $0066B0, header ff 09,    string at $066B2
+```
+
+Same string address, two bytes apart -- their `0xFF` marker is `byte 2` of the
+four-byte header, which is the colour field, and it is `0xFF` only for some
+blocks. Counting: 102 of the 394 blocks have `byte 2 == 0xFF`, so their scan
+finds 56 of 102 even within that subset, and **292 blocks with a non-`0xFF`
+colour are not in their list at all**. Their 143 "in-game" strings come from a
+different, `0x00`-terminated format and are unaffected.
+
+Their file leaves UNKNOWN "what draws the `0xFF` service records and what
+consumes the in-game strings". This section answers the first half for the
+service records: `$25E8`, reached through the selector table below.
+
+### 20.4 The selector table
+
+```text
+$10136   394 long pointers, selector $00..$189
+          -> descriptors at $0667C..$08C75, strictly increasing in table order
+```
+
+Read by `$25F6`-`$2604`: `lea $10136,A0`, `andi.l #$ffff,D0`, `lsl.l #2,D0`,
+`movea.l (A0,D0.l),A0`. Selector `$47` resolves `$10252` -> `$6C53`.
+
+Two selectors can share a descriptor position, because the address is computed
+from bytes 0 and 1 only: `$47` and `$16B` both have `01 0f` and both land at
+`$FF896040`, differing only in colour and string.
+
+### 20.5 Thirty call sites, one protocol
+
+Every reference is `jmp $25E8.l`, encoding `4E F9 00 00 25 E8` -- 32-bit
+absolute, not `4E BA` displacement, which is why a search for the displacement
+form returns nothing. Each is preceded by the same two instructions:
+
+```text
+move.w  #$SEL, D0
+lea     (disp,PC), A2
+```
+
+30 sites, 30 distinct selectors, all `<= $82`:
+
+```text
+$05092 $47   $0521A $5D   $05286 $5E   $05300 $5F   $05312 $61   $05324 $62
+$05336 $60   $0571A $3B   $0575E $3C   $0579E $3D   $057B4 $3E   $057F2 $3F
+$05808 $40   $05816 $41   $05824 $42   $05832 $67   $05840 $48   $062A2 $43
+$062BC $44   $062CA $45   $062D8 $46   $062E6 $50   $062F4 $51   $06302 $52
+$09DAC $80   $09DBA $81   $09DC8 $82   $09DDE $0B   $09DEC $0C   $09E02 $0E
+```
+
+`A2` is the return address, consumed by `jmp (A2)` at `$269E`. On the 68010 a
+PC-relative displacement is relative to the instruction address + 2, so
+`lea ($8,PC),A2` at `$508E` yields `$5098`, not `$509A`.
+
+### 20.6 Glyph source
+
+`$1FBC + 16*(character - $2A)`, 16 bytes per glyph. `$2A` is `*`, whose glyph is
+all zeros -- the ROM's blank. That is why `*` separates words: the space
+character is simply the blank glyph.
+
+### 20.7 Not yet ported
+
+`native/mc68010_text_writer.{h,c}` takes an already-resolved descriptor and
+font words and covers the executed glyph loop. Missing: selector resolution
+(`$25F6`-`$2604`), descriptor decode (`$2608`-`$262E`), and the loop nesting
+(`$262E`-`$269C`), whose `D3`/`D2`/`D1` nesting does not reconcile with the
+observed 16-byte cell stride by inspection and needs a trace. Filed as
+`stun-runner-txt1`.
+
+One caution for whoever ports it: the same `$25E8` prologue runs before any
+glyph is written, and `clr.w $608000.l` plus `andi.w #$e7ff,$c00008.l` are part
+of the routine's observable effect, not incidental.
