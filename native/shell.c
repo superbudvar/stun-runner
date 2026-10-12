@@ -203,12 +203,15 @@ static char g_pc_hist_path[512] = { 0 };
 /* IRQ5 period in 68010 cycles: 244.14 Hz at an 8 MHz CPU = 32 768 cycles. */
 #define STUNRUN_IRQ5_PERIOD 32768u
 
-/* Cycles the 68010 gets per displayed frame.  The multisync screen is
+/* Cycles the 68010 gets per displayed frame.  Derived from the raster and the
+ * master clock in musashi_cpu.h, which owns the number so the MC68010 text log
+ * can stamp a frame column from the same value.  The arithmetic that produced
+ * it is kept here: the multisync screen is
  * set_raw(5000000*2, 317*2, 0, 256*2, 262, 0, 228) (harddriv.cpp:1864-1869),
  * i.e. a 10 MHz pixel clock over 634x262 = 60.20180 Hz, while the CPU runs at
  * HARDDRIV_MASTER_CLOCK/4 = 8 MHz (harddriv.cpp:1463).  8e6 / 60.20180 = 132 886
  * cycles per frame, so just over four IRQ5 periods elapse per frame. */
-#define STUNRUN_FRAME_CYCLES 132886u
+#define STUNRUN_FRAME_CYCLES MUSASHI_FRAME_CYCLES
 
 /* CPU cycles in one raster line.  634 dots at 10 MHz, CPU at 8 MHz:
  * 634 * 8 / 10 = 507.2.  The frame loop runs in slices this long so the
@@ -1207,6 +1210,25 @@ static int run_walk(void)
                     g_mc68010_active = true;
                     printf("shell: mc68010=active rom-dir=%s pc=0x%08X\n",
                            rom_dir, musashi_cpu_get_pc(g_cpu));
+                    /* STUNRUN_TEXT_LOG=1: decode every string the MC68010
+                     * draws through the GSP host port and print one line each,
+                     * so a service-mode run reads as commentary instead of a
+                     * 36 MB bus dump.  OBSERVATION ONLY, and off by default:
+                     * the gsp_host_write_word() hook is one not-taken branch
+                     * when unset, and all 901 354 gsp_bus_events.bin records
+                     * are identical in every named field either way.  (The raw
+                     * file bytes are not, because gsp_emit_bus_event() leaves
+                     * the struct padding unassigned -- see findings 23.6.)
+                     * Enable here rather than at create() because the decoder
+                     * reads the selector table out of the loaded ROM. */
+                    {
+                        const char *tl = getenv("STUNRUN_TEXT_LOG");
+                        if (tl && tl[0] && strcmp(tl, "0") != 0) {
+                            unsigned n = musashi_cpu_text_log_enable(g_cpu);
+                            printf("shell: text-log=1 descriptors=%u "
+                                   "(394 expected for this ROM)\n", n);
+                        }
+                    }
                     /* STUNRUN_BOOT_TRACE=<n>: single-step the first n
                      * instructions straight out of reset, before the frame
                      * loop touches anything.  The boot path is only a few
@@ -1762,6 +1784,24 @@ static int run_walk(void)
                        "(%zu dropped) - replay and VRAM comparison against "
                        "this run are not conclusive\n", bus_dropped);
                 g_failures++;
+            }
+            /* Text-log self-check.  `colour_miss` is the number that matters:
+             * it counts arms that matched a descriptor base but whose HSTDAT
+             * colour matched no descriptor there, which is what an arming rule
+             * admitting a non-text draw would look like.  Ambiguous lines are
+             * not an error -- 35 of the 394 descriptors share a base and three
+             * share both base and colour, and the host port genuinely cannot
+             * separate those. */
+            {
+                const char *tl = getenv("STUNRUN_TEXT_LOG");
+                if (tl && tl[0] && strcmp(tl, "0") != 0) {
+                    musashi_text_log_stats_t ts;
+                    musashi_cpu_text_log_stats(&ts);
+                    printf("shell: text-log arms=%lu matched=%lu fired=%lu "
+                           "colour_miss=%lu ambiguous=%lu\n",
+                           ts.arms, ts.matched, ts.fired, ts.colour_miss,
+                           ts.ambiguous);
+                }
             }
         } else {
             printf("shell: dump dir=%s FAILED\n", g_dump_dir);

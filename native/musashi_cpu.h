@@ -76,6 +76,21 @@ struct stunrun_jsa_latches;
  * harddriv.cpp:4822-4824 installs hd68k_adsp_program_r/w there.  32 KiB. */
 #define MUSASHI_ADSP_PGM_WORDS 0x4000u
 
+/* ── Frame pacing ──
+ *
+ * Cycles of 8 MHz MC68010 time per displayed frame.  The multisync screen is
+ * `set_raw(5000000 * 2, 317 * 2, 0, 256 * 2, 262, 0, 228)` (harddriv.cpp:1869),
+ * i.e. a 10 MHz pixel clock over 634x262 = 60.20180 Hz, while the CPU runs at
+ * HARDDRIV_MASTER_CLOCK/4 = 8 MHz (harddriv.cpp:1463): 8e6 / 60.20180 =
+ * 132 886.
+ *
+ * This is the shell's STUNRUN_FRAME_CYCLES, and it lives here because the
+ * MC68010 text log below stamps every line with a frame number derived from
+ * it.  shell.c defines its macro directly from this one, so there is only ever
+ * one copy; a second literal in a second file is exactly the drift that makes
+ * a "frame" column quietly wrong. */
+#define MUSASHI_FRAME_CYCLES 132886u
+
 #define MUSASHI_GSP_WLOG_CAP        (4u * 1024u * 1024u) /* host-write log cap */
 
 /* Ordered MC68010 -> TMS34010 bus-event log.  This grows on demand from a
@@ -244,6 +259,66 @@ int musashi_cpu_dump_state(const musashi_cpu_t *cpu, const char *out_dir);
  * against that run is not evidence about the board model. */
 size_t musashi_cpu_gsp_bus_event_count(const musashi_cpu_t *cpu);
 size_t musashi_cpu_gsp_bus_event_dropped(const musashi_cpu_t *cpu);
+
+/* ── MC68010 text log (OBSERVATION ONLY) ──────────────────────────────────
+ *
+ * ROM $25E8-$269E is the MC68010's own text path: it resolves a selector
+ * through the 394-long pointer table at $10136, decodes a four-byte descriptor,
+ * and pushes 8x8 glyphs at the TMS34010 host port.  One call draws ONE string,
+ * in `byte 3` characters, each character at base + 0x40*k with eight glyph rows
+ * at +0x1000 each.
+ *
+ * With this enabled, every string the running game draws is printed as one
+ * line:
+ *
+ *   text frame=48 cycles=6508646 sel=$047 x=01 y=0F colour=0xDF \
+ *        base=0xFF896040 chars=30 "PRESS START TO BYPASS SELFTEST"
+ *
+ * This is a decoder bolted onto the host-port write path, not a change to it.
+ * It reads the latches and the ROM and writes to stdout; it writes no latch,
+ * no GSP memory, no VRAM, and no bus event, and it is off by default, where
+ * the hook in gsp_host_write_word() is one predictable not-taken branch.
+ *
+ * That is verified rather than promised, and the check has a subtlety worth
+ * knowing before you write it yourself: over a 600-frame run, every one of the
+ * 901 354 gsp_bus_events.bin records is identical -- in every field the struct
+ * names -- with the log off and on.  The raw FILE is not byte-identical, and
+ * was not before this feature either: gsp_emit_bus_event() never assigns the
+ * three padding bytes at record offsets 29-31 and 37-39, so they carry
+ * uninitialised stack and change with any recompile.  Compare the named fields,
+ * or mask those offsets.  See docs/mc68010-boot-findings.md section 23.6.
+ *
+ * `musashi_cpu_text_log_enable` walks the ROM's selector table once, so call it
+ * after musashi_loader_load() and before the first musashi_cpu_run().  It
+ * returns how many descriptors it decoded: 394 for the real ROM, 0 on failure.
+ * Pass NULL, or call musashi_cpu_text_log_disable(), to turn it back off. */
+unsigned musashi_cpu_text_log_enable(musashi_cpu_t *cpu);
+void musashi_cpu_text_log_disable(void);
+
+/* How the decoder is doing, so a run can be checked without diffing prose.
+ *
+ *   arms        HSTCTL writes with the two auto-increment bits clear.  One per
+ *               $25E8 call, but also written by other code, so this is >= fired.
+ *   matched     of those arms, the ones whose next HSTADR composition landed on
+ *               a descriptor base.  Equal to the number of $25E8 calls that
+ *               reached $2656.
+ *   fired       lines printed.
+ *   colour_miss matched a base but no descriptor there carries the colour the
+ *               HSTDAT carried.  Nonzero means the arming rule is admitting a
+ *               non-text draw; it is the number to watch.
+ *   ambiguous   printed lines where more than one descriptor shares that
+ *               (base, colour) pair.  These lines list the runners-up rather
+ *               than guessing: 35 of the 394 descriptors share a base with
+ *               another, and three share both base and colour at $FF800040. */
+typedef struct musashi_text_log_stats {
+    unsigned long arms;
+    unsigned long matched;
+    unsigned long fired;
+    unsigned long colour_miss;
+    unsigned long ambiguous;
+} musashi_text_log_stats_t;
+
+void musashi_cpu_text_log_stats(musashi_text_log_stats_t *out);
 
 /* ── Live GSP memory ──
  *

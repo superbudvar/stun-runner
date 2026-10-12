@@ -3614,3 +3614,598 @@ One operational note for whoever runs this next, since it cost two wasted runs:
 `STUNRUN_MC68010=1` is the flag that selects ROM execution. Without it the shell
 runs the C-slice `game_loop_step`, exits cleanly, and still prints RESULT PASS.
 Check for `gsp_writes=` in the output, not just the exit status.
+
+## 22. `$25E8`-$269E transcribed whole, and the loop nesting settled against the capture
+
+Section 20.7 left `$25E8` half-ported: selector resolution, descriptor decode and
+the loop nesting were all still missing, and it flagged that the `D3`/`D2`/`D1`
+nesting "does not reconcile with the observed 16-byte cell stride by
+inspection". It does reconcile. This section is the whole routine, transcribed
+verbatim, with the nesting taken from the capture rather than from inspection,
+and the C slice that implements it.
+
+Image used throughout: `roms/stunrun/stunrun_maincpu.bin`, sha256
+`29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c`.
+
+### 22.1 Verbatim transcription
+
+ROM `$25E8`-`$269F`, 184 bytes, maincpu program ROM. Decoded with
+`tools/dis68k` over the flat image. Note that section 13's trace-derived listing
+omits the `clr.l D0`/`clr.l D1` at `$2612`/`$261E`; they are present in the ROM
+and they matter (22.4).
+
+```text
+000025e8: 42 79 00 60 80 00  clr.w   $608000.l
+000025ee: 02 79 e7 ff 00 c0 00 08  andi.w  #$e7ff, $c00008.l
+000025f6: 41 f9 00 01 01 36  lea     $10136.l, A0
+000025fc: 02 80 00 00 ff ff  andi.l  #$ffff, D0
+00002602: e5 88  lsl.l   #2, D0
+00002604: 20 70 08 00  movea.l (A0,D0.l), A0
+00002608: 42 47  clr.w   D7
+0000260a: 1e 28 00 02  move.b  ($2,A0), D7
+0000260e: 3c 07  move.w   D7, D6
+00002610: e1 4e  lsl.w    #8, D6
+00002612: 42 80  clr.l   D0
+00002614: 10 28 00 01  move.b  ($1,A0), D0
+00002618: c0 fc 00 a0  mulu.w  #$a0, D0
+0000261c: e1 88  lsl.l    #8, D0
+0000261e: 42 81  clr.l   D1
+00002620: 12 28 00 00  move.b  ($0,A0), D1
+00002624: ed 89  lsl.l    #6, D1
+00002626: d0 81  add.l   D1, D0
+00002628: 06 80 ff 80 00 00  addi.l  #-$800000, D0
+0000262e: 16 28 00 03  move.b  ($3,A0), D3
+00002632: d1 fc 00 00 00 04  adda.l  #$4, A0
+00002638: 12 18  move.b  (A0)+, D1
+0000263a: 04 01 00 2a  subi.b   #$2a, D1
+0000263e: 02 81 00 00 00 ff  andi.l  #$ff, D1
+00002644: e9 49  lsl.w    #4, D1
+00002646: 43 f9 00 00 1f bc  lea     $1fbc.l, A1
+0000264c: d2 c1  adda.w   D1, A1
+0000264e: 34 3c 00 07  move.w   #$7, D2
+00002652: 32 3c 00 07  move.w   #$7, D1
+00002656: 23 c0 00 c0 00 02  move.l  D0, $c00002.l
+0000265c: 3a 19  move.w  (A1)+, D5
+0000265e: 08 05 00 00  btst    #$0, D5
+00002662: 67 00 00 08  beq     $266c
+00002666: 33 c7 00 c0 00 0c  move.w  D7, $c0000c.l
+0000266c: 08 05 00 02  btst    #$2, D5
+00002670: 67 00 00 08  beq     $267a
+00002674: 8d 79 00 c0 00 0c  or.w    D6, $c0000c.l
+0000267a: 06 b9 00 00 00 10 00 c0 00 02  addi.l  #$10, $c00002.l
+00002684: e8 4d  lsr.w    #4, D5
+00002686: 51 c9 ff d6  dbra    D1, $265e
+0000268a: 06 80 00 00 10 00  addi.l  #$1000, D0
+00002690: 51 ca ff c0  dbra    D2, $2652
+00002694: 04 80 00 00 7f c0  subi.l   #$7fc0, D0
+0000269a: 53 03  subq.b   #1, D3
+0000269c: 66 9a  bne     $2638
+0000269e: 4e d2  jmp      (A2)
+```
+
+`$26A0` is a different routine and is not part of this one.
+
+### 22.2 The loop nesting, and why inspection could not settle it
+
+Three nested loops, and the `dbra` targets are the whole story:
+
+| counter | seeded at | `dbra` at | target | passes |
+|---|---|---|---|---|
+| `D3` | `$262E` `move.b ($3,A0),D3` | `$269A` `subq.b #1,D3` / `$269C bne $2638` | `$2638` | `descriptor[3]` |
+| `D2` | `$264E` `move.w #$7,D2` | `$2690 dbra D2,$2652` | `$2652` | 8 |
+| `D1` | `$2652` `move.w #$7,D1` | `$2686 dbra D1,$265e` | `$265E` | 8 |
+
+Two placements do all the work and are easy to misread:
+
+* `$2652 move.w #$7,D1` is **inside** the `dbra D2` range (`$2652`..`$2690`),
+  and `$264E move.w #$7,D2` is **outside** it. `D1` is therefore a per-pass
+  local; `D2` is not reset per row.
+* `$2656 move.l D0,$c00002.l` and `$265C move.w (A1)+,D5` are both **inside**
+  the `dbra D2` range and **outside** the `dbra D1` range (`$265E`..`$2686`).
+  So `D0` is re-latched once per row and `A1` advances once per row — **not**
+  once per nibble. A glyph is 16 consecutive bytes, and `A1` lands on the next
+  glyph's first word after the last row.
+
+Taken together: 8 `HSTADR` latches per character, `D0 + $1000` per row, and
+`subi.l #$7fc0,D0` per character = `+$8000 - $7fc0` = `+$40`, one four-pixel
+cell to the right.
+
+This is what the committed capture says, value for value. Reassembling the 480
+taps of `result.json` that belong to draw 0 (frames 214-216, descriptor
+`$06C53`) gives 240 `HSTADR` latches:
+
+```text
+latch[0]     $FF896040   base
+latch[0..7]  +$1000 each   one glyph row
+latch[8]     $FF896080   +$40, the second character
+...
+latch[239]   $FF89D780
+```
+
+240 = 30 characters x 8 rows, and every one of the 240 values, in order, is
+reproduced by the transcription above — together with all 240 `A0`
+(`descriptor + 5 + char_index`) and all 240 `A1`
+(`$1FBC + 16*(character-$2A) + 2*row`). The capture and the disassembly agree;
+there is nothing to arbitrate.
+
+The check is not a one-descriptor accident. Selector `$43` (descriptor
+`$06BE7`, `01 00 FF 0E` + `"PROGRAM*ROM*OK"`, frames 334-335 of the same
+capture) is a different position, a different colour and a different length,
+and its 112 latches — `$FF800040`, `$FF801040`, ..., also 112/112 in order —
+match the same transcription.
+
+The reassembly order matters and is a trap: `move.l D0,$c00002.l` on a 16-bit
+bus delivers the **most significant** half at the lower address, and `$C00002`
+is `HSTADRH`, so `HSTADR = (tap@$C00002 << 16) | tap@$C00004`. Reading it the
+other way round yields `$6040FF89` and matches nothing at all.
+
+### 22.3 The glyph is 4x8, not 8x8, and a blank nibble emits nothing
+
+Each font word is 16 bits = **four** pixels, one per nibble. `lsr.w #4,D5` runs
+eight times, so nibbles five to seven are read as zero — and a zero nibble
+reaches neither `btst`, so both `beq` are taken and the routine emits **no
+HSTDAT cycle at all**. Pixels five to seven therefore leave VRAM exactly as the
+background left it.
+
+That is what makes `$2694 subi.l #$7fc0,D0` come out at `+$40` and not at
+`+$80`: a cell is four pixels of `$10` = `$40` wide, and the eight `$10`
+increments after pixel four walk `HSTADR` into the *next* cell without touching
+it.
+
+Font evidence, from the ROM image rather than from a guess: the font block runs
+`$1FBC`..`$327C` (300 glyphs, characters `$2A`..`$155`), and across all of it
+nibbles take many values. But the 394 descriptors use only **45** characters,
+`$2A`..`$5C`, and the 45 glyphs they reach use **only** nibble values `0`, `1`,
+`4` and `5`. So:
+
+```text
+nibble 0  bit0=0 bit2=0   no HSTDAT cycle; VRAM untouched
+nibble 1  bit0=1          move.w D7,$c0000c.l   -- overwrite with low colour
+nibble 4  bit2=1          or.w  D6,$c0000c.l   -- read-modify-write, low plane kept
+nibble 5  both            $2666 then $2674     -- two cycles, net D7|D6
+```
+
+Nibble bit 1 — the middle colour plane — is never set anywhere the text path
+can reach, which is why the routine tests bit 0 and bit 2 and nothing else.
+
+`'P'` reads `0555 1405 1405 1405 0555 0005 0005 0000`, and rendering the low
+nibble of each as one pixel gives a legible four-wide glyph:
+
+```text
+0555  ###.      1405  #.##      0005  #...      0000  ....
+```
+
+### 22.4 HSTADR and HSTDAT, and what the prologue is for
+
+`$25EE andi.w #$e7ff,$c00008.l` clears `HSTCTL` bits `$0800` and `$1000`, the
+TMS34010's post-increment-on-`HSTDAT`-write and post-increment-on-`HSTDAT`-read
+(MAME: `tms34010.cpp` `host_w`/`host_r`). The routine's own `ori.w #$1800` sites
+set both, so without this the device would move `HSTADR` on every access and the
+hand-rolled `addi.l #$10,$c00002.l` at `$267A` would double-step. The capture
+confirms the clearing: the latch values are exact row bases, not bases plus a
+per-pixel residue.
+
+`addi.l #$10,$c00002.l` is a long read-modify-write of the **device** `HSTADR`;
+`D0` is untouched by it. That is why the eight increments of a row are discarded
+— the next row's `move.l D0,$c00002.l` overwrites the address — and why
+`subi.l #$7fc0,D0` has to undo `$8000` of row stride and then add `$40`.
+
+The `clr.l D0`/`clr.l D1` at `$2612`/`$261E` are not decoration. They clear the
+upper bytes before `move.b` loads a coordinate byte, and without them the result
+would depend on what `move.w #$SEL,D0` left in `D0`'s high word at the call
+site.
+
+### 22.5 CONFIRMED vs INFERRED
+
+**CONFIRMED by `service-f2-text-host-writes/result.json` (draw 0, frames
+214-216), 240/240 values in order:**
+
+* the 240 `HSTADR` latches — base `$FF896040`, `+$1000` per row, `+$40` per
+  cell, 8 per character, 30 characters — and, as an independent second case,
+  the 112 latches of selector `$43`;
+* `A0` = descriptor + 5 + character index;
+* `A1` = `$1FBC + 16*(character - $2A) + 2*row`;
+* the first glyph is `'P'`.
+
+**CONFIRMED by the ROM bytes, NOT by the capture** (the capture taps
+`$C00002`/`$C00004` only, and only at PC `$2656`, so it cannot see any of
+these):
+
+* the two prologue writes (`$608000`, then the `HSTCTL` read-modify-write);
+* the descriptor decode `y*$A000 + x*$40 - $800000` and the colour
+  `descriptor[2]` / `descriptor[2] << 8` — corroborated, not proven, by the
+  first latch matching `$FF896040` and the `$DF` colour matching 21.4;
+* the nibble rules and the blank-nibble silence of 22.3;
+* the four-cycle shape of `addi.l #$10,$c00002.l` and the one-cycle
+  `or.w D6,$c0000c.l`.
+
+**INFERRED / open:**
+
+* what a host read of `HSTDAT` returns — see 22.6;
+* what lands in VRAM afterwards, since the real path is
+  `hdgsp_vram_2bpp_w`, a masked read-modify-write of 32-bit words out of
+  `m_mask_table`. Section 19 / `stunrun-2ua` owns that;
+* how `$40`/`$1000`/`$A000` map onto visible pixels, which needs the 4 MiB VRAM
+  extent before it can be said rather than derived.
+
+### 22.6 Ambiguity: the `or.w D6,$c0000c.l` read-back
+
+`or.w D6,$c0000c.l` reads `HSTDAT` back, and two readings survive:
+
+* **(a)** the word this host port last stored at `HSTADR & ~$F`. This is what
+  `native/musashi_cpu.c` `gsp_host_read_word` does for the shell's flat word
+  model, and it is the only reading under which `$2666` followed by `$2674`
+  computes what the routine plainly intends — write the low colour, then add
+  the high colour to it.
+* **(b)** the GSP memory word as the board actually keeps it. MAME's
+  `tms340x0_device::host_r` does read GSP memory, but on this board that word
+  is the *output* of `hdgsp_vram_2bpp_w`, so it is not the host word at all, and
+  what it comes out to depends on the unresolved VRAM extent of section 19.
+
+**(a) is implemented**, as a documented choice at the decision site in
+`native/mc68010_text_writer.c` (`peek_hstdat`). **(b) is not**, and could not be
+without also answering `stunrun-2ua`. The difference is observable and the test
+pins (a): seed the target cell with `$0030` and a nibble-4 pixel must write
+`$DF30`, not `$DF00`.
+
+### 22.7 Our own mistakes, and their refutations
+
+Kept here, not in `BUGS.md`: none of these is a defect in the 1989 game or in
+MAME.
+
+1. **D0 split in two.** The first port kept a separate `cell` for the row loop
+   and stepped `base` by `-0x7FC0` only, so the second character latched at
+   `base - $7fc0` instead of `base + $40`. Caught by
+   `selector_47_matches_capture` (`latches[8] = 0xFF80C100`). The ROM has one
+   register: `addi.l #$1000,D0` at `$268A` mutates the same `D0` the latch read.
+2. **Font pointer reset per row.** `word_address` was declared inside the row
+   body, so every row re-read glyph word 0 and the whole cell came out as the
+   top row repeated. Caught by `census` (5386 writes against 4983). `$2646`/
+   `$264C` run once per *character*.
+3. **`HSTADR` halves swapped in the fixture generator.** `$C00002` was written
+   into the low half of the port state, which silently produced `$6040FF89`
+   as the first latch and a plausible-looking but wrong stream. The capture
+   comparison caught it. `$C00002` is `HSTADRH`.
+4. **A fixture placed at the constant under test.** The test built its ROM image
+   with `store_long(rom, STUNRUN_TEXT_SELECTOR_TABLE + 4*sel, ...)`, so moving
+   the constant in the header moved the fixture with it and nothing failed. The
+   table is now placed at a literal `$10136` in the test, with one equality
+   check against the header's copy. This is section 15.6's trap in a subtler
+   form: the test passed because the thing under test was consistent with
+   itself, not because it was right.
+
+### 22.8 The C slice, and what it asserts
+
+`native/mc68010_text_writer.{h,c}` add `stunrun_mc68010_text_draw()`, the whole
+routine, driven through a transport seam that reports every 16-bit cycle
+including the read half of each read-modify-write. `stunrun_mc68010_text_write()`
+is left byte-for-byte as it was, because CTest `mc68010-text-writer-slice-c`
+asserts its values — but it disagrees with the ROM in two documented ways (it
+writes one word per pixel rather than one cycle per lit nibble, and it writes
+`0` for a blank pixel where the ROM writes nothing), and its write count is not
+a pixel count. Both are called out in the header.
+
+The observable output asserted is the ordered sequence of 16-bit bus cycles,
+because that is what the routine produces and what a trace sees. The 240
+`HSTADR` latches are compared against the capture verbatim; an 84-cycle literal
+golden covers the first two glyph rows, which between them contain every
+`HSTDAT` shape the ROM can produce; the remaining 28 characters are walked in
+lockstep against the nibble rule derived from the embedded font; and the census
+(9154 cycles, 4983 writes, 4171 reads, 661 `HSTDAT` writes) pins the whole
+call exactly. `native/mc68010_text_writer_test.c` builds its own 66 KiB ROM
+image from transcribed bytes, so no commercial ROM is needed.
+
+### 22.9 Negative controls
+
+Sixteen deliberate breaks were applied to the slice and each one fails the test:
+`btst #2`→`#3`; dropping the `$2666` write; cell stride `$7fc0`→`$7f80`; row
+stride `$1000`→`$0100`; dropping the prologue's `HSTCTL` mask; turning
+`or.w D6` into a plain write; row coefficient `$a0`→`$a1`; column shift `#6`→`#5`;
+pixel step `$10`→`$20`; resetting the font pointer per row; count off by one;
+removing the nibble shift; high colour not shifted; the selector-table base
+moved; the watchdog address moved; and the `HSTADR` halves emitted the other way
+round. Numbers 2 and 4 above are among them, which is how they were found.
+
+### 22.10 Still open
+
+* `stunrun-2ua` (4 MiB VRAM extent) blocks the byte-level check of what this
+  routine leaves in VRAM, and with it the answer to 22.6(b).
+* The routine is entered only as `jmp $25E8.l` from 30 sites with `A2` set. The
+  `jmp (A2)` at `$269E` is transcribed but nothing here models a caller, so
+  "which routine draws what, in which order" is still a harness question.
+* There is a **second entry point into the same loop body**, and it is not a
+  mystery clone. `$2530`-`$25E6` and `$25E8`-`$269F` are two routines with a
+  duplicated loop, differing only in setup and return convention:
+
+  ```text
+  $00196:  jmp $2580.l      dispatch table -> per-character entry
+  $001A8:  jmp $2530.l      dispatch table -> full routine, rts
+  (30 sites)  jmp $25E8.l   in-line -> full routine, jmp (A2)
+
+  $2530  clr.w $608000 / andi.w #$e7ff,$c00008 / selector / descriptor / loop / rts
+  $2580  move.b (A0)+,D1   <- the $2638 equivalent, no prologue, no decode
+  ...
+  $25E4  bne $2580
+  $25E6  rts
+
+  $25E8  clr.w $608000 / andi.w #$e7ff,$c00008 / selector / descriptor / loop / jmp (A2)
+  $2638  move.b (A0)+,D1   <- the $2580 equivalent, byte for byte
+  ...
+  $269C  bne $2638
+  $269E  jmp (A2)
+  ```
+
+  So `$25E8` is a self-contained "draw this selector's string, then return to my
+  caller via `A2`" wrapper, while `$2580` is the bare "carry on drawing from
+  wherever `A0` points, with `D0`/`D3`/`D7`/`D6` already set" entry — which is
+  why it skips the descriptor decode entirely and returns with `rts`. Recorded,
+  not ported; the `$2580` caller's register setup is not yet traced, so what
+  `D0` and `D3` hold there is UNKNOWN.
+## 23. A decoded text log for the MC68010 text path — and what `$25E8` really is
+
+Section 20 mapped `$25E8`'s data statically and §21 closed it against live MAME
+traffic. This section adds the thing that makes a native run legible: a console
+line per string the game draws. It is **observation only** — it reads the
+host-port latches and the ROM and prints, and it changes nothing.
+
+The point of writing it down is not the feature. It is that building it forced
+three corrections to what §13 and §20 say about the routine, all of them
+measured rather than read.
+
+### 23.1 One `$25E8` call draws ONE WHOLE STRING, not one character
+
+§13 quotes the loop nest but §20.7 flags that its `D3`/`D2`/`D1` nesting "does
+not reconcile with the observed 16-byte cell stride by inspection". It does
+reconcile, and the nesting is:
+
+```text
+  $264E: move.w #$7,D2           ; row loop seed  -> 8 glyph rows
+  $2652: move.w #$7,D1           ; pixel loop seed -> 8 cells per row
+  $2656: move.l D0,$c00002.l     ; latch the row's first cell
+  $2666: move.w D7,$c0000c.l
+  $2674: or.w   D6,$c0000c.l
+  $267A: addi.l #$10,$c00002.l   ; next cell, +0x10
+  $2686: dbra D1,$265e
+  $268A: addi.l #$1000,D0        ; next row, +0x1000
+  $2690: dbra D2,$2652
+  $2694: subi.l #$7fc0,D0        ; next CHARACTER: +0x40, one more column
+  $269A: subq.b #$1,D3
+  $269C: bne   $2638
+```
+
+`$262E move.b ($3,A0),D3` loads the character count, and `$269C` loops **the
+whole 8×8 nest per character**. So one call emits `count` × 8 HSTADR
+compositions: 8 rows at +0x1000 each, and +0x40 per character. Measured over a
+600-frame service-mode capture of the real ROM, a single `$25E8` call for
+selector `$47` (`chars = 30`) produced exactly **240** compositions, the first
+at `0xFF896040` and the last at `0xFF89D780 = base + 0x40*29 + 0x1000*7`.
+
+**§13's transcription is otherwise byte-exact** — re-disassembled from
+`roms/stunrun/stunrun_maincpu.bin` with capstone, every address matches. Two
+corrections to the prose around it:
+
+1. §13 omits `$2612 clr.l D0` between `$2610 lsl.w #8,D6` and `$2614
+   move.b ($1,A0),D0`. It is there (`4280`), and it matters: it is what makes
+   `$2618 mulu.w #$a0,D0` a 16×16 multiply of a *byte* rather than of a stale
+   word.
+2. §13 and §20.5 report caller addresses read out of a trace in which Musashi's
+   `M68K_REG_PC` is sampled inside the bus callback, so the PC in a capture sits
+   a few bytes **past** the instruction. The real `move.l D0,$c00002.l` is at
+   `$2656` and appears as PC `$265C` in `gsp_bus_events.bin`; `addi.l #$10` is at
+   `$267A` and appears as `$2684`; `andi.w #$e7ff,$c00008.l` is at `$25EE` and
+   appears as `$25F6`. Anyone filtering a capture on PC `$2656` or `$25EE` will
+   find nothing, which is a trap worth naming.
+
+### 23.2 "The address matches a descriptor base" is NOT sufficient, and that is measured
+
+The obvious decoder — resolve the 394-long table, compute each descriptor's
+base, print when HSTADR lands on one — is wrong, and provably so on this ROM.
+Within the single `$25E8` call above:
+
+* **three** of the 240 compositions land exactly on *other* descriptors' bases:
+  character 0 at `$FF896040`, character 8 at `$FF896240`, character 17 at
+  `$FF896440`;
+* five further matches occur during the `$267A` pixel walk, which steps onto
+  `$FF896240` from `$FF896230` — one pixel past the row-0 boundary.
+
+Base `0xFF896040` carries **18** descriptors across five colours, so a
+base-only rule prints one character of `PRESS START TO BYPASS SELFTEST` as if
+it were `RCOIN`, `LEFT TRIGGER`, or a dozen others. §20.4 noted the
+`$47`/`$16B` collision; the scale is larger than one pair.
+
+Two ROM facts remove it, and neither is an emulator artifact:
+
+1. **The `$25EE` prologue is the arm.** `andi.w #$e7ff,$c00008.l` runs once per
+   call and leaves HSTCTL bits 11 and 12 (`0x1800`) *clear*, because that is
+   what the mask does. Every other HSTCTL writer in the ROM *sets* them:
+   `ori.w #$1800,$c00008.l` in the display-list compiler, and the boot paths,
+   which write `0xB800`. Measured values in one capture — `0xA000` at PC `$25F6`,
+   `$2334`, `$239C`, `$414` (bits clear) versus `0xB800` at `$496`, `$578`,
+   `$63E`, `$682`, `$5410`, `$5496`, `$54CA` (bits set). The first HSTADR
+   composition after an arm is therefore the descriptor base, and nothing can
+   drift in between: the arm is immediately followed by `$2656`.
+2. **The colour is in the LOW byte of the first HSTDAT.** `clr.w D7 / move.b
+   ($2,A0),D7` leaves `D7 = 0x00XX`, and `$2666` writes `D7` whole. Measured
+   live for `$47`: HSTDAT `0x00DF` then `0xDFDF`. The second write (`or.w D6`,
+   with `D6 = D7 << 8`) carries the colour in the *high* byte and so selects
+   nothing.
+
+Over the 600-frame service run the rule gives **26 arms, 1 matched, 1 fired,
+0 colour misses** — one `$25E8` call, one arm, one string.
+
+### 23.3 What the host port genuinely cannot tell you
+
+Colour is not always a discriminator. 35 of the 394 descriptors share a base
+with another, and three share **base and colour** at `$FF800040`:
+
+```text
+$034 colour 0xFF   8 BIT A/D
+$035 colour 0xFF  12 BIT A/D
+$043 colour 0xFF  PROGRAM ROM OK
+$044 colour 0x9F  BAD PROGRAM ROM IS BLANK BOX
+```
+
+Those three are drawn one at a time to the same screen cell in the same colour,
+so no host-port write distinguishes them. `$047 "PRESS START TO BYPASS
+SELFTEST"` has the same problem with `$100 "INC PM ADR"` at `0xFF896040` in
+`0xDF`.
+
+The decoder prints the lowest-numbered candidate and then names the runners-up
+on a following line, rather than picking one silently:
+
+```text
+text frame=48 cycles=6508646 sel=$047 x=01 y=0F colour=0xDF base=0xFF896040 chars=30 "PRESS START TO BYPASS SELFTEST"
+text   base=0xFF896040 colour=0xDF is shared by 2 descriptors; the port cannot separate them: $047 "PRESS START TO BYPASS SELFTEST" $100 "INC PM ADR"
+```
+
+### 23.4 The glyph alphabet is plain ASCII, and `byte 3` is exact
+
+§20.2 says `byte 3` equals the string length for 388 of 394 blocks. Measured
+over all 394 in this ROM: **394 of 394**, zero mismatches. Either the earlier
+count used a different length rule or it was simply wrong; the "padding or
+table-end artifact" reading is not needed here.
+
+The character set over all 394 blocks is `$2A..$5C` — `* + , - . / 0-9 : =
+A-Z \` — i.e. plain ASCII over a contiguous glyph window, with `*` (`$2A`)
+standing in for the space. `*` is therefore the ROM's blank and prints as a
+space. The font is `$1FBC + 16*(ch - $2A)`, 51 glyphs through `$22EC`.
+
+### 23.5 Service mode in the native shell, and `$43`
+
+The native shell has **no `service_f2` input mode**. `service_f2` exists only
+in the MAME harness (`mame/lua/*.lua`, `tools/mame-trace`,
+`tools/mame-ram-write-trace`). What the native shell has is:
+
+| mechanism | what it maps |
+|---|---|
+| `argv[1]` experiment JSON `events[]` | `:mainpcb:8BADC.0`/`AD Stick X`, `:mainpcb:8BADC.2`/`AD Stick Y`, `:mainpcb:IN0`/`Coin 1`, `:mainpcb:a80000`/`1 Player Start` (`native/fake_ports.c` `named_port_id()`) |
+| env overrides | `STUNRUN_IN0`, `STUNRUN_SW1`, `STUNRUN_A800` |
+
+There is no `Service Mode` field, and `fake_ports.c` is not this change's write
+scope, so none was added. The equivalent stimulus is the one `service_f2`
+itself presses: `IN0` bit 5 is `PORT_SERVICE`, active low (`fake_ports.c`
+`stunrun_ports_init`, harddriv.cpp:1097-1108), and the boot-path default is
+`0xE7`. Holding it gives:
+
+```sh
+STUNRUN_MC68010=1 STUNRUN_STUNRUN_DIR=roms/stunrun STUNRUN_FRAMES=600 \
+STUNRUN_IN0=0xC7 STUNRUN_TEXT_LOG=1 STUNRUN_DUMP_DIR=/tmp/svclog \
+  native/build/stunrun-native-shell
+```
+
+```text
+shell: text-log=1 descriptors=394 (394 expected for this ROM)
+text frame=48 cycles=6508646 sel=$047 x=01 y=0F colour=0xDF base=0xFF896040 chars=30 "PRESS START TO BYPASS SELFTEST"
+text   base=0xFF896040 colour=0xDF is shared by 2 descriptors; the port cannot separate them: $047 "PRESS START TO BYPASS SELFTEST" $100 "INC PM ADR"
+shell: dump dir=/tmp/svclog gsp_writes=721479 bus_events=732879 bus_dropped=0 vram=691861 vram2bpp=28016 pal_lo=768 pal_hi=768 control=42 unmapped=24
+shell: text-log arms=26 matched=1 fired=1 colour_miss=0 ambiguous=1
+```
+
+**`$47` reproduced exactly.** `$43 "PROGRAM ROM OK"` was **not** reproduced, and
+the reason is a limitation rather than a tuning failure:
+
+* the machine draws `$47` at frame 48 and then stops issuing host-window writes.
+  600 frames and 1800 frames both produce **732 879** bus events, so the walk is
+  genuinely idle rather than budget-truncated (this is §22's point again);
+* pressing `1 Player Start` — a named port the shell *does* support — at frame
+  200 changes nothing: 732 879 bus events with and without it.
+
+So the native shell's input model does not reach the self-test navigation that
+MAME's `service_f2` reaches, and `$43` stays behind that. **UNKNOWN** whether
+the self-test wants an F2 toggle rather than START, or a coin input the native
+`Coin 1` port does not model the way MAME does. Closing it needs either a
+`Service Mode` field in `native/fake_ports.c` or the self-test's own input map;
+it does not need more cycles.
+
+Also worth recording: the **attract-mode** 600-frame run (no `STUNRUN_IN0`)
+executes `$25E8` **zero** times — 26 arms are still counted, none of them match —
+so the text log is empty on the normal boot path. That is a real property of the
+attract sequence at this frame budget, not a decoder miss.
+
+### 23.6 Observation-only, measured rather than asserted
+
+`gsp_host_write_word()` is the single choke point for 16-bit writes into
+`$C00000-$C03FFF`. The hook is `if (g_text_log_enabled) text_log_observe(...)`
+at the top of that function — one predictable not-taken branch when the feature
+is off (`STUNRUN_TEXT_LOG` unset, the default). Nothing in the decoder writes a
+latch, GSP memory, VRAM, or the ordered bus log.
+
+The check, on the 600-frame attract run:
+
+```text
+                                    bytes        gsp_writes  bus_events
+pre-change binary, log off        36054160        897010      901354
+new binary, log off               36054160        897010      901354
+new binary, log ON                36054160        897010      901354
+```
+
+The raw bytes are **not** identical, and this was already true before the
+change: the pre-change binary and the new one differ from each other at exactly
+the same places. Those places are the three padding bytes at record offsets
+29-31 and 37-39 of `musashi_gsp_bus_event_t`, which `gsp_emit_bus_event()`
+never assigns — they are uninitialised stack. `sequence`, `cycles`, `address`,
+`pc`, `data`, `lane_mask`, `width_bits`, `kind` and `gsp_reset_released` are
+every field the struct names.
+
+```text
+raw differing bytes   OFF vs ON   : 5 898 of 36 054 160, all at offsets 29/37/38/39
+raw differing bytes   PRE vs OFF  : 533 751 of 36 054 160, all at offsets 29/30/37/38
+
+padding bytes masked (29,30,31,37,38,39):
+  OFF == ON                         : True
+  PRE == OFF                        : True
+  sha256                            : 9cf8f91c0201e11c14d6c7ab77fe533f171c56293100ab8db8e98896d811a89f
+
+all 901 354 records, every initialised field:
+  OFF vs ON                         : IDENTICAL
+  PRE vs OFF                        : IDENTICAL
+```
+
+A raw `sha256` comparison of `gsp_bus_events.bin` therefore **cannot** be an
+observation-only test: it was already binary-dependent before this feature
+existed, and it will report a difference for any recompile. Masking the padding,
+or comparing the nine named fields, is the check that means something. Zeroing
+those bytes in `gsp_emit_bus_event()` would make the artifact byte-stable across
+binaries, which is a real improvement and is deliberately **not** done here: it
+changes every existing capture's bytes, so it wants its own commit.
+
+### 23.7 The test
+
+`native/musashi_text_log_test.c` builds a synthetic 394-entry selector table
+carrying both real collision shapes, drives a synthetic 68010 program through
+Musashi, and asserts the **printed lines** — the feature has no other output,
+and adding a callback side-channel would let a broken printer pass. It asserts
+the negative cases too: a disarm (`ori.w #$1800`) prints nothing, a missing
+prologue prints nothing, and the `+0x40` pixel walk does not re-fire. It also
+asserts that the same program takes the same 18 host-window bus events with the
+log off and on.
+
+**Not registered in `native/CMakeLists.txt`** — that file is shared and the
+parent owns it. The block to add, modelled on `gsp-display-list-musashi-test`:
+
+```cmake
+add_executable(stunrun-musashi-text-log-test
+  musashi_text_log_test.c
+  fake_ports.c
+  musashi_cpu.c
+  musashi_loader.c
+  cpu_override.c
+  jsa_transport.c
+  ../reproduction/sound/jsa_latch.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kops.c)
+target_include_directories(stunrun-musashi-text-log-test PRIVATE
+  . ../reproduction/sound
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi)
+target_link_libraries(stunrun-musashi-text-log-test PRIVATE
+  m
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kcpu.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kdasm.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/softfloat/softfloat.o)
+set_target_properties(stunrun-musashi-text-log-test PROPERTIES C_STANDARD 99)
+add_test(NAME musashi-text-log-c COMMAND stunrun-musashi-text-log-test)
+```
+
+Verified green by compiling it by hand (315 checks, 0 failures), and confirmed
+able to fail: deleting the arm, changing the base stride to `0x80`, taking the
+colour from the high byte, printing `*` literally, and dropping the ambiguity
+line each produce between 5 and 19 failures.

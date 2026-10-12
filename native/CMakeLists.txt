@@ -730,3 +730,26 @@ endif()
 # This matters because the public ROM-free build must not acquire a
 # heavyweight simulator dependency.
 add_subdirectory(gsp_rtl)
+
+# MC68010 text-draw commentary log (STUNRUN_TEXT_LOG). Registers the test the
+# subagent could not add itself; the block is reproduced in
+# docs/mc68010-boot-findings.md section 23.7.
+add_executable(stunrun-musashi-text-log-test
+  musashi_text_log_test.c
+  fake_ports.c
+  musashi_cpu.c
+  musashi_loader.c
+  cpu_override.c
+  jsa_transport.c
+  ../reproduction/sound/jsa_latch.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kops.c)
+target_include_directories(stunrun-musashi-text-log-test PRIVATE
+  . ../reproduction/sound
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi)
+target_link_libraries(stunrun-musashi-text-log-test PRIVATE
+  m
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kcpu.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kdasm.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/softfloat/softfloat.o)
+set_target_properties(stunrun-musashi-text-log-test PROPERTIES C_STANDARD 99)
+add_test(NAME musashi-text-log-c COMMAND stunrun-musashi-text-log-test)

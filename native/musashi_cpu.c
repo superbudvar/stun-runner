@@ -156,6 +156,21 @@ struct musashi_cpu {
     uint16_t adc12_data;
     uint16_t wheel;           /* hd68k_wr2_write(): m_wheel = data >> 8 */
 
+    /* ── MC68010 text log (observation only; see the text-log block) ──
+     *
+     * `text_adr_h`/`text_adr_l` shadow the real HSTADRH/HSTADRL latches purely
+     * so the decoder can reconstruct the address the way a `move.l
+     * D0,$c00002.l` builds it.  The machine's own latches above are untouched.
+     * `text_armed` is set by an HSTCTL write with 0x1800 clear and consumed by
+     * the next HSTADR composition; `text_pending` is the base that matched,
+     * awaiting the colour in the next HSTDAT.  No code outside the text-log
+     * block reads any of these four. */
+    uint16_t text_adr_h;
+    uint16_t text_adr_l;
+    uint8_t  text_armed;
+    uint8_t  text_pending;
+    uint32_t text_pending_base;
+
     /* ── JSA II sound board at $600000-$603FFF ──
      * harddriv.cpp:4806 installs one 8-bit read/write handler pair across the
      * whole window with no offset decode: main_response_r on read,
@@ -1167,10 +1182,344 @@ static void gsp_emit_reset_control_event(musashi_cpu_t *cpu,
                        lane_mask, width_bits, released);
 }
 
+/* ── MC68010 text log ────────────────────────────────────────────────────
+ *
+ * STRICTLY OBSERVATION.  Nothing in this block writes a host-port latch,
+ * writes GSP memory or VRAM, appends to the ordered bus log, or calls anything
+ * the machine calls.  It reads the latches and the ROM and prints.  With the
+ * feature off -- the default -- gsp_host_write_word() takes one predictable
+ * not-taken branch and runs exactly the code it ran before this existed.
+ *
+ * That is checked, not asserted: over a 600-frame run, all 901 354
+ * gsp_bus_events.bin records are identical in every field the struct names
+ * with the log off and on.  The raw file bytes are NOT, and were not before
+ * this either -- gsp_emit_bus_event() never assigns the padding at record
+ * offsets 29-31 and 37-39, so those bytes carry uninitialised stack and move
+ * on any recompile.  See docs/mc68010-boot-findings.md section 23.6.
+ *
+ * ── What is being decoded ────────────────────────────────────────────────
+ * ROM $25E8-$269E, the MC68010-side text path (NOT the GSP-side one in
+ * reproduction/gsp/text_cursor.c).  Verified structure, from the assembled
+ * image and from a live capture:
+ *
+ *   25F6  lea     $10136.l,A0        ; 394 long pointers, selector $00..$189
+ *   2604  movea.l (A0,D0.l),A0       ; descriptor
+ *   260A  move.b  ($2,A0),D7         ; byte 2 is the colour
+ *   2614  move.b  ($1,A0),D0 / mulu.w #$a0 / lsl.l #8
+ *   2620  move.b  ($0,A0),D1 / lsl.l #6 / add.l D1,D0 / addi.l #$ff800000
+ *   262E  move.b  ($3,A0),D3         ; CHARACTER COUNT for the whole string
+ *   2656  move.l  D0,$c00002.l       ; latch the address (per glyph ROW)
+ *   2666  move.w  D7,$c0000c.l       ; low colour
+ *   2674  or.w    D6,$c0000c.l       ; high colour
+ *   267A  addi.l  #$10,$c00002.l     ; advance one 16-byte GSP cell
+ *   268A  addi.l  #$1000,D0          ; next glyph row
+ *   2694  subi.l  #$7fc0,D0          ; next CHARACTER: +0x40, one more column
+ *   269C  bne     $2638
+ *
+ * So ONE call draws ONE WHOLE STRING, and it emits `count` x 8 HSTADR
+ * compositions, not one.  Measured on a 600-frame service-mode run: a single
+ * $25E8 call produced 240 compositions for selector $47 (30 chars x 8 rows),
+ * ending at exactly base + 0x40*29 + 0x1000*7.
+ *
+ * ── Why "the address matches a known base" is not enough ────────────────
+ * It is not enough, and that is measured rather than argued.  Within that one
+ * call, THREE of the 240 compositions landed exactly on some OTHER descriptor's
+ * base -- character 0 at $FF896040, character 8 at $FF896240, character 17 at
+ * $FF896440 -- and five more addresses matched a base during the $267A pixel
+ * walk.  A rule that fires on every base match prints a character of
+ * "PRESS START TO BYPASS SELFTEST" as if it were the unrelated string "RCOIN".
+ * Two ROM facts remove that, and neither of them is an emulator artifact:
+ *
+ *   1. The routine's second instruction is `andi.w #$e7ff,$c00008.l` at $25EE.
+ *      It runs once per call and leaves HSTCTL bits 11 and 12 (0x1800) CLEAR,
+ *      because that is what the mask does.  The display-list compiler's
+ *      `ori.w #$1800,$c00008.l` SETS them, and so does every boot-path write
+ *      (measured values 0xB800 vs 0xA000).  So "an HSTCTL write with 0x1800
+ *      clear" is a reliable arm, and the FIRST HSTADR composition after it is
+ *      the descriptor base -- the arming and the base cannot drift apart,
+ *      because the arm is immediately followed by $2656 and nothing else.
+ *      Measured: 26 arms in that run, exactly one of which was followed by a
+ *      composition matching a base.  One call, one arm, one string.
+ *   2. The colour arrives in the LOW byte of the first HSTDAT.  `clr.w D7 /
+ *      move.b ($2,A0),D7` leaves D7 = 0x00XX, and $2666 writes D7 whole.
+ *      Measured live: 0x00DF for selector $47, whose byte 2 is 0xDF.  The
+ *      SECOND write of a lit pixel, `or.w D6` at $2674, carries the colour in
+ *      the HIGH byte (0xDF00, read-modify-written to 0xDFDF), so it selects
+ *      nothing.
+ *
+ * ── What the port cannot tell us ─────────────────────────────────────────
+ * 35 of the 394 descriptors share a base with another, and colour does not
+ * always break the tie: $FF800040 carries $34 "8 BIT A/D", $35 "12 BIT A/D"
+ * and $43 "PROGRAM ROM OK", all three at colour 0xFF.  The screen position and
+ * the colour are genuinely the same, because those three strings are drawn one
+ * at a time to the same place.  Nothing on the host port distinguishes them,
+ * so this decoder prints the lowest-numbered candidate and then lists the
+ * runners-up on the same line instead of picking one silently.
+ */
+
+/* lea $10136.l,A0 ($25F6). */
+#define TEXT_LOG_SELECTOR_TABLE 0x10136u
+#define TEXT_LOG_SELECTORS      394u
+/* subi.b #$2a,D1 ($263A): the glyph index bias.  $2A is '*', whose glyph is
+ * all zeros, which is why '*' is the ROM's space. */
+#define TEXT_LOG_BLANK          0x2Au
+/* andi.w #$e7ff,$c00008.l ($25EE) clears the two host auto-increment bits.
+ * ori.w #$1800,$c00008.l in the display-list compiler sets them. */
+#define TEXT_LOG_HSTCTL_AUTOINC 0x1800u
+/* How many runner-up candidates a printed line names before it says how many
+ * more there are.  The worst case in the real table is 18. */
+#define TEXT_LOG_MAX_ALTERNATIVES 4u
+
+typedef struct text_log_descriptor {
+    uint32_t base;      /* first GSP host address of the draw */
+    uint16_t addr;      /* descriptor address in the flat ROM image */
+    uint16_t selector;
+    uint8_t  x;         /* descriptor byte 0 */
+    uint8_t  y;         /* descriptor byte 1 */
+    uint8_t  colour;    /* descriptor byte 2 */
+    uint8_t  count;     /* descriptor byte 3 */
+} text_log_descriptor_t;
+
+static int g_text_log_enabled;
+static text_log_descriptor_t g_text_log_desc[TEXT_LOG_SELECTORS];
+static unsigned g_text_log_desc_count;
+static musashi_text_log_stats_t g_text_log_stats;
+
+/* $2614-$2628, transcribed.  `mulu.w` is a 16x16 -> 32 unsigned multiply and
+ * `lsl.l #8` then shifts the whole 32-bit result, so y=0x0f gives 0x0FA000 and
+ * not 0x000FA0; both bytes are 0..255 so neither step can overflow 32 bits
+ * (255*160 << 8 = 0x027D0000).  The subtraction is the 32-bit wrap the ROM's
+ * `addi.l #$ff800000,D0` performs. */
+static uint32_t text_log_base(uint8_t x, uint8_t y)
+{
+    uint32_t hi = (uint32_t)y * 0xA0u * 0x100u;
+    uint32_t lo = (uint32_t)x * 0x40u;
+    return (hi + lo - 0x00800000u) & 0xFFFFFFFFu;
+}
+
+/* Walk the selector table once.  Every entry is a long pointer into the flat
+ * 0xC0000-byte image the banks live in; a pointer that does not land there, or
+ * whose string would run off the end, is dropped rather than clamped, so a
+ * wrong image produces fewer descriptors instead of plausible nonsense. */
+static unsigned text_log_build_table(const musashi_cpu_t *cpu)
+{
+    unsigned i;
+
+    g_text_log_desc_count = 0;
+    if (cpu == NULL)
+        return 0;
+
+    for (i = 0; i < TEXT_LOG_SELECTORS; i++) {
+        uint32_t table = TEXT_LOG_SELECTOR_TABLE + 4u * i;
+        uint32_t addr = rom_read_long(cpu, table);
+        text_log_descriptor_t d;
+
+        /* The real table spans $0667C..$08C75, strictly increasing.  Bound the
+         * accept window to that neighbourhood rather than to the whole image:
+         * a garbage pointer into the 0x000000-0x0667B code region would
+         * otherwise decode as a descriptor with a plausible-looking count. */
+        if (addr < 0x06000u || addr > 0x09000u)
+            continue;
+        if (addr + 4u + 1u > MUSASHI_ROM_TOTAL_SIZE)
+            continue;
+
+        d.selector = (uint16_t)i;
+        d.addr = (uint16_t)addr;
+        d.x = rom_read_byte(cpu, addr + 0u);
+        d.y = rom_read_byte(cpu, addr + 1u);
+        d.colour = rom_read_byte(cpu, addr + 2u);
+        d.count = rom_read_byte(cpu, addr + 3u);
+        if ((uint32_t)addr + 4u + d.count > MUSASHI_ROM_TOTAL_SIZE)
+            continue;
+        d.base = text_log_base(d.x, d.y);
+        g_text_log_desc[g_text_log_desc_count++] = d;
+    }
+    return g_text_log_desc_count;
+}
+
+/* Is ANY descriptor drawn at this base, whatever its colour?  This is the
+ * arm-consumption test: the colour is not known yet when HSTADR completes, and
+ * assuming one of the seven values would silently drop every block whose
+ * colour we failed to guess. */
+static int text_log_any_at(uint32_t base)
+{
+    unsigned i;
+    for (i = 0; i < g_text_log_desc_count; i++)
+        if (g_text_log_desc[i].base == base)
+            return 1;
+    return 0;
+}
+
+static const text_log_descriptor_t *text_log_find(uint32_t base, uint8_t colour,
+                                                  unsigned *matches)
+{
+    const text_log_descriptor_t *first = NULL;
+    unsigned n = 0;
+    unsigned i;
+
+    for (i = 0; i < g_text_log_desc_count; i++) {
+        if (g_text_log_desc[i].base != base)
+            continue;
+        if (g_text_log_desc[i].colour != colour)
+            continue;
+        if (first == NULL)
+            first = &g_text_log_desc[i];
+        n++;
+    }
+    if (matches != NULL)
+        *matches = n;
+    return first;
+}
+
+/* The ROM's alphabet is plain ASCII over the glyph window $2A..$5C -- '*'
+ * is the blank, the next glyph is '+', and 'P' is the 38th.  '*' prints as a
+ * space because that is what it draws.  A byte outside the window cannot name
+ * a glyph ($1FBC + 16*(ch-$2A) would leave the font table), so it is shown as
+ * '?' rather than silently rendered as itself. */
+static char text_log_char(const musashi_cpu_t *cpu, uint32_t addr)
+{
+    uint8_t raw = rom_read_byte(cpu, addr);
+    if (raw == TEXT_LOG_BLANK)
+        return ' ';
+    if (raw < TEXT_LOG_BLANK || raw > TEXT_LOG_BLANK + 50u)
+        return '?';
+    return (char)raw;
+}
+
+static void text_log_emit(const musashi_cpu_t *cpu,
+                          const text_log_descriptor_t *d, unsigned matches)
+{
+    char line[256];
+    size_t used;
+    uint32_t i;
+
+    used = (size_t)snprintf(line, sizeof(line),
+                            "text frame=%lu cycles=%lu sel=$%03X x=%02X y=%02X "
+                            "colour=0x%02X base=0x%08X chars=%u \"",
+                            (unsigned long)(cpu->total_cycles /
+                                            MUSASHI_FRAME_CYCLES),
+                            (unsigned long)cpu->total_cycles,
+                            (unsigned)d->selector, (unsigned)d->x,
+                            (unsigned)d->y, (unsigned)d->colour, d->base,
+                            (unsigned)d->count);
+    for (i = 0; i < d->count && used + 2u < sizeof(line); i++)
+        line[used++] = text_log_char(cpu, d->addr + 4u + i);
+    used += (size_t)snprintf(line + used, sizeof(line) - used, "\"");
+    if (used >= sizeof(line))
+        used = sizeof(line) - 1u;
+    line[used] = '\0';
+    printf("%s\n", line);
+
+    if (matches > 1u) {
+        unsigned listed = 0;
+        printf("text   base=0x%08X colour=0x%02X is shared by %u descriptors; "
+               "the port cannot separate them:", d->base, (unsigned)d->colour,
+               matches);
+        for (i = 0; i < g_text_log_desc_count && listed < TEXT_LOG_MAX_ALTERNATIVES;
+             i++) {
+            const text_log_descriptor_t *o = &g_text_log_desc[i];
+            char alt[160];
+            size_t n = 0;
+            uint32_t k;
+            if (o->base != d->base || o->colour != d->colour)
+                continue;
+            n = (size_t)snprintf(alt, sizeof(alt), " $%03X \"", o->selector);
+            for (k = 0; k < o->count && n + 2u < sizeof(alt); k++)
+                alt[n++] = text_log_char(cpu, o->addr + 4u + k);
+            if (n + 3u < sizeof(alt)) {
+                alt[n++] = '"';
+                alt[n] = '\0';
+                printf("%s", alt);
+            }
+            listed++;
+        }
+        if (matches > TEXT_LOG_MAX_ALTERNATIVES)
+            printf(" and %u more", matches - TEXT_LOG_MAX_ALTERNATIVES);
+        printf("\n");
+    }
+}
+
+static void text_log_observe(musashi_cpu_t *cpu, unsigned reg, uint16_t value)
+{
+    uint32_t base;
+    unsigned matches = 0;
+    const text_log_descriptor_t *d;
+    uint8_t colour;
+
+    switch (reg) {
+    case TMS_HOST_CONTROL:
+        /* The arm.  Counted on the RISING edge only, so one `move.l
+         * #$0000,$c00008.l`-shaped pair of words is one arm and not two: the
+         * real `andi.w #$e7ff,$c00008.l` is a single read-modify-write, and a
+         * counter that doubles for long stores would not describe the number
+         * of $25E8 calls. */
+        {
+            int arm = ((value & TEXT_LOG_HSTCTL_AUTOINC) == 0u) ? 1 : 0;
+            if (arm && !cpu->text_armed)
+                g_text_log_stats.arms++;
+            cpu->text_armed = (uint8_t)arm;
+        }
+        cpu->text_pending = 0u;
+        break;
+
+    case TMS_HOST_ADDR_H:
+        cpu->text_adr_h = value;
+        break;
+
+    case TMS_HOST_ADDR_L:
+        cpu->text_adr_l = value;
+        /* HSTADR only becomes a whole address once the low half is in, and the
+         * 68010 always delivers the high half first for both `move.l` ($2656)
+         * and the read-modify-write `addi.l` ($267A).
+         *
+         * Compose from the decoder's OWN shadow latches, not from
+         * gsp_host_address(cpu): this hook runs before gsp_host_write_word()'s
+         * switch, so cpu->hstadrh/hstadrl still hold the PREVIOUS address here
+         * and using them silently compares against a stale base.  The mask is
+         * the same 0xFFFFFFF0 gsp_host_address applies. */
+        if (!cpu->text_armed)
+            break;
+        cpu->text_armed = 0u;
+        base = (((uint32_t)cpu->text_adr_h << 16) | cpu->text_adr_l) &
+               0xFFFFFFF0u;
+        cpu->text_pending = 0u;
+        if (!text_log_any_at(base))
+            break;   /* no descriptor at this base: not a text draw */
+        cpu->text_pending = 1u;
+        cpu->text_pending_base = base;
+        g_text_log_stats.matched++;
+        break;
+
+    case TMS_HOST_DATA:
+        if (!cpu->text_pending)
+            break;
+        cpu->text_pending = 0u;
+        colour = (uint8_t)(value & 0xFFu);
+        d = text_log_find(cpu->text_pending_base, colour, &matches);
+        if (d == NULL) {
+            g_text_log_stats.colour_miss++;
+            break;
+        }
+        g_text_log_stats.fired++;
+        if (matches > 1u)
+            g_text_log_stats.ambiguous++;
+        text_log_emit(cpu, d, matches);
+        break;
+
+    default:
+        break;
+    }
+}
+
 /* 16-bit write to the host port window. */
 static void gsp_host_write_word(musashi_cpu_t *cpu, unsigned byte_offset,
                                 uint16_t value)
 {
+    /* When the log is off (the default) this is the whole cost: one load, one
+     * compare, one predicted-not-taken branch. */
+    if (g_text_log_enabled)
+        text_log_observe(cpu, gsp_host_reg(byte_offset), value);
+
     switch (gsp_host_reg(byte_offset)) {
     case TMS_HOST_ADDR_H:
         cpu->hstadrh = value;
@@ -2740,6 +3089,36 @@ size_t musashi_cpu_gsp_bus_event_count(const musashi_cpu_t *cpu)
 size_t musashi_cpu_gsp_bus_event_dropped(const musashi_cpu_t *cpu)
 {
     return cpu ? cpu->gsp_bus_log_dropped : 0;
+}
+
+/* ── MC68010 text log ────────────────────────────────────────────────────
+ *
+ * Enable after musashi_loader_load() and before the first musashi_cpu_run().
+ * The selector table is read out of this CPU's own ROM banks, so two CPUs with
+ * different images decode differently -- which is the point, and is also why
+ * the table is rebuilt on every enable rather than cached across calls. */
+unsigned musashi_cpu_text_log_enable(musashi_cpu_t *cpu)
+{
+    if (cpu == NULL) {
+        g_text_log_enabled = 0;
+        return 0;
+    }
+    memset(&g_text_log_stats, 0, sizeof(g_text_log_stats));
+    g_text_log_desc_count = 0;
+    g_text_log_enabled = 1;
+    return text_log_build_table(cpu);
+}
+
+void musashi_cpu_text_log_disable(void)
+{
+    g_text_log_enabled = 0;
+}
+
+void musashi_cpu_text_log_stats(musashi_text_log_stats_t *out)
+{
+    if (out == NULL)
+        return;
+    *out = g_text_log_stats;
 }
 
 int musashi_cpu_dump_state(const musashi_cpu_t *cpu, const char *out_dir)
