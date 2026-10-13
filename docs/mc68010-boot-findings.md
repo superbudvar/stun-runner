@@ -6736,3 +6736,73 @@ LS374 divider producing the `4 MHz / 16 MHz` domains; the 68010 is `16 MHz`
 clocked. Jumpers: `Speed A,B` / `BCLK QB` / `VCLK QB/2`. The 16 MHz figure is
 directly relevant to `stun-runner-bzq`, which currently derives the OKI rate
 from a hardcoded `3579545/3` rather than from a clock the manual states.
+
+### 33.8 Does 512 KiB-vs-4 MiB matter? Measured: not for this ROM, and not against MAME
+
+The question raised against §33.6, answered by
+`mame/lua/gsp-vram-reach.lua` (a write tap on the GSP program space, run to
+frame 600, `--input none`):
+
+```text
+writes=492544  nonzero_writes=0
+max_offset_any=0x3FFFF0  max_offset_NONZERO=(never)
+per 128 KiB page: exactly 16384 writes each for pages 0-27,
+                 9216 / 8192 / 8192 / 8192 for pages 28-31
+pages 4 onward (0x80000 and up) all written, all zero
+```
+
+492,544 = 230,400 (the `$548E` zero fill) + 262,144, and 262,144 is exactly the
+number of 16-byte cells in a 4 MiB share. So there are two whole-share
+operations: the fill's 230,400, and one write per cell across all 4 MiB. Both
+carry zero.
+
+**Every write that reaches the GSP program space in the first 600 frames is
+`0x0000`.** That includes every page above 512 KiB.
+
+So the honest position is symmetric, and it is stronger than "it probably does
+not matter":
+
+* **MAME is not shown to be wrong.** If the real board is 512 KiB and the window
+  aliases every 512 KiB, then the 230,400 fill writes collapse to repeated
+  zeroing of the first 512 KiB and produce *the same end state* as MAME's 3.5 MiB
+  of distinct zeros. Every acceptance test we have, including the byte-exact
+  frame-600 rasteriser comparison, passes under both models.
+* **The ROM cannot be shown to need more than 512 KiB**, because it never puts a
+  nonzero there. The address range it walks is 4 MiB wide; the *data* is not.
+
+The 2 MiB page-twin at delta `0x200000` in the frame-600 fixture is consistent
+with this: two independent whole-share zeroing passes leave page 0 and page 4
+identical without implying a mirror.
+
+**This is not proof that MAME is right.** It is proof that no evidence we hold
+distinguishes the two, which is a different and much weaker claim, and it is the
+kind of claim that decays badly if recorded as the former. §33.6's VRAM array
+sheet remains the way to settle it.
+
+### 33.9 An inconsistency this measurement created, which is not yet resolved
+
+§30.4 and the trace at section 31 show the 68010 issuing `move.w D0,$c0000c.l`
+with **data `0x00DF`** at frames 45-47 -- 331 writes at `$2666` and 330 at
+`$2674`. §31.4 established `$C0000C` decodes to HSTDAT, and `host_w` then calls
+`TMS34010_WRMEM_WORD(addr & 0xfffffff0, data)` -> `m_program.write_word`.
+
+If that path runs, the tap above must have seen `0x00DF` 661 times. It saw zero
+nonzero writes, ever.
+
+So either the two taps disagree, or `write_word` into this 16-bit-wide /
+16-byte-unit space (`datawidth 16, addrshift 3`) does not report to a write tap
+in the way the tap callback signature implies, or the text writes are not
+reaching `m_program`.
+
+**This is unresolved and it is load-bearing**: it is the same question §30.4
+raised, from the other end. Do not reconcile 33.8 and 33.9 by assuming the tap
+is merely blind -- if the tap is blind, then 33.8's "every write is zero" is also
+unproven, and 33.8 has to be withdrawn rather than softened. **The next
+measurement must establish whether a write tap on this space sees a known
+nonzero `write_word`, before any of 33.8 is cited as evidence.**
+
+Cheap version of that test: drive one known word to a known offset through the
+real host port -- `HSTADR=$FF800010`, `HSTDAT=$1234` -- with the tap installed,
+and see whether the callback reports `0x1234` at offset `0x10`. If it does, the
+tap works and 33.8 stands and 33.9 says the text writes are not landing. If it
+does not, the tap is blind and both sections fall.
