@@ -1,5 +1,13 @@
 # Dual GSP native comparison plan
 
+> **Scope update (2026-10-12):** The initial proposal below for comparing a
+> transcripted GSP with an embedded MAME-derived GSP was superseded for the
+> current renderer slice by the user's direction to compare the CPU GSP
+> reference scanout with an independent OpenGL scanout in two windows. The GL
+> shader consumes raw VRAM/palette textures and per-line address state; it does
+> not consume CPU-rendered RGB. The original dual-GSP proposal remains here as
+> historical context, not as the acceptance contract for this scanout slice.
+
 ## Accepted intent
 
 The native app is to keep two independent GSP implementations alive in one
