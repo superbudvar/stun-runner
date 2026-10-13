@@ -6,6 +6,10 @@ import hashlib
 import json
 import pathlib
 import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 FIXTURES = {
@@ -49,6 +53,13 @@ def main() -> int:
     log = args.output / "mame.log"
     with log.open("w", encoding="utf-8") as handle:
         completed = subprocess.run(command, env={**__import__("os").environ, **env}, stdout=handle, stderr=subprocess.STDOUT, check=False)
+    # This tool does capture a Lua log -- it wrote one above and never read it
+    # back. emit-validation.lua writes the four listings and then exits, so a
+    # throw after the last `dasm` leaves four decodable listings and a return
+    # code of 0: the decoding checks below would all pass and the proof would be
+    # published for a script that never reached its own machine:exit().
+    text = log.read_text(encoding="utf-8", errors="replace")
+    lua_errors = find_lua_errors(text)
     if completed.returncode:
         raise SystemExit(f"MAME validation failed; see {log}")
 
@@ -59,8 +70,11 @@ def main() -> int:
             raise SystemExit(f"MAME did not decode {name} as {fixture['mnemonic']}: {listing!r}")
         decoded[name] = listing.splitlines()[0]
 
-    report = {"schema": "stunrun-code-emission-proof/v1", "mame": "system", "fixtures": emitted, "decoded": decoded}
+    report = {"schema": "stunrun-code-emission-proof/v1", "mame": "system", "fixtures": emitted, "decoded": decoded,
+              "lua_errors": lua_errors}
     (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    # After report.json exists, so the failure names a log that is still there.
+    check_lua_errors(text, log)
     print(json.dumps(report, indent=2))
 
 

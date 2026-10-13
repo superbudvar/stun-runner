@@ -12,10 +12,14 @@ needed at launch. Outputs stay local to the given directory.
 """
 
 import argparse
+import json
 import os
 import pathlib
 import subprocess
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 DEFAULT_FRAMES = 21600  # 6 minutes at 60 fps
@@ -133,12 +137,40 @@ def main() -> int:
     print("+ " + " ".join(command), flush=True)
     if args.dry_run:
         return 0
-    proc = subprocess.run(command, env=env)
+    # MAME reports a failed `-autoboot_script` as a line in its own output and
+    # then carries on, exiting 0. play-capture.lua installs the course/score tap,
+    # the RAM snapshots and the save states, so a script that threw before any of
+    # that leaves a capture directory with no course-log.txt and a session that
+    # reads as a race in which nothing happened -- an absent observation
+    # published as a fact about the player.
+    #
+    # This wrapper does not redirect MAME's output to the log: the operator is
+    # told to watch the MAME_PLAY_CHANGE lines in this terminal, so the output is
+    # teed -- streamed to the terminal exactly as before and captured on the way
+    # past -- rather than moved.
+    mame_log = args.output / "mame.log"
+    with mame_log.open("w", encoding="utf-8") as handle:
+        proc = subprocess.Popen(command, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for line in proc.stdout:
+            handle.write(line)
+            handle.flush()
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        proc.wait()
+    text = mame_log.read_text(encoding="utf-8", errors="replace")
+    lua_errors = find_lua_errors(text)
     print(f"MAME exited with code {proc.returncode}.")
-    log = args.output / "course-log.txt"
-    if log.is_file():
-        lines = log.read_text(encoding="utf-8").strip().splitlines()
+    course_log = args.output / "course-log.txt"
+    if course_log.is_file():
+        lines = course_log.read_text(encoding="utf-8").strip().splitlines()
         print(f"course-log.txt: {len(lines) - 1} change(s) recorded.")
+    # Recorded on the summary line: this tool has no result JSON of its own, and
+    # the captured artifacts are the operator's, not ours to reshape.
+    print("lua_errors: " + json.dumps(lua_errors))
+    # A human session ends by closing the window, which is not a failure, so this
+    # only refuses when the observer itself failed.
+    check_lua_errors(text, mame_log)
     return proc.returncode
 
 

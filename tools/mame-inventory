@@ -20,6 +20,41 @@ trap 'rm -f "$log_file"' EXIT
     -seconds_to_run 2 -autoboot_script "$repo_dir/mame/lua/inventory.lua" \
     >"$log_file" 2>&1
 
+# MAME reports a failed `-autoboot_script` as a line in its own output and then
+# carries on, exiting 0, so `set -e` above never sees it. The inventory script
+# prints its JSON and calls machine:exit(), so a script that dies partway
+# through -- or one that printed JSON and then threw -- still leaves something
+# to extract, and a device missing from that partial list reads as a fact about
+# the machine rather than about the observer. The decision belongs to every
+# wrapper and lives in mame_harness/process.py; this shell wrapper has no Python
+# of its own and calls it once.
+#
+# stdout is the inventory itself, so the recorded errors go to stderr rather
+# than corrupting the JSON document.
+check_lua_log() {
+    python3 - "$repo_dir" "$log_file" <<'PY'
+import json
+import pathlib
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from mame_harness.process import check_lua_errors, find_lua_errors
+
+log = pathlib.Path(sys.argv[2])
+text = log.read_text(encoding="utf-8", errors="replace")
+print("lua_errors: " + json.dumps(find_lua_errors(text)), file=sys.stderr)
+check_lua_errors(text, log)
+PY
+}
+
+# The log is a temp file the EXIT trap removes, so a failure dumps it here,
+# before that trap runs, rather than citing a path that is already gone.
+check_lua_log || {
+    cat "$log_file" >&2
+    echo "MAME's Lua script failed; the inventory is incomplete" >&2
+    exit 1
+}
+
 json=$(sed -n 's/^MAME_INVENTORY_JSON //p' "$log_file")
 [[ -n "$json" ]] || {
     cat "$log_file" >&2

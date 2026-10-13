@@ -8,7 +8,11 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 def lua_string(value: str) -> str:
@@ -189,23 +193,35 @@ def main() -> int:
         with log.open("w", encoding="utf-8") as handle:
             completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, check=False, env=environment)
         text = log.read_text(encoding="utf-8")
-        (args.output / "mame.log").write_text(text, encoding="utf-8")
+        published_log = args.output / "mame.log"
+        published_log.write_text(text, encoding="utf-8")
         result_lines = [line.removeprefix("MAME_REPLAY_JSON ") for line in text.splitlines() if line.startswith("MAME_REPLAY_JSON ")]
+        # The generated script is ours, so a throw in it is our own dead
+        # observer: MAME prints `[LUA ERROR]`, carries on and exits 0, and a
+        # result line printed before the throw would otherwise be published as
+        # a complete replay of a run that stopped collecting. Record the errors
+        # in both artifacts so the diagnosis survives whichever branch fires.
+        lua_errors = find_lua_errors(text)
         if completed.returncode or not result_lines:
             failure = {
                 "schema": "arcade-replay-failure/v1",
                 "experiment": str(args.experiment),
                 "returncode": completed.returncode,
                 "reason": "mame_exit" if completed.returncode else "missing_result",
-                "log": str(args.output / "mame.log"),
+                "log": str(published_log),
                 "load_state": str(args.load_state) if args.load_state else None,
+                "lua_errors": lua_errors,
             }
             (args.output / "failure.json").write_text(json.dumps(failure, indent=2) + "\n", encoding="utf-8")
             raise SystemExit(f"replay failed; see {args.output / 'mame.log'}")
         result = json.loads(result_lines[-1])
         result["load_state"] = str(args.load_state) if args.load_state else None
+        result["lua_errors"] = lua_errors
         (args.output / "result.json").write_text(
             json.dumps(result, separators=(",", ":")) + "\n", encoding="utf-8")
+        check_lua_errors(text, published_log)
+        # stdout stays MAME's own result line, verbatim: the artifacts in
+        # reference/experiments are built from it.
         print(result_lines[-1])
 
 

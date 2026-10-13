@@ -8,7 +8,11 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 RESULT = re.compile(
@@ -148,6 +152,12 @@ def main() -> int:
                                        env={**os.environ, "SDL_VIDEODRIVER": "dummy"}, check=False)
     text = log.read_text(encoding="utf-8")
     matches = RESULT.findall(text)
+    # The loader is a generated script, so a throw in it is our own dead
+    # observer: MAME prints `[LUA ERROR]`, carries on and exits 0. The RESULT
+    # line is printed before machine:exit(), so a script that died after it
+    # would otherwise be published as a completed installation whose later
+    # frames were never observed.
+    lua_errors = find_lua_errors(text)
     if completed.returncode or not matches:
         raise SystemExit(f"replacement image validation failed; see {log}")
     (frame, installed, first, entry_word, mismatches, final_pc,
@@ -178,6 +188,7 @@ def main() -> int:
             }
         },
         "returncode": completed.returncode,
+        "lua_errors": lua_errors,
     }
     if probe_values:
         result["data_words"] = {
@@ -185,6 +196,8 @@ def main() -> int:
             for item in probe_values.split(',')
         }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # After the artifact exists, so the failure names a log that is still there.
+    check_lua_errors(text, log)
     print(json.dumps(result, indent=2))
     return 0
 

@@ -26,6 +26,27 @@ for listing in maincpu-68010 gsp-tms34010 adsp2100 sound-6502; do
     [[ -s "$file" ]] || { echo "missing listing: $file" >&2; exit 1; }
 done
 
+# MAME reports a failed `-autoboot_script` as a line in its own output and then
+# carries on, exiting 0, so the exit status above never sees it. Every listing
+# existing is therefore not by itself proof the script ran to completion: a
+# script that threw after its last `dasm` leaves four perfectly decodable
+# listings behind. The decision belongs to every wrapper and lives in
+# mame_harness/process.py; this shell wrapper has no Python of its own and calls
+# it once, after the listing files exist so the diagnosis has them to point at.
+python3 - "$repo_dir" "$output/mame.log" <<'PY'
+import json
+import pathlib
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from mame_harness.process import check_lua_errors, find_lua_errors
+
+log = pathlib.Path(sys.argv[2])
+text = log.read_text(encoding="utf-8", errors="replace")
+print("lua_errors: " + json.dumps(find_lua_errors(text)))
+check_lua_errors(text, log)
+PY
+
 printf '%s\n' 'static listings generated:'
 for listing in "$output"/*.lst; do
     printf '%s\n' "$listing"
