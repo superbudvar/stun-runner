@@ -50,3 +50,7 @@ tools/frame_diff
 
 # Raw harness logs are reference evidence when stored under reference/.
 !reference/**/*.log
+
+# Specific build directories
+build-test/
+native/build_*/
