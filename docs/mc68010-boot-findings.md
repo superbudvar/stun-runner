@@ -6395,3 +6395,188 @@ This section files nothing in `BUGS.md` and changes no shared header. The
 `gsp_zero_fill` constants are its own; `STUNRUN_TEXT_HSTCTL` and
 `STUNRUN_TEXT_HSTDAT` in `native/mc68010_text_writer.h` are left exactly as
 §31.4 found them.
+
+## 32. The head of the boot chain: `$506C` sets SP and a continuation, then tails into `$53F2`
+
+ROM range `$0000506C-$00005078`, 12 bytes, maincpu program ROM. Flat image
+`roms/stunrun/stunrun_maincpu.bin`, sha256
+`29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c`
+(verified unchanged for this transcription).
+
+```asm
+0000506c: 2e 7c ff ff c0 00   movea.l #$ffffc000, A7
+00005072: 41 fa 00 06         lea     ($6,PC), A0        ; ($507a)
+00005076: 60 00 03 7a         bra     $53f2
+```
+
+Both PC-relative operands resolve against the address of the instruction's
+**extension word**, not its first byte. `lea ($6,PC),A0` is encoded at `$5072`,
+its extension word is at `$5074`, and `$5074 + $0006 = $507A`. `bra.s` is
+encoded at `$5076`, its extension word at `$5078`, and `$5078 + $037A = $53F2`.
+Using the opcode address instead yields `$5078` and `$53F4`, the first of which
+is one byte inside the `bra` and would decode as different code entirely.
+
+### 32.1 Confirmed
+
+* **Three instructions, twelve bytes.** No hidden fourth; `$507A` is the next
+  link and is code.
+* **There is no `jsr $506C` anywhere in the image.** A full-image
+  disassembly contains exactly three references to `$506C` and every one is a
+  `jmp`: `$0106`, `$0172`, `$02B2`. The absence of a call is why this chain is
+  invisible to xref tools that key on call sites.
+* **`$53F2` ends in `jmp (A0)` at `$548C`.** So A0 is not a data pointer, it is
+  the trampoline the boot sequence returns through. `$548E` ends in `jmp (A0)`
+  at `$54C0` and `$54C2` ends in `jmp (A0)` at `$552A`, so the pattern holds
+  across the whole chain:
+
+  ```asm
+  $506C  SP:=$FFFFC000, A0:=$507A, bra $53F2
+  $53F2  ... $548C  jmp (A0) -> $507A
+  $507A  A0:=$5082, bra $548E        <- 900 x 256 = 230400 discarded HSTDAT writes
+  $548E  ... $54C0  jmp (A0) -> $5082
+  $5082  A0:=$508A, bra $54C2        <- pattern ramps at $F5xxxxxx
+  $54C2  ... $552A  jmp (A0) -> $508A
+  $508A  D0:=$0047, A2:=$5098, jmp $25E8.l
+  ```
+
+  Each link is the same two instructions in the same order. `$508A` hands the
+  next continuation to **A2**, not A0, because `$25E8` drives A0 and A1 itself;
+  the chain terminates there.
+* **The SP literal is the ROM's Initial SSP, byte for byte.** The first long of
+  the reset vector at ROM `$00000000` is `ff ff c0 00` = `$FFFFC000`
+  (`xxd -l 8`). The second long at `$00000004` is `$00000216`, so the ROM's own
+  reset-vector PC is `$0216`, and `$0216` does `movea.l ($0,A0), A7` with
+  `A0 = 0` — it loads A7 *from* that long. The ROM therefore treats
+  `$FFFFC000` as "the stack pointer", not as an arbitrary constant.
+* **`movea.l #$ffffc000,A7` occurs at 45 sites in this image and is a
+  procedure prologue, not a one-off.** `$0FBC` is structurally identical to
+  `$506C`: set A7, `lea (d,PC),An`, tail-branch. `$50B0` and `$53E6` are the
+  same. There is **no overlap** between the 45 prologue sites and the 532
+  `link` sites, so the ROM runs two conventions side by side.
+* **On the 24-bit bus the effective SP is `$FFC000`.** `$FFFFC000 & $FFFFFF =
+  $FFC000`, which is exactly 16 KiB above `$FF8000`, the base of the 32 KiB work
+  RAM from §9 — leaving 16 KiB of stack growth below A7 and nothing above it.
+  This **corroborates** §9 rather than contradicting it. (The 24-bit mask is
+  already established here: `native/musashi_cpu.c:360` and §9's note that the
+  oracle dump "wrapped under a 24-bit address mask".)
+
+### 32.2 Is `$506C` an entry point, or the tail of something larger?
+
+**Entry point. Both readings were checked and the alternatives do not hold.**
+
+* Not fall-through: `$506A` is an `rts` belonging to the routine that ends
+  there. The next byte, `$506C`, is a fresh function.
+* Not a `jmp` target from inside the chain: the only three incoming transfers
+  are the three `jmp`s above. `$0106` and `$0172` are two entries of the thunk
+  table at `$0100` (a dense 6-byte-stride table of `jmp $xxxx.l` stubs);
+  `$02B2` is reached straight out of a port test.
+
+**Correction to `native/fake_ports.c`.** The comment at `fake_ports.c:40`
+records `clear -> 0x2a0 -> 0x506c -> 0x548e`. The endpoints are right; the
+middle step is conditional and has a sibling that the record does not mention:
+
+```asm
+000002a0: 08 39 00 00 00 60 c0 01   btst  #$0, $60c001.l
+000002a8: 66 00 00 08               bne   $2b2
+000002ac: 4e f9 00 00 8f ee         jmp   $8fee.l     ; bit 0 clear
+000002b2: 4e f9 00 00 50 6c         jmp   $506c.l     ; bit 0 set
+```
+
+So `$2A0` does **not** fall through into `$506C`; `$2B2` does, conditionally on
+bit 0. The bit-0-clear arm is `$8FEE`, which runs a **parallel chain** of
+identical shape — `$8FF2` sets `A0 = $8FFA` and `$8FF6` branches to the same
+`$53F2` — differing from `$506C` only in that `$8FEE` does `move #$2F00,SR` and
+does **not** touch A7. So `$548E` is one of two places that chain can arrive at.
+
+Two further corrections worth making in the same comment when someone next
+touches it: the route to `$548E` passes through `$53F2` and `$507A`, not
+directly; and **`$2B8` is data, not code** — `$5410` does `lea $2b8.l,A1` and
+walks 8 six-byte records to `$2E7`, which is why the bytes after `$2B2` decode
+into plausible-looking nonsense.
+
+### 32.3 Why `$FFFFC000`? Two readings, neither discarded
+
+Both survive the evidence; the slice documents both and resolves neither.
+
+1. **It is the Initial SSP.** Direct evidence: the reset vector long, and
+   `$0216` loading A7 from it.
+2. **It is a fixed frame base.** Evidence: 45 sites, each the first instruction
+   of its routine, none of them `link`, none saving the incoming A7.
+
+On reading 2 the `movea.l` **replaces** rather than restores — nothing saves
+the old A7 and nothing puts it back. That is only safe because `$506C` is
+entered by `jmp` and never by `jsr`, so there is no return address to lose.
+It is a real constraint on the slice: `$506C` must never be modelled as a
+function that returns.
+
+Readings 1 and 2 are not in tension numerically — the 24-bit mask makes the
+constant land in the same place either way — so they are also *not*
+distinguishable by any observation available here. What distinguishes them is
+intent, and intent is not in the bytes.
+
+### 32.4 `docs/mc68010-boot-findings.md` §2 is wrong about this edge
+
+§2 (line 212) says *"The boot at `0x506c`->`0x50b0`"*. §2's own listing of
+`$50B0`-`$50FE` is accurate, but the **edge into it is not from `$506C`**:
+`$506C` branches to `$53F2`. `$50B0` is a separate routine, reached only from
+`$573E`, `$5750` and `$587C`. This is our own doc error, so it is a refutation
+in this document, not a `BUGS.md` entry.
+
+### 32.5 C slice
+
+`native/gsp_boot_entry.{h,c}` + `native/gsp_boot_entry_test.c`, registered by
+the parent in `native/CMakeLists.txt`.
+
+The seam reports the three operations as ordered events
+(`SET_SP`, `SET_CONTINUATION`, `TRANSFER`) plus a register/block state struct,
+because the slice is a transfer and not a call: modelling it as a C function
+that returns would invent an activation record the ROM does not have. Both
+PC-relative operands go through one helper,
+`stunrun_gsp_boot_entry_pc_relative(base, displacement)`, fed an explicit
+base+displacement pair, so the slice records the *rule* rather than the two
+numbers that fall out of it. The helper sign-extends the 16-bit word; the
+negative-displacement case is asserted because `(d,PC)` is a signed form and an
+unsigned add would satisfy `$5074 + $0006` while failing `$5000 - 6`.
+
+`STUNRUN_GSP_BOOT_ENTRY_SP_EFFECTIVE` exposes the post-mask value, and the test
+asserts the mask and the §9 arithmetic separately so that moving either the SP
+literal or the RAM base breaks something visible.
+
+**Check facts.**
+
+```
+$ gcc -std=c99 -O2 -Wall -Wextra -o /tmp/opencode/gsp_boot_entry_test \
+      native/gsp_boot_entry.c native/gsp_boot_entry_test.c -Inative
+$ /tmp/opencode/gsp_boot_entry_test
+gsp boot entry slice: all checks passed                     (exit 0)
+
+$ gcc -std=c99 -O2 -Wall -Wextra -Wpedantic -Wshadow -Wconversion ...
+gsp boot entry slice: all checks passed                     (exit 0, no warnings)
+```
+
+The test asserts observable output: the value written to A7, the value written
+to A0, the address control leaves for, and the **order** of the three. Order is
+asserted because it is the part a final-state check cannot see — mutation E
+below reports the correct three numbers in the wrong order and still fails.
+Register expectations are literals in the test and derived values in the
+implementation; if both sides computed from the same constants, moving a
+constant would move both together and the test would keep passing for the wrong
+reason. The test also caught a real precedence bug in its own first draft
+(`a7 & mask == want` parses as `a7 & (mask == want)`).
+
+**Negative control** — the test file is never modified; five mutated copies of
+the implementation are compiled against it:
+
+| # | mutation | exit | reported |
+|---|---|---|---|
+| A | `LEA_DISP $0006 -> $0008` | 1 | 3 failures: continuation/`A0`/event 1 all `0x507c`, want `0x507a` |
+| B | `BRA_DISP $037A -> $0376` | 1 | 2 failures: target/event 2 `0x53ee`, want `0x53f2` |
+| C | continuation and target swapped (`$53F2` / `$507A`) | 1 | 5 failures across all four value assertions |
+| D | PC base off by one (`$5074 -> $5073`) | 1 | 3 failures: `0x5079`, want `0x507a` |
+| E | emit order swapped, same three values | 1 | 2 failures: event 0 is `0x2` want `0x0`, event 2 is `0x0` want `0x2` |
+
+C and E are the ones worth keeping. **C** shows the assertions are
+position-specific rather than set-based: a slice that reported both addresses
+but attached them to the wrong register produces the same *set* of values and
+is still caught. **E** shows the ordering assertion is real rather than
+decorative — every register value is still correct and the test still fails.

@@ -615,6 +615,19 @@ add_executable(stunrun-gsp-boot-slice-test
 set_target_properties(stunrun-gsp-boot-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-boot-slice-c COMMAND stunrun-gsp-boot-slice-test)
 
+# --- gsp_boot_entry slice --------------------------------------------------
+# MC68010 boot entry (ROM $0000506C-$00005078): sets SP to $FFFFC000,
+# materialises the first continuation address ($507A) and tail-branches into the
+# GSP boot at $53F2.  The routine has no jsr xref -- only three jmp entries off
+# the $0100 thunk table -- so it must never be modelled as a C function that
+# returns.  See docs/mc68010-boot-findings.md section 32.
+add_executable(stunrun-gsp-boot-entry-slice-test
+  gsp_boot_entry.c
+  gsp_boot_entry_test.c)
+set_target_properties(stunrun-gsp-boot-entry-slice-test PROPERTIES C_STANDARD 99)
+add_test(NAME gsp-boot-entry-slice-c
+  COMMAND stunrun-gsp-boot-entry-slice-test)
+
 # --- gsp_zero_fill slice ---------------------------------------------------
 # MC68010 boot VRAM fill (ROM $0000548E-$000054C0): 256 x 900 = 230400 HSTDAT
 # writes reached through $C0000C, which the pinned driver's host-port decode
