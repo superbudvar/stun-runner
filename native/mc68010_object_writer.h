@@ -463,4 +463,48 @@ void stunrun_mc68010_object_build_geometry(
     const uint8_t buffer[32],
     void *fifo_context,
     void (*write_fifo_word)(void *ctx, uint16_t word));
+
+
+/* ── Road block collision geometry emitter ($02B7E8) ───────────────────────── */
+
+/* Ghidra symbol: s_0002B7E8_mc68010_road_block_collision
+ *
+ * Road block collision detection function. Constructs geometry coordinate
+ * arguments and calls the shared geometry FIFO emitter ($02F470) four times.
+ *
+ * Entry conditions (arguments passed on stack, MC68010 big-endian):
+ *   arg1 (long at A6+$08): D2 - primary coordinate (x base)
+ *   arg2 (long at A6+$0C): D3 - secondary coordinate (y base)
+ *   arg3 (long at A6+$10): D4 - z coordinate / selector source
+ *
+ * The function computes:
+ *   x         = low16(D2)
+ *   y         = low16(D3)
+ *   x_plus_80 = x + 0x80
+ *   y_plus_38 = y + 0x38
+ *   selector  = high8(D4)
+ *
+ * Then calls geometry_emit_fifo 4 times, each emitting 5 words to the FIFO:
+ *   Call 1: (x, y, x_plus_80, y, z)
+ *   Call 2: (y_plus_38, x_plus_80, y, x_plus_80, z)
+ *   Call 3: (y_plus_38, x, y_plus_38, x_plus_80, z)
+ *   Call 4: (y, x, y_plus_38, x, z)
+ *
+ * Each geometry_emit_fifo call writes 5 words to $C0000C:
+ *   {0x2000 + selector, arg1, arg2, arg3, arg4}
+ *
+ * Total output: 4 calls times 5 words = 20 FIFO words.
+ *
+ * The selector byte (low 8 bits of D4) is embedded in the control word.
+ *
+ * Disassembly provenance: MAME listing at /tmp/opencode/stunrun-listings-current/maincpu-68010.lst
+ * line 51319, ROM address $02B7E8.
+ */
+void stunrun_mc68010_road_block_collision(
+    void *fifo_context,
+    void (*write_fifo_word)(void *ctx, uint16_t word),
+    uint32_t d2,
+    uint32_t d3,
+    uint32_t d4);
+
 #endif /* STUNRUN_MC68010_OBJECT_WRITER_H */

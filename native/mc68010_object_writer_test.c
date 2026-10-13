@@ -457,6 +457,12 @@ static int test_build_geometry_nonzero_index(void);
 static int test_build_geometry_negative_arg(void);
 static int test_build_geometry_selector(void);
 
+/* Forward declarations for $02B7E8 road block collision tests */
+static int test_road_block_word_count(void);
+static int test_road_block_basic_selector(void);
+static int test_road_block_coordinates(void);
+static int test_road_block_overflow(void);
+
 /* ── Main (updated) ── */
 
 int main(void)
@@ -499,6 +505,10 @@ int main(void)
     if (test_build_geometry_nonzero_index() != 0) failures++;
     if (test_build_geometry_negative_arg() != 0) failures++;
     if (test_build_geometry_selector() != 0) failures++;
+    if (test_road_block_word_count() != 0) failures++;
+    if (test_road_block_basic_selector() != 0) failures++;
+    if (test_road_block_coordinates() != 0) failures++;
+    if (test_road_block_overflow() != 0) failures++;
     if (failures == 0) { printf("All tests passed.\n"); return 0; }
     else { printf("%d test(s) failed.\n", failures); return 1; }
 }
@@ -712,5 +722,88 @@ static int test_build_geometry_selector(void)
     for (unsigned i = 0; i < 7; i++) {
         CHECK_EQ(g_fifo_words[i * 5 + 0], (uint16_t)(0x2000u + 0x55));
     }
+    return 0;
+}
+
+
+/* ── Tests for $02B7E8 road block collision geometry ─────────────────────────── */
+
+/* Test: road block collision emits 20 words (4 calls × 5 words) */
+static int test_road_block_word_count(void)
+{
+    printf("Test: road_block emits 20 words\n");
+    reset_fifo_state();
+    stunrun_mc68010_road_block_collision(NULL, mock_fifo_word, 0, 0, 0);
+    CHECK_EQ(g_fifo_word_count, 20u);
+    return 0;
+}
+
+/* Test: basic geometry emission with zero coordinates and known selector
+ * D2=0, D3=0, D4=0x00004200 → z=0, selector=0x42 */
+static int test_road_block_basic_selector(void)
+{
+    printf("Test: road_block basic selector D4=0x00004200\n");
+    reset_fifo_state();
+
+    /* D4 = 0x00004200 → selector = (d4 >> 8) = 0x42, z = low word = 0 */
+    stunrun_mc68010_road_block_collision(NULL, mock_fifo_word,
+                                         0u, 0u, 0x00004200u);
+
+    /* Should emit 20 words */
+    CHECK_EQ(g_fifo_word_count, 20u);
+
+    /* All 4 packets should have selector = 0x42 (control = 0x2042) */
+    CHECK_EQ(g_fifo_words[0], (uint16_t)(0x2000u + 0x42));
+    CHECK_EQ(g_fifo_words[5], (uint16_t)(0x2000u + 0x42));
+    CHECK_EQ(g_fifo_words[10], (uint16_t)(0x2000u + 0x42));
+    CHECK_EQ(g_fifo_words[15], (uint16_t)(0x2000u + 0x42));
+
+    return 0;
+}
+
+/* Test: x and y coordinates are correctly used */
+static int test_road_block_coordinates(void)
+{
+    printf("Test: road_block coordinates D2=0x10,D3=0x20,D4=0x00004200\n");
+    reset_fifo_state();
+
+    /* x = 0x10, y = 0x20, z = 0, selector = 0x42 */
+    stunrun_mc68010_road_block_collision(NULL, mock_fifo_word,
+                                         0x0010u, 0x0020u, 0x00004200u);
+
+    CHECK_EQ(g_fifo_word_count, 20u);
+
+    /* Packet 1: (x=0x10, y=0x20, x+0x80=0x90, y=0x20, z=0)
+     * At offsets 0-4: control=0x2042, then 0x0010, 0x0020, 0x0090, 0x0020 */
+    CHECK_EQ(g_fifo_words[0], (uint16_t)(0x2000u + 0x42));
+    CHECK_EQ(g_fifo_words[1], 0x0010u);
+    CHECK_EQ(g_fifo_words[2], 0x0020u);
+    CHECK_EQ(g_fifo_words[3], 0x0090u);
+    CHECK_EQ(g_fifo_words[4], 0x0020u);
+
+    return 0;
+}
+
+/* Test: coordinate overflow wrapping for x+0x80 and y+0x38 */
+static int test_road_block_overflow(void)
+{
+    printf("Test: road_block overflow D2=0xFF90,D3=0xFF30,D4=0x00004200\n");
+    reset_fifo_state();
+
+    /* x = 0xFF90, y = 0xFF30
+     * x + 0x80 = 0x0010 (wraps)
+     * y + 0x38 = 0xFF68 (no wrap) */
+    stunrun_mc68010_road_block_collision(NULL, mock_fifo_word,
+                                         0xFF90u, 0xFF30u, 0x00004200u);
+
+    CHECK_EQ(g_fifo_word_count, 20u);
+
+    /* Packet 1: (x=0xFF90, y=0xFF30, x+0x80=0x0010, y=0xFF30, z=0)
+     * At offsets 0-4: control=0x2042, 0xFF90, 0xFF30, 0x0010, 0xFF30 */
+    CHECK_EQ(g_fifo_words[1], 0xFF90u);
+    CHECK_EQ(g_fifo_words[2], 0xFF30u);
+    CHECK_EQ(g_fifo_words[3], 0x0010u);
+    CHECK_EQ(g_fifo_words[4], 0xFF30u);
+
     return 0;
 }

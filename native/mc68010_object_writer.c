@@ -500,3 +500,147 @@ stunrun_mc68010_object_build_geometry(uint16_t record_index,
                          D3 - 6,                 /* arg4: D3 - 6 */
                          selector);
 }
+
+/* ── Road block collision geometry emitter ($02B7E8) ───────────────────────── */
+
+/* Ghidra symbol: s_0002B7E8_mc68010_road_block_collision
+ *
+ * Road block collision detection: constructs geometry arguments and calls the
+ * shared geometry FIFO emitter ($02F470) four times.
+ *
+ * Entry conditions (arguments passed on stack, MC68010 big-endian):
+ *   arg1 (long at A6+$08): D2 - primary coordinate (x base)
+ *   arg2 (long at A6+$0C): D3 - secondary coordinate (y base)
+ *   arg3 (long at A6+$10): D4 - z coordinate / selector source
+ *
+ * The function computes:
+ *   x       = low16(D2)
+ *   y       = low16(D3)
+ *   x_plus_80 = x + 0x80
+ *   y_plus_38 = y + 0x38
+ *   selector   = low8(D4)
+ *
+ * Then calls geometry_emit_fifo 4 times, each emitting 5 words to the FIFO.
+ * The 4 calls produce these argument sets (in FIFO argument order):
+ *   Call 1: (x, y, x_plus_80, y, z)
+ *   Call 2: (y_plus_38, x_plus_80, y, x_plus_80, z)
+ *   Call 3: (y_plus_38, x, y_plus_38, x_plus_80, z)
+ *   Call 4: (y, x, y_plus_38, x, z)
+ *
+ * Each call to geometry_emit_fifo writes 5 words to $C0000C:
+ *   {0x2000 + selector, arg1, arg2, arg3, arg4}
+ *
+ * Full disassembly from MAME listing (file offset 0x2B7E8), line 51319:
+ *
+ * 02B7E8: link    A6,#$0
+ * 02B7EC: movem.l D2-D4/A2,-(A7)
+ * 02B7F0: move.l  ($8,A6),D2         ; D2 = arg1 (x base)
+ * 02B7F4: move.l  ($c,A6),D3         ; D3 = arg2 (y base)
+ * 02B7F8: move.l  ($10,A6),D4        ; D4 = arg3 (z/selector source)
+ * 02B7FC: movea.l #$2f470,A2         ; A2 = $02F470 (geometry_emit_fifo)
+ *
+ *   ;; Call 1: push z, y, x+0x80, y, x  →  (x, y, x+0x80, y, z)
+ * 02B802: move.l  D4,-(A7)            ; arg0 = z
+ * 02B804: move.l  D3,-(A7)            ; arg1 = y
+ * 02B806: move.l  D2,D1               ; D1 = x
+ * 02B808: addi.l  #$80,D1             ; D1 = x + 0x80
+ * 02B80E: move.l  D1,-(A7)            ; arg2 = x + 0x80
+ * 02B810: move.l  D3,-(A7)            ; arg3 = y
+ * 02B812: move.l  D2,-(A7)            ; arg4 = x
+ * 02B814: jsr     (A2)                 ; Call $02F470
+ *
+ *   ;; Call 2: push z, y+0x38, x+0x80, y, x+0x80  →  (y+0x38, x+0x80, y, x+0x80, z)
+ * 02B816: move.l  D4,-(A7)            ; arg0 = z
+ * 02B818: move.l  D3,D1               ; D1 = y
+ * 02B81A: moveq   #$38,D0             ; D0 = 0x38
+ * 02B81C: add.l   D0,D1               ; D1 = y + 0x38
+ * 02B81E: move.l  D1,-(A7)            ; arg1 = y + 0x38
+ * 02B820: move.l  D2,D1               ; D1 = x
+ * 02B822: addi.l  #$80,D1             ; D1 = x + 0x80
+ * 02B828: move.l  D1,-(A7)            ; arg2 = x + 0x80
+ * 02B82A: move.l  D3,-(A7)            ; arg3 = y
+ * 02B82C: move.l  D2,D0               ; D0 = x
+ * 02B82E: addi.l  #$80,D0             ; D0 = x + 0x80
+ * 02B834: move.l  D0,-(A7)            ; arg4 = x + 0x80
+ * 02B836: jsr     (A2)                 ; Call $02F470
+ *
+ *   ;; Call 3: push z, y+0x38, x, y+0x38, x+0x80  →  (y+0x38, x, y+0x38, x+0x80, z)
+ * 02B838: move.l  D4,-(A7)            ; arg0 = z
+ * 02B83A: move.l  D3,D1               ; D1 = y
+ * 02B83C: moveq   #$38,D0             ; D0 = 0x38
+ * 02B83E: add.l   D0,D1               ; D1 = y + 0x38
+ * 02B840: move.l  D1,-(A7)            ; arg1 = y + 0x38
+ * 02B842: move.l  D2,-(A7)            ; arg2 = x
+ * 02B844: move.l  D3,D1               ; D1 = y
+ * 02B846: moveq   #$38,D0             ; D0 = 0x38
+ * 02B848: add.l   D0,D1               ; D1 = y + 0x38
+ * 02B84A: move.l  D1,-(A7)            ; arg3 = y + 0x38
+ * 02B84C: move.l  D2,D0               ; D0 = x
+ * 02B84E: addi.l  #$80,D0             ; D0 = x + 0x80
+ * 02B854: move.l  D0,-(A7)            ; arg4 = x + 0x80
+ * 02B856: jsr     (A2)                 ; Call $02F470
+ *
+ *   ;; Call 4: push z, y, x, y+0x38, x  →  (y, x, y+0x38, x, z)
+ * 02B858: move.l  D4,-(A7)            ; arg0 = z
+ * 02B85A: move.l  D3,-(A7)            ; arg1 = y
+ * 02B85C: move.l  D2,-(A7)            ; arg2 = x
+ * 02B85E: move.l  D3,D1               ; D1 = y
+ * 02B860: moveq   #$38,D0             ; D0 = 0x38
+ * 02B862: add.l   D0,D1               ; D1 = y + 0x38
+ * 02B864: move.l  D1,-(A7)            ; arg3 = y + 0x38
+ * 02B866: move.l  D2,-(A7)            ; arg4 = x
+ * 02B868: jsr     (A2)                 ; Call $02F470
+ *
+ * 02B86A: movem.l (-$10,A6),D2-D4/A2 ; Restore
+ * 02B870: unlk    A6
+ * 02B872: rts
+ *
+ * Disassembly provenance: MAME listing
+ * `/tmp/opencode/stunrun-listings-current/maincpu-68010.lst`, line 51319,
+ * ROM address $02B7E8.
+ *
+ * 4 calls × 5 words = 20 total FIFO words.
+ */
+
+void
+stunrun_mc68010_road_block_collision(
+    void *fifo_ctx,
+    void (*write_fifo_word)(void *, uint16_t),
+    uint32_t d2,
+    uint32_t d3,
+    uint32_t d4)
+{
+    /* Extract coordinate components (low 16 bits of each argument) */
+    uint16_t x = (uint16_t)d2;
+    uint16_t y = (uint16_t)d3;
+    uint16_t z = (uint16_t)d4;
+    uint8_t selector = (uint8_t)(d4 >> 8);
+
+    /* Pre-compute offsets */
+    uint16_t x_plus_80 = (uint16_t)(x + 0x80u);
+    uint16_t y_plus_38 = (uint16_t)(y + 0x38u);
+
+    /* Call 1: (x, y, x_plus_80, y, z) */
+    emit_geometry_packet(fifo_ctx, write_fifo_word,
+                        (int16_t)x, (int16_t)y,
+                        (int16_t)x_plus_80, (int16_t)y,
+                        selector);
+
+    /* Call 2: (y_plus_38, x_plus_80, y, x_plus_80, z) */
+    emit_geometry_packet(fifo_ctx, write_fifo_word,
+                        (int16_t)y_plus_38, (int16_t)x_plus_80,
+                        (int16_t)y, (int16_t)x_plus_80,
+                        selector);
+
+    /* Call 3: (y_plus_38, x, y_plus_38, x_plus_80, z) */
+    emit_geometry_packet(fifo_ctx, write_fifo_word,
+                        (int16_t)y_plus_38, (int16_t)x,
+                        (int16_t)y_plus_38, (int16_t)x_plus_80,
+                        selector);
+
+    /* Call 4: (y, x, y_plus_38, x, z) */
+    emit_geometry_packet(fifo_ctx, write_fifo_word,
+                        (int16_t)y, (int16_t)x,
+                        (int16_t)y_plus_38, (int16_t)x,
+                        selector);
+}

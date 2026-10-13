@@ -203,6 +203,19 @@ target_include_directories(stunrun-native-shell PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/gsp_rtl)
 set_target_properties(stunrun-native-shell PROPERTIES
   C_STANDARD 99 CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+if(STUNRUN_GSP_GL_SCANOUT_ENABLED)
+  target_compile_definitions(stunrun-native-shell PRIVATE
+    STUNRUN_GSP_GL_SCANOUT=1)
+  add_executable(stunrun-gsp-scanout-gl-test
+    gsp_scanout_gl_test.c gsp_display.c render.c)
+  target_link_libraries(stunrun-gsp-scanout-gl-test PRIVATE stunrun_backends)
+  target_include_directories(stunrun-gsp-scanout-gl-test PRIVATE
+    . ../backend)
+  set_target_properties(stunrun-gsp-scanout-gl-test PROPERTIES
+    C_STANDARD 99 C_STANDARD_REQUIRED ON)
+  add_test(NAME gsp-scanout-gl-parity COMMAND stunrun-gsp-scanout-gl-test)
+  set_tests_properties(gsp-scanout-gl-parity PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 add_test(NAME native-shell COMMAND stunrun-native-shell)
 set_tests_properties(native-shell PROPERTIES
   ENVIRONMENT "STUNRUN_BACKEND=null;STUNRUN_VIDEO_BACKEND=null;STUNRUN_AUDIO_BACKEND=null")
@@ -218,6 +231,18 @@ add_test(NAME gsp-word-pair-slice-c COMMAND stunrun-gsp-word-pair-test)
 add_executable(stunrun-gsp-2bpp-glyph-test gsp_2bpp_glyph.c gsp_2bpp_glyph_test.c)
 set_target_properties(stunrun-gsp-2bpp-glyph-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-2bpp-glyph-slice-c COMMAND stunrun-gsp-2bpp-glyph-test)
+
+# Agent 2: MC68010 object record update routines
+add_executable(stunrun-mc68010-object-writer-test
+  mc68010_object_writer.c mc68010_object_writer_test.c)
+set_target_properties(stunrun-mc68010-object-writer-test PROPERTIES C_STANDARD 99)
+add_test(NAME mc68010-object-writer-slice-c COMMAND stunrun-mc68010-object-writer-test)
+
+# Agent 2: Vehicle physics (speed update, input handling, trajectory)
+add_executable(stunrun-mc68010-physics-test
+  mc68010_physics.c mc68010_physics_test.c)
+set_target_properties(stunrun-mc68010-physics-test PROPERTIES C_STANDARD 99)
+add_test(NAME mc68010-physics-slice-c COMMAND stunrun-mc68010-physics-test)
 
 # Agent 2: 3D track viewer - extracts track geometry from ROM and renders in OpenGL
 find_package(OpenGL QUIET)
