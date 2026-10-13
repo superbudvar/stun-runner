@@ -5613,3 +5613,117 @@ own events, which is exactly the check we had to invent. A one-line note in
 `ref-mem.rst`, or a debug log line in `tap_helper` when a handler is dropped,
 would be a defensible small contribution — but that is a suggestion, not a
 finding, and it is not worth a PR before someone wants it.
+
+## 29. Scripted MAME input is nondeterministic, so every `--input` artifact is one arm of a coin flip
+
+Found 2026-10-13 while trying to close `stun-runner-rg9`. This is not an
+assembly finding and it is not yet a MAME finding either: it is a harness
+reproducibility failure, and it is the reason §21's oracle could not be
+re-derived. Tracked as `stun-runner-0p0`, which now blocks `stun-runner-rg9`.
+
+### 29.1 The symptom
+
+Six identical invocations, changing nothing but the output directory:
+
+```sh
+for i in 1 2 3 4 5 6; do
+  ./tools/mame-ram-write-trace roms /tmp/opencode/rg9/s$i \
+    --device :mainpcb:maincpu --base 0xC00000 --end 0xC00020 \
+    --frames 400 --start-frame 10 --end-frame 400 --pc 0x2656 --registers \
+    --max-events 4000 --input service_f2 --mame /mnt/build/mame-ref/mame
+done
+```
+
+```text
+run1  1040 events  frames [214,215,216,334,335,336]
+run2   480 events  frames [45,46,47]
+run3  1040 events  frames [214,215,216,334,335,336]
+run4   480 events  frames [45,46,47]
+run5  1040 events  frames [214,215,216,334,335,336]
+run6   480 events  frames [45,46,47]
+```
+
+Perfect alternation, not a random race. Repeating with all four runs writing to
+the *same* output directory alternated identically, so it is not per-run state on
+disk — only `mame.log` and `result.json` are ever written. `--nothrottle`
+alternated the same way, so it is not wall-clock pacing.
+
+### 29.2 The machine is not at fault
+
+This is the part that rules the obvious suspects out.
+
+```text
+--input none, four mame-gsp-state-snapshot runs, frame 300:
+  sha256 7e48495c4d7c2867dffd625d0b295a0c50c26fd585d25ffc20bf93fabc853d49  x4
+```
+
+Identical screen, every time. Three `--input none` host-write traces gave
+**3000/3000 byte-identical events**. ROM hashes match the manifest on all 25
+entries; the MAME binary is `75b09ee4…`, exactly the one recorded in
+`service-f2-text-host-writes/metadata.json`. Deterministic machine, verified
+three ways. Only the scripted-input path is flaky.
+
+The divergence is broad, not confined to text. Tapping just the HSTADR window
+`0xC00002-0xC00005` over frames 10-400, the two arms spend their 4000 events at
+frames `[45,46]` versus spread across
+`[31,38,87,92,93,94,97,98,100,120,121,126,130,131]`. Different execution paths,
+not just a different draw.
+
+### 29.3 What this invalidates
+
+`reference/experiments/stunrun/service-f2-text-host-writes/` records 1040 events
+at frames 214-216/334-336 — arm A. `service-f2-3600-stages/screens/frame-000300.png`
+shows the self-test screen — arm A. I could not reproduce either on demand, and
+re-running the committed command verbatim returned `"events":0, "event_count":0`
+on a run that landed in arm B. §21's "two selectors resolved from live traffic",
+and the `stun-runner-rg9` bead's worked examples, currently rest on one arm of a
+coin flip. Every other artifact whose command line carries `--input` is in the
+same position until this is resolved.
+
+`--start-frame` is not the discriminator: `--start-frame 5` also produced 1040
+on some runs and 480 on others, and the events sit at frames well above 60.
+
+### 29.4 The suspect, and why it is not yet a conclusion
+
+`mame/lua/ram-write-trace.lua` does this, in `emu.register_frame_done`:
+
+```lua
+frame = frame + 1
+while next_event <= #input_events and input_events[next_event].frame == frame do
+    apply_event(input_events[next_event])
+    next_event = next_event + 1
+end
+```
+
+Two properties are suspicious. `register_frame_done` fires from the video frame
+update, so the counter tracks *rendered* frames unless the build guarantees one
+callback per emulated frame. And input is applied *after* the frame has already
+been emulated, so "press at frame 60" means "frame 60 has already run without
+it". The `==` test is a third, sharper problem: if the counter ever steps past
+an event's frame, that event is not applied late, it is **discarded silently and
+permanently** — which matches "sometimes the Service Mode press does nothing".
+
+I could not separate these. `machine.frame_number` reads `nil` on MAME
+0.289's Lua API, and neither `machine.video.frame_number` nor an
+`emu.frame()` equivalent is reachable from this script, so the two counters
+cannot be compared from inside the tap. Establishing which of the three it is
+needs either a machine-side frame source or a wrapper that passes a frame
+assertion through. **Do not record any of the three as the cause until that
+measurement exists** — the alternation is too regular to guess at.
+
+### 29.5 A separate, smaller defect found while measuring this
+
+`result.json`'s `canonical_log_sha256` is not path-independent. Three
+`--input none` runs into three different output directories produced
+byte-identical 3000-event streams and three *different* log hashes. Whatever
+that hash covers, it covers the output path. Any evidence comparing
+`canonical_log_sha256` across output directories is comparing the path, not the
+run. Either fix it or state in `EVIDENCE.md` that it is only comparable within
+one output directory.
+
+### 29.6 Method note
+
+The way this was caught is worth keeping: it took **five identical runs**. A
+single re-run of the committed command "reproducing" or "failing" would have
+produced a confident wrong answer in either direction. Any harness acceptance
+that claims determinism from one invocation has not tested determinism.
