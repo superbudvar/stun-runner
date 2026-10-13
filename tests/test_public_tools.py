@@ -1104,5 +1104,104 @@ M1_RAM_WRITE_DONE frames=12 events=4 truncated=false output=/dev/null
             self.assertNotIn("a10", result["events"][0])
 
 
+class OracleFixtureTests(unittest.TestCase):
+    """The committed oracle fixture must be the thing its name claims.
+
+    fixtures/oracle/frame_600/frame_600_gsp_vram.bin was committed at 1 MiB,
+    named VRAM, starting with the MC68010's reset SP/PC -- so it is main RAM.
+    It went unnoticed because nothing read it. These tests pin the replacement
+    and, more importantly, prove the checker rejects the failure modes.
+    """
+
+    FIXTURE = ROOT / "fixtures" / "oracle" / "frame_600" / "frame_600_gsp_vram.bin"
+    META = ROOT / "fixtures" / "oracle" / "frame_600" / "metadata.json"
+    VRAM_BYTES = 0x400000
+
+    def test_committed_gsp_vram_fixture_is_a_real_4mib_share(self):
+        """The shipped fixture passes its own check, with no ROM and no MAME."""
+        r = subprocess.run(
+            [str(ROOT / "tools" / "verify-oracle-fixture"), str(self.FIXTURE)],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+        blob = self.FIXTURE.read_bytes()
+        self.assertEqual(len(blob), self.VRAM_BYTES)
+        # The specific tell: a file claiming to be the GSP VRAM share must not
+        # begin with the MC68010 reset vector, which lives in main RAM.
+        self.assertNotEqual(blob[:8], bytes.fromhex("ffffc00000000216"))
+        self.assertTrue(any(blob), "an all-zero capture looks successful but is not")
+
+    def test_checker_rejects_the_old_main_ram_fixture(self):
+        """Negative control: the superseded file must fail, loudly.
+
+        Reconstructed from the shape it had, not from git, so the test keeps
+        its meaning even if the history is rewritten. What matters is that each
+        failure mode is caught independently.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            bad = temp / "frame_600_gsp_vram.bin"
+            # Right name, wrong content: main RAM's reset vector at offset 0.
+            bad.write_bytes(bytes.fromhex("ffffc00000000216") + bytes(1048576 - 8))
+            r = subprocess.run(
+                [str(ROOT / "tools" / "verify-oracle-fixture"), str(bad),
+                 "--metadata", str(self.META)],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 1, "wrong-sized main-RAM file must fail")
+            self.assertIn("4194304", r.stderr)
+
+    def test_checker_rejects_a_correctly_sized_but_wrong_blob(self):
+        """Negative control: size alone is not enough.
+
+        A silent single-bit corruption passes every size and content-shape
+        check; only the recorded sha256 catches it. Without this test the
+        checker could pass for the wrong reason on a truncated or substituted
+        capture.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            blob = bytearray(self.FIXTURE.read_bytes())
+            blob[0x2000] ^= 0xFF
+            tampered = temp / "vram.bin"
+            tampered.write_bytes(bytes(blob))
+            r = subprocess.run(
+                [str(ROOT / "tools" / "verify-oracle-fixture"), str(tampered),
+                 "--metadata", str(self.META)],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 1, "tampered blob must fail on sha256")
+            self.assertIn("sha256", r.stderr)
+
+    def test_checker_rejects_an_all_zero_capture(self):
+        """Negative control: a misconfigured read yields the right size, all zeros.
+
+        This is the documented failure of running MAME without -nvram_directory,
+        and it produces a file that every size check accepts.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            zeros = temp / "vram.bin"
+            zeros.write_bytes(bytes(self.VRAM_BYTES))
+            r = subprocess.run(
+                [str(ROOT / "tools" / "verify-oracle-fixture"), str(zeros),
+                 "--metadata", str(self.META)],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 1, "all-zero capture must fail")
+            self.assertIn("zero", r.stderr)
+
+    def test_metadata_records_the_command_and_the_superseded_file(self):
+        """Provenance is the part that was missing, so it is pinned too."""
+        meta = json.loads(self.META.read_text(encoding="utf-8"))
+        self.assertEqual(meta["schema"], "stunrun-oracle-fixture/v1")
+        self.assertTrue(meta["capture"]["command"])
+        self.assertIn("mame-gsp-vram-dump", meta["capture"]["command"])
+        self.assertEqual(meta["artifact"]["bytes"], self.VRAM_BYTES)
+        # The superseded file's mislabel must stay on the record.
+        self.assertEqual(meta["replaces"]["first_8_bytes"], "ffffc000 00000216")
+
+
 if __name__ == "__main__":
     unittest.main()

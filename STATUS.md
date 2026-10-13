@@ -281,11 +281,19 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
   - Section 18.2 stands unchanged and is independent of all of the above: the
     capture ends 560,422 68010 cycles after the final HLT release with the GSP
     halted 99.61% of its window.
-- **`fixtures/oracle/frame_600/frame_600_gsp_vram.bin` is not VRAM.** 1048576
-  bytes, first 8 bytes are the MC68010 reset SP/PC (`ffffc000 00000216`), no
-  provenance metadata, and 0.2% byte agreement with a fresh pinned capture.
-  No test references it, so nothing green depends on it, but it must not be
-  used as the VRAM oracle. Section 19.5.
+- **The frame-600 VRAM fixture is REPLACED and now has a checker.** The old file
+  was 1048576 bytes, began with the MC68010 reset SP/PC (`ffffc000 00000216`),
+  had no provenance, and agreed with a fresh pinned capture on 0.18% of bytes —
+  it was main RAM under a VRAM name, and nothing failed because nothing read it.
+  It is superseded by the 4194304-byte capture from
+  `tools/mame-gsp-vram-dump` (sha256 `35c9262190d8ec85...`), with provenance in
+  `fixtures/oracle/frame_600/metadata.json`.
+  `tools/verify-oracle-fixture` checks size, the reset-vector tell, sha256
+  against the recorded provenance, and the all-zero capture case; five public
+  tests pin it, three of them negative controls. Sections 19.5 and 27.
+  - The replacement is **not** yet usable as a parity gate. It contains GSP-core
+    writes as well as host-port writes, so a whole-array diff against a
+    host-port-only model cannot decide anything. See the open item above.
 - M0 is complete; the installed package's unavailable upstream source commit remains documented in `analysis/m0-audit.md`.
 - Installed MAME reports `0.289 (mame0289-dirty)` and exposes no source commit; its binary hash is recorded in `mame/system-baseline.json`.
 - Static-listing generation recipe works for all four active programmable processors; generated listings remain local and are hash-recorded in `reference/listings/stunrun.metadata.json`.

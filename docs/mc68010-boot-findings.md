@@ -3325,7 +3325,15 @@ claim did **not** compare against this fixture -- 15.4's reference was a 512 KiB
 model already had wrong. Two different references, two different extents, one
 file committed under a name that suggests it is the oracle.
 
-**The replacement already exists.** `tools/mame-gsp-vram-dump` captures the
+**The replacement has LANDED** (2026-10-13). `fixtures/oracle/frame_600/frame_600_gsp_vram.bin`
+is now the 4194304-byte capture (sha256 `35c9262190d8ec85...`) with provenance in
+`metadata.json` beside it, and `tools/verify-oracle-fixture` checks size, the
+reset-vector tell, sha256 against the record, and the all-zero case. Five public
+tests in `tests/test_public_tools.py::OracleFixtureTests` pin it; three are
+negative controls, because the failure this file already had was invisible to a
+green suite and a test that cannot fail would repeat that.
+
+**`tools/mame-gsp-vram-dump` captures the**
 share consecutively from 0xff800000 with a per-run `-nvram_directory`. At frame
 600 with `--words 2097152` it yields a 4194304-byte image with 1664200 of
 2097152 words nonzero -- a genuinely 4 MiB share. That cross-check is what

@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Check that a committed oracle fixture is the thing its name claims.
+
+The trap this exists to avoid: fixtures/oracle/frame_600/frame_600_gsp_vram.bin
+was committed at 1048576 bytes, under a VRAM name, with no provenance. It is not
+VRAM -- its first two words are the MC68010's reset stack pointer and reset PC
+(ffffc000 00000216), which live in main CPU RAM at address 0. Nothing failed,
+because nothing read the file: no CTest and no python test referenced
+fixtures/oracle/, so a mislabelled blob sat in the tree for its whole life with
+a green suite behind it. A fixture nobody checks is a comment with a checksum.
+
+Two lessons are built in rather than left to the reader:
+
+  * Size is the first thing to check, because it is the one that catches a
+    truncated capture. This share is 4 MiB. A 512 KiB capture is NOT a small
+    view of it, it is the first page only -- which is exactly what the bad file
+    effectively was, one MiB of main RAM instead.
+  * The MC68010 reset vector is the specific tell. If a file claiming to be a
+    GSP VRAM share starts with ffffc000 00000216, it is main RAM, whatever its
+    length.
+
+Provenance is checked against metadata.json rather than trusted: the fixture's
+sha256 must be the one the metadata records, and the metadata must name the
+command that produced it. An unrecorded blob has no business being an oracle.
+
+Exit 0 if the fixture is sound, 1 if it is not, with the reason on stderr.
+"""
+
+import argparse
+import hashlib
+import json
+import pathlib
+import sys
+
+SCHEMA = "stunrun-oracle-fixture/v1"
+
+# The GSP VRAM share, per harddriv.cpp:628:
+#   map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram")
+GSP_VRAM_BYTES = 0x400000
+
+# The MC68010's reset SP and PC, which live in main RAM at address 0 and must
+# never appear at the start of a file claiming to be the GSP VRAM share.
+M68K_RESET_VECTOR = bytes.fromhex("ffffc00000000216")
+
+
+def check(path: pathlib.Path, meta_path: pathlib.Path, json_out, verify_sha: bool):
+    problems = []
+
+    if not path.is_file():
+        print(f"{path}: missing", file=sys.stderr)
+        return 1, {}
+    blob = path.read_bytes()
+
+    # --- size ------------------------------------------------------------
+    size_ok = len(blob) == GSP_VRAM_BYTES
+    if not size_ok:
+        problems.append(
+            f"size {len(blob)} != {GSP_VRAM_BYTES} (the 4 MiB share); "
+            f"a {GSP_VRAM_BYTES // 8}-byte file would be the first page only, "
+            f"not a smaller view"
+        )
+
+    # --- not main RAM ----------------------------------------------------
+    if blob[:8] == M68K_RESET_VECTOR:
+        problems.append(
+            "first 8 bytes are ffffc000 00000216: the MC68010 reset SP/PC, "
+            "which live in main CPU RAM at address 0 -- this is not VRAM"
+        )
+
+    # --- provenance ------------------------------------------------------
+    sha = hashlib.sha256(blob).hexdigest()
+    meta = {}
+    if not meta_path.is_file():
+        problems.append(f"{meta_path}: missing; an oracle with no recorded "
+                        f"provenance is how the previous fixture went wrong")
+    else:
+        try:
+            meta = json.loads(meta_path.read_text())
+        except json.JSONDecodeError as e:
+            problems.append(f"{meta_path}: not valid JSON ({e})")
+            meta = {}
+        if meta:
+            if meta.get("schema") != SCHEMA:
+                problems.append(f"{meta_path}: schema is "
+                                f"{meta.get('schema')!r}, expected {SCHEMA!r}")
+            art = meta.get("artifact") or {}
+            if art.get("bytes") != len(blob):
+                problems.append(f"metadata artifact.bytes {art.get('bytes')!r} "
+                                f"!= actual {len(blob)}")
+            if verify_sha and art.get("sha256") and art["sha256"] != sha:
+                problems.append(f"sha256 {sha} != metadata {art['sha256']}; "
+                                f"the blob is not the one that was recorded")
+            if not (meta.get("capture") or {}).get("command"):
+                problems.append("metadata records no capture command")
+
+    # --- not trivially empty ---------------------------------------------
+    nonzero = sum(1 for b in blob if b)
+    if nonzero == 0:
+        problems.append("every byte is zero: a misconfigured read produces a "
+                        "correctly sized file full of zeros that otherwise "
+                        "looks like a successful capture")
+
+    report = {
+        "schema": "stunrun-oracle-fixture-check/v1",
+        "path": str(path),
+        "bytes": len(blob),
+        "expected_bytes": GSP_VRAM_BYTES,
+        "sha256": sha,
+        "nonzero_bytes": nonzero,
+        "is_gsp_vram_share": not blob[:8] == M68K_RESET_VECTOR,
+        "provenance_recorded": bool(meta),
+        "ok": not problems,
+        "problems": problems,
+    }
+
+    if json_out:
+        json_out.write_text(json.dumps(report, indent=2) + "\n")
+
+    if problems:
+        for p in problems:
+            print(f"FAIL {path}: {p}", file=sys.stderr)
+        return 1, report
+
+    print(f"OK {path}: {len(blob)} bytes, sha256 {sha[:16]}..., "
+          f"{nonzero} nonzero, provenance recorded")
+    return 0, report
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("fixture", type=pathlib.Path,
+                    help="path to the oracle fixture to check")
+    ap.add_argument("--metadata", type=pathlib.Path, default=None,
+                    help="provenance json (default: metadata.json beside it)")
+    ap.add_argument("-o", "--json", type=pathlib.Path, default=None,
+                    help="write a machine-readable report here")
+    ap.add_argument("--no-verify-sha", action="store_true",
+                    help="skip the sha256 comparison against metadata")
+    a = ap.parse_args()
+
+    meta = a.metadata or (a.fixture.parent / "metadata.json")
+    rc, _ = check(a.fixture, meta, a.json, not a.no_verify_sha)
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

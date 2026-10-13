@@ -1,0 +1,39 @@
+{
+  "schema": "stunrun-oracle-fixture/v1",
+  "fixture": "frame_600_gsp_vram",
+  "description": "The GSP VRAM share (MAME's gsp_vram memory_share, declared by harddriv.cpp:628 as map(0xff800000,0xffbfffff).mirror(0x0400000).ram().share(\"gsp_vram\")), captured from MAME at frame 600 and written consecutively from 0xff800000, little-endian, so it is directly comparable with the native paths' own dumps.",
+  "replaces": {
+    "note": "The previous file at this path was NOT VRAM. It is superseded, not corrected in place. See docs/mc68010-boot-findings.md section 19.5 and 27.",
+    "size_bytes": 1048576,
+    "first_8_bytes": "ffffc000 00000216",
+    "why_not_vram": "Those first two words are the MC68010's reset stack pointer and reset PC, which live in main CPU RAM at address 0, so the file is main RAM under a VRAM name.",
+    "provenance": "none; added in 5b9b13b with no metadata recording how it was produced",
+    "byte_agreement_with_this_capture": "1876 / 1048576 = 0.18%"
+  },
+  "capture": {
+    "rom_set": "stunrun rev 6",
+    "frames": 600,
+    "target": 600,
+    "words": 2097152,
+    "command": "./tools/mame-gsp-vram-dump roms <out> --mame /mnt/build/mame-ref/mame --frames 600 --target 600 --words 2097152 --nothrottle",
+    "mame_binary_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+    "nonzero_bytes": 3307200,
+    "nonzero_words": 1664200
+  },
+  "artifact": {
+    "path": "frame_600_gsp_vram.bin",
+    "bytes": 4194304,
+    "sha256": "35c9262190d8ec85183af255ba1962429897dec157a95793d61d06feee2210ba"
+  },
+  "how_to_verify": [
+    "sha256sum frame_600_gsp_vram.bin  # must equal artifact.sha256",
+    "size must be 4194304 -- the whole 4 MiB share. A 512 KiB file is not a small view of this share, it is its first page only, which is the exact mistake this file previously existed as.",
+    "first 8 bytes must NOT be ffffc000 00000216; that is main RAM's reset vector.",
+    "cells/tools/verify-oracle-fixture.py checks all of the above."
+  ],
+  "structure": {
+    "512KiB_page_twins": "page 0 is byte-identical to page 4, delta 0x200000; pages 1,2,3,5,6,7 have no twin",
+    "interpretation": "a 2 MiB CONTENT period in what the ROM wrote, NOT a mirror period. The share itself is 4 MiB and its mirror period is 0x4000000 (bit 22). Do not re-derive the mirror formula from page twins."
+  },
+  "contamination_warning": "This capture is the share's state at frame 600, which includes writes made by the GSP core executing its own program, not only the MC68010 host-port stream. 87.5% of its nonzero 16-byte cells are uniform and hold framebuffer data (0x82, 0xb8, 0xaa, ...); a host-port replay produces 82,720 nonzero cells against this capture's 208,025. So a whole-array diff against a host-port-only model cannot decide storage semantics. Capturing while the GSP is still in reset would be needed for that, and that window has not been located yet (MAME's share is still entirely zero at frame 60). See docs/mc68010-boot-findings.md section 27.4."
+}
