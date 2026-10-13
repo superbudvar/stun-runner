@@ -271,7 +271,154 @@ release at frame 405.
 
 ---
 
-## 6. Corrections this transcription forces on the OCR-derived notes
+---
+
+## 7. Self-test screens and their order (manual pages 2-6, 2-7 — PDF 16, 17)
+
+Table 2-4, *Summary of All Screens Appearing in the Self-Test*, transcribed in
+full. This is the document that identifies what we have been decoding.
+
+```mermaid
+flowchart TD
+    START["Self-Test entered via the physical TEST SW (S11)"] --> AUTO
+
+    subgraph AUTO["Automated Self Test — runs unattended"]
+        A1["Program RAM and ROM<br/>Tests the program RAM and ROM."]
+        A2["Automated Self-Test Results<br/>Shows results of the program RAM and ROM,<br/>VRAM, color RAM, ADSP PCB and sound PCB tests."]
+        A1 --> A2
+    end
+
+    A2 --> PROMPT["<b>PRESS START TO BYPASS SELFTEST</b>"]
+    PROMPT --> MENU
+
+    subgraph MENU["Test Menu Screens"]
+        M1["Instructions for Test Menu"]
+        M2["Test Menu<br/>Shows a list of available tests"]
+        M1 --> M2
+    end
+
+    M2 --> OPS["Operator Screens"]
+    M2 --> CTRL["Control Inputs"]
+    M2 --> MON["Monitor Test Patterns"]
+    M2 --> SPEC["Special Functions"]
+
+    OPS --> O1["Coin Options"]
+    OPS --> O2["Game Options<br/>controls the high score table<br/>and steering in the attract mode"]
+    OPS --> O3["Statistics"]
+    OPS --> O4["Histograms — six totals by length of play"]
+    OPS --> O5["Error Count"]
+    OPS --> O6["High Score Table<br/>allows manual resetting of<br/>all high score tables"]
+
+    MON --> MB["Color Bars · Monitor Adjust · Monitor Brightness ·<br/>Grey Scale · B/W Dots · B/W Grid · Diagonal Lines ·<br/>Full Screen Grey/White/Red/Green/Blue ·<br/>Monitor High Voltage Test ·<br/>Scrolling Test — checks the scrolling<br/>mechanism of the GSP microprocessor"]
+
+    SPEC --> S1["Main Board GSP Tests"]
+    SPEC --> S2["Main Board ROM Checksums"]
+    SPEC --> S3["Main Board ZRAM Tests"]
+    SPEC --> S4["ADSP Board Tests"]
+    SPEC --> S5["Audio Board Tests"]
+
+    S1 --> G1["VRAM Simple Test — checks for bad VRAMs"]
+    S1 --> G2["VRAM Verify Test — tests all the VRAM GSP memory"]
+    S1 --> G3["VRAM Complete Test — completely tests all VRAM"]
+    S1 --> G4["Test VRAM for Display Errors"]
+    S1 --> G5["<b>Color RAM — tests the color RAM</b>"]
+    S1 --> G6["<b>VRAM Shift Register Test — checks the VRAM shift register</b>"]
+
+    S4 --> D1["ADSP RAM TESTED BY 68010"]
+    S4 --> D2["ADSP PROGRAM MEMORY TEST .2100."]
+    S4 --> D3["ADSP DATA MEMORY TEST .2100."]
+    S4 --> D4["2100 TEST"]
+    S4 --> D5["IRQ TEST"]
+    S4 --> D6["ROM CHECKSUMS"]
+    S4 --> D7["ADSP SPECIAL FUNCTIONS"]
+
+    S5 --> A1S["Sound Board Self-Test"]
+    S5 --> A2S["Play Sounds — choose and hear game sounds"]
+```
+
+### 7.1 What this identifies in our own captures
+
+| Our capture | Manual screen | Confidence |
+|---|---|---|
+| frames 45–47, selector `$47`, `PRESS*START*TO*BYPASS*SELFTEST` | the bypass prompt between the automated self-test and the test menu | exact string match |
+| frames 165–167, selector `$43`, `PROGRAM*ROM*OK` | a line of the **Automated Self-Test Results** screen | string match; the manual names that screen as showing program RAM and ROM, VRAM, colour RAM, ADSP and sound results |
+| frames 165–167, selectors `$51`/`$52`, `200` and `210` | unexplained | **not matched** |
+| frames 165–167, selector `$50`, `Y*X*W*V*U*T*S*R` | unexplained | **not matched** |
+
+**`Y X W V U T S R` is eight consecutive letters descending (R=18 … Y=25).** It
+is not menu prose, and the test menu has four top-level items, so a one-to-one
+mapping to menu entries does not exist. The nearest documented screen is the
+**Control Inputs** screen, which exists precisely to verify the controls, but
+nothing in the manual describes it and we have not captured it. **This stays
+unidentified.** Do not let a plausible story fill the gap.
+
+### 7.2 Three entries that bear directly on open questions
+
+* **"Color RAM — tests the color RAM."** A named, separately testable device.
+  This corroborates the Page 10 block diagram and confirms that
+  `docs/gsp-display-scanout-contract.md`'s "two 1024-entry 16-bit planes" is
+  describing something the hardware does not plainly have. There is a real
+  Color RAM and it is testable on its own.
+* **"VRAM Shift Register Test — checks the VRAM shift register."** The
+  schematic's Pixel Scanner is the shift register. So the path VRAM → scanner →
+  Color RAM is independently exercisable.
+* **"Game Options — controls the high score table and steering in the attract
+  mode."** The attract sequence has a steering-driven element, and the high
+  score table is operator-editable — which is the NVRAM path we already have a
+  slice for.
+
+### 7.3 The option tables, from page 2-5 (PDF 15)
+
+These are stored in RAM and edited through the screens, not by DIP.
+
+**Coin options (Table 2-2)** — ◆ marks the manufacturer's recommended setting:
+
+| Option | Settings |
+|---|---|
+| Coin Mode | 1 coin/1 credit · **2 coins/1 credit ◆** · 3 coins/1 credit · 4 coins/1 credit |
+| Right Mech Multiplier | **1 coin counts as 1 coin ◆** · as 4 · as 5 · as 6 |
+| Left Mech Multiplier | **1 coin counts as 1 coin ◆** · as 2 |
+| Bonus Adder | **No bonus adder ◆** · 2→1 extra · 4→1 extra · 4→2 extra · 5→1 extra · 3→1 extra · **Free Play** |
+
+Note the default is **two coins per credit**, so any replay harness that inserts
+a single coin does not reach gameplay.
+
+**Game options (Table 2-3)**:
+
+| Option | Settings |
+|---|---|
+| Game Difficulty | Very Easy · Easy · Medium Easy · **Medium ◆** · Medium Hard · Hard · Very Hard · Nasty |
+| Continue is One Coin Less Than Start | **Off ◆** · On |
+| Sounds in Attract | **Yes ◆** · No |
+| Auto Reset High Scores | Off · **On ◆** |
+| High Score Name Censor | **Strict ◆** · Easygoing ◆ |
+| T-Shirt Contest | **Disabled ◆** · Enabled ◆ |
+| Continue Advances to Next Level | **After 1 Retry ◆** · After 2 Retries · Always · Never |
+
+**Screen layout**, from Figure 2-6 (Game Options). Each option is a title line
+followed by an indented value line, then a four-line footer:
+
+```text
+GAME OPTIONS
+GAME DIFFICULTY
+    MEDIUM
+CONTINUE IS ONE COIN LESS THAN START
+    OFF
+...
+    Hit LEFT/RIGHT Triggers to move UP/DOWN
+    Hold a Coin Switch and hit Triggers to cycle through choices
+    Hold a Coin Switch and press START to restore original setting
+    Just press START to save this setting and exit
+```
+
+That title/value/footer shape is the layout our `$25E8` descriptors encode, and
+it gives the colour convention the manual states explicitly: *an option is
+enclosed in a blue box; the **default** setting of each option is **green**; other
+settings are **blue** when selected and **white** when not.* Selector `$47` carries
+colour byte `DF` and `$43` carries `FF`, so the descriptor colour field is a
+palette index, not a brightness.
+
+## 8. Corrections this transcription forces on the OCR-derived notes
 
 * `FF 8000 - FF BFFF RAM 0 (16K)` and `FF C000 - FF FFFF RAM 1 (16K)`. The OCR
   reads `FE BFEF` / `FF BFEF`; the image is unambiguous.
