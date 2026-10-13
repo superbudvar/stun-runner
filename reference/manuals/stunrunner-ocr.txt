@@ -1,0 +1,6061 @@
+TM 238
+
+| 1st printing
+
+ATARI
+
+GAMES
+
+Operator’s Manual
+
+with Illustrated Parts Lists
+
+A
+
+ATARI
+
+GAMES
+
+Operator’s Manual
+Copyright © 1989 by Atari Games
+Corporation. All rights reserved.
+
+No part of this publication may be reproduced by any
+mechanical, photographic or electronic process, or in
+the form of a phonographic recording, nor may it be
+stored in a retrieval system, transmitted, or otherwise
+copied for public or private use, without permission
+from the publisher.
+
+The game play, all graphic designs, this technical man-
+ual, its accompanying schematic diagrams, and the dis-
+play manual are protected by the U.S. Copyright Act of
+1976.
+
+This Act provides for substantial penalties for violating
+federal copyright laws. Courts can impound infringing
+articles while legal action is pending. If infringers are
+convicted, courts can order destruction of the infring-
+ing articles.
+
+In addition, the Act provides for payment of statutory
+damages of up to $50,000 per infringing transaction in
+certain cases. Infringers may also have to pay costs
+and attorneys’ fees and face an imprisonment of up to
+five years as well as fines of up to $250,000 in the case
+of individuals and up to $500,000 in the case of corpo-
+rations.
+
+Atari Games Corporation will aggressively enforce its
+copyrights against infringers. We will use all legal
+means to immediately halt any manufacture, distribu-
+tion, or operation of a copy of video games made by
+us. Anyone who purchases such copies risks forfeiting
+such a game.
+
+Published by:
+
+‘Atari Games Corporation
+675 Sycamore Drive
+
+P.O. Box 361110
+Milpitas, California 95035
+
+Printed in the U.S.A 9/89
+
+Produced by the Atari Games Technical Publications
+Department.
+
+Editing: Andrea Dencker
+Illustration and Design: Mary Ohanessian Sumner
+
+S-T.U.N. Runner
+
+Notice Regarding Non-Atari’ Parts
+
+WARNING
+Use of non-Atari parts or modifications of
+any Atari game circuitry may adversely
+affect the safety of your game, and may
+cause injury to you and your players.
+
+You may void the game warranty (printed on the in-
+
+side back cover of this manual) if you do any of the
+
+following:
+
+© Substitute non-Atari parts in the game.
+
+* Modify or alter any circuits in the game by using
+kits or parts not supplied by Atari Games Corpora-
+tion.
+
+NOTE
+
+This equipment generates, uses, and can radiate radio
+frequency energy, and if not installed and used in ac-
+cordance with the instruction manual, may cause inter-
+ference to radio communications. It has been tested
+and found to comply with the limits for a Class A com-
+puting device pursuant to Subpart J of Part 15 of Fed-
+eral Communications Commission (FCC) Rules, which
+are designed to provide reasonable protection against
+such interference when operated in a commercial en-
+vironment. Operation of this equipment in a residential
+area or modification to this equipment is likely to
+cause interference, in which case the user, at his own
+expense, will be required to take whatever measures
+may be required to correct the interference. If you sus-
+pect interference from an Atari game at your location,
+check the following:
+
++ All ground wires in the game are properly connect-
+ed as shown in the game wiring diagram.
+
+* The power cord is properly plugged into a ground-
+ed three-wire outlet.
+
+* On games provided with an Electromagnetic Inter-
+ference (EMD ground cage, be sure that the game
+printed-circuit boards (PCBs) are properly installed
+‘on the EMI ground cage and that the end board is
+securely installed with alll screws in place and tight-
+ened.
+
+If you are still unable to solve the interference prob-
+lem, please contact Customer Service at Atari Games
+Corporation. See the inside front cover of this manual
+for service in your area.
+S.T.U.N. Runner
+
+Contents
+
+1 Set Up
+
+How to Use This Manual
+Inspecting the Game ...
+Control and Switch Locations
+Setting the Coin and Game Options
+Game Systems ...
+Maximizing Earnings
+
+Game Play..... 7 7
+2 Self-Test and Diagnostics
+Entering and Exiting the Self-Test ....
+
+Automated Self Test
+
+Program ROM and RAM Test
+Microprocessor and Board Test
+
+Test Menu Screens
+
+Operator Screens..
+Coin Options.
+Game Options.
+Statistics ...
+
+Histograms
+Error Count ....
+
+Control Inputs Screen
+Monitor Test Patterns
+
+Special Functions Screen . 2-10
+Main Board GSP Tests ....
+Main Board ROM Checksum ..
+Main Board ZRAM Test...
+ADSP Board Tests
+Audio Board.
+
+LEDs on the Main PCB
+
+3 Maintenance and
+
+Troubleshooting
+Maintaining and Inspecting ...
+Coin Mechanism...
+Maintaining the Coin Mechanism
+
+Interior Components........
+Cleaning the Interior Components ..
+
+Video Display
+Adjusting the Video Display
+Removing the Video Display .
+Replacing the Video Display ....
+Flight Control Maintenance
+Routine Maintenance...
+Removing the Flight Control Assembly
+Disassembling the Handle Assembly ..
+Reassembling the Handle Assembly
+Disassembling the Flight Control Assembly ..
+Reassembling the Flight Control Assembly
+Installing the Harness Assembly
+
+4 Illustrated Parts Lists
+
+See the List of Illustrations that follows.
+
+Statistics Sheet
+
+wv
+
+aS
+
+HWE QY YH
+wy Gs ds
+
+SU Anas
+
+iii
+Figure 1-1
+
+Figure 2-1
+Figure 2-2
+
+Figure 2-3
+Figure 2-4
+Figure 2-5
+Figure 2-6
+Figure 2-7
+Figure 2-8
+Figure 2-9
+Figure 2-10
+Figure 2-11
+Figure 2-12
+Figure 2-13
+Figure 2-14
+Figure 2-15
+Figure 2-16
+Figure 2-17
+
+Table 1-1
+Table 2-1
+Table 2-2
+Table 2-3
+Table 2-4
+
+Table 2-5
+
+S.T.U.N. Runner
+
+Illustrations
+
+Control and Switch Locations... 1-2
+Program ROM and RAM Test Screen.. 2-3
+Microprocessor and Board Tests
+
+Screen... 23
+
+2-4
+2-4
+
+Instructions for Test Menu Screen
+Test Menu Screen...
+Coin Options Screen
+Game Options Screen .
+Statistics Screen,
+First Histogram Screen ....
+Second Histogram Screen
+Third Histogram Screen.
+Fourth Histogram Screen.
+Fifth Histogram Screen
+Sixth Histogram Screen
+Error Counts Screen..
+Control Inputs Screen
+Special Functions Screen.
+GSP Tests Screen
+
+25
+27
+28
+28
+
+Figure 2-18
+Figure 2-19
+Figure 2-20
+
+Figure 2-21
+Figure 2-22
+
+Figure 3-1
+Figure 3-2
+Figure 3-3
+
+Figure 4-1
+Figure 4-2
+Figure 4-3
+
+Figure 4-4
+
+Figure 4-5
+
+Figure 4-6
+Figure 4-7
+
+Tables
+
+Game Specifications
+
+Using the Self-Test Screens and
+Diagnostics
+Coin Option Settings
+Game Option Settings ..
+Summary of All Screens Appearing
+in the Self-Test
+
+When to Use the Special Function.
+Items ....
+
+Table 2-6
+Table 2-7
+
+Table 3-1
+Table 3-2
+
+Table 3-3
+
+ROM Checksums Screen ...
+ADSP Board Tests Screen...
+
+ADSP ROM Checksums Tests
+Screer
+
+SA Audio Test Screen.
+
+DIP Switch and LED Locations on
+the Main PCB
+
+Removing the Video Display
+Flight Control Assembly
+Flight Control Removal
+
+211
+
+2-13
+3-4
+
+Cabinet-Mounted Assemblies
+Flight Control Assembly.....
+
+Coin Acceptors, Inc. Coin Door
+Assembly =
+Power Supply Assembly.
+$.T.U.N. Runner Multisyne (Main)
+PCB Assembly...
+ADSP Il PCB Assembly...
+Stand-Alone Audio II PCB Assembly... 4-21
+
+LED Status
+Using the DIP Switches...
+
+Maintenance and Inspection Items...... 3-2
+
+Voltage Inputs and Test Points on
+the Game PCBs...
+Troubleshooting the Video Di
+
+S.T.U.N. Runner
+
+Safety Summary
+
+The following safety precautions apply to all game op-
+
+erators and service personnel. Specific warnings and,
+
+cautions will be found in this manual whenever they
+apply.
+WARNING
+
+Properly Ground the Game. Players may receive an
+electrical shock if this game is not properly grounded!
+To avoid electrical shock, do not plug in the game un-
+til it has been inspected and properly grounded. This
+game should only be plugged into a grounded three-
+wire outlet. If you have only a two-wire outlet, we rec-
+ommend you hire a licensed electrician to install a
+three-wire grounded outlet. If the control panel is not
+properly grounded, players may receive an electrical
+shock! After servicing any part on the control panel,
+check that the grounding wire is firmly secured to the
+inside of the control panel. After you have checked
+this, lock up the game.
+
+AC Power Connection. Before you plug in the game,
+be sure that the game's power supply can accept the
+AC line voltage in your location. The line voltage re-
+quirements are listed in the first chapter of this manu-
+al.
+
+Disconnect Power During Repairs. To avoid electri-
+cal shock, disconnect the game from the AC power be-
+fore removing or repairing any part of the game. If
+you remove or repair the video display, be very care-
+ful to avoid electrical shock. High voltages continue to
+exist even after power is disconnected in the display
+circuitry and the cathode-ray tube (CRT). Do not touch
+the internal parts of the display with your hands or
+with metal objects! Always discharge the high voltage
+from the CRT before servicing it. Do
+this after you disconnect it
+from the power source.
+First, attach one end of a
+large, well-insulated, 18-
+gauge jumper wire to
+ground. Then momen-
+tarily touch the free end
+of the grounded jumper
+wire to the CRT anode
+by sliding the wire un-
+der the anode cap. Wait
+two minutes and do this
+again.
+
+Use Only Atari Parts. To maintain the safety of your
+Atari game, use only Atari parts when you repair it.
+Using non-Atari parts or modifying the game circuitry
+may be dangerous, and could injure you and your
+players.
+
+Handle the CRT With Care. If you drop the CRT and
+it breaks, it may implode! Shattered glass from the im-
+plosion can fly six feet or more.
+
+Use the Proper Fuses. To avoid electrical shock, use
+replacement fuses which are specified in the parts list
+for this game, Replacement fuses must match those re-
+placed in fuse type, voltage rating, and current rating.
+In addition, the fuse cover must be in place during
+
+game operation.
+CAUTION
+
+Properly Attach All Connectors. Make sure that the
+connectors on each printed circuit board (PCB) are
+properly plugged in. The connectors are keyed to fit
+only one way. If they do not slip on easily, do not
+force them. If you reverse a connector, it may damage
+your game and void your warranty.
+
+Ensure the Proper AC Line Frequency. Video
+games manufactured for operation on 60 Hz line pow-
+er (used in the United States) must not be operated in
+countries with 50 Hz line power (used in Europe). If a
+60 Hz machine operates on 50 Hz line power, the fluo-
+rescent line ballast transformer will overheat and cause
+a potential fire hazard. Check the product identifica-
+tion label on your machine for the line frequency re-
+quired.
+
+ABOUT NOTES, CAUTIONS, AND
+WARNINGS
+
+In Atari publications, not
+have the following meaning:
+
+NOTE — A highlighted piece of information.
+CAUTION — Equipment and/or parts can be damaged
+or destroyed if instructions are not followed. You will
+void the warranty on Atari printed-circuit boards, parts
+thereon, and video displays if equipment or parts are
+damaged or destroyed due to failure of following in-
+structions.
+
+WARNING — Players and/or technicians can be killed
+or injured if instructions are not followed.
+
+, cautions, and warnings
+S.T.U.N. Runner
+SET-UP
+
+Chapter 1
+
+How to Use This Manual
+
+This manual is written for oper-
+ators and service personnel, It
+provides information for setting
+up, playing, testing, and maintaining your S.T.U.N.
+(Spread Tunnel Underground Network) Runner™
+game.
+
+The manual is divided into the following chapters:
+
+™ Chapter 1 contains set-up and game playing informa-
+tion,
+
+™ Chapter 2 contains self-test procedures and addition-
+al diagnostic tests. The self-test is important in the
+S.T.U.N. Runner game. You can troubleshoot the PC
+
+boards, main circuits, and
+
+controls using the many
+
+screens in the self-test. You
+should regularly test the boards and controls with the
+self-test to keep your game in peak condition and at
+top earnings.
+
+™ Chapter 3 contains maintenance, repair, and trou-
+bleshooting information for your $.T.U.N. Runner
+game. Be sure to perform the preventive mainte-
+nance tasks to keep the game in good condition.
+
+™ Chapter 4 contains the illustrated parts lists.
+Set-Up
+
+Inspecting the Game
+
+WARNING
+To avoid electrically shocking yourself
+and damaging the game electronics, do
+not plug in the game until it has been in-
+spected and set up for your line voltage.
+
+This cabinet should be connected to a grounded three-
+wire outlet only. If you have only two-wire outlets, we
+recommend that you hire a licensed electrician to in-
+stall grounded outlets. Players can receive an electrical
+shock if the cabinet is not properly grounded.
+
+Inspect your S.T.U.N. Runner game carefully to ensure
+that the game is complete and was delivered to you in
+good condition.
+
+Inspect the cabinet as follows:
+
+1, Examine the exterior of the cabinet for dents, chips,
+or broken parts.
+
+2. Open the service door. Unlock and open the coin
+doors. Inspect the interior of the cabinet as follows:
+
+a. Check that all plug-in connectors on the cabinet
+harnesses are firmly plugged in. Do not force
+connectors together. The connectors are keyed
+so they fit only in the proper orientation. A re-
+versed connector can damage a printed-circuit
+board (PCB). This will void your warranty.
+
+b. Ensure that all plug-in integrated circuits on
+each PCB are firmly plugged into their sockets.
+
+c. Inspect the power cord for any cuts or dents in >
+
+the insulation.
+
+d. Inspect the power supply. Make sure that the
+correct fuses are installed. Check that the har-
+ness is plugged in correctly and that the fuse
+block cover is mounted in place. Check that the
+green ground wires are connected.
+
+e. Inspect other sub-assemblies, such as the video
+display, controls, printed-circuit boards (PCBs),
+and speakers. Make sure that they are mounted
+securely and that the ground wires are con-
+nected.
+
+Control and Switch
+Locations
+
+Most of the controls are located inside the seat, behind
+the coin door (see Figure 1-1). The only exception is
+the power on/off switch.
+
+Power On/Off Switch
+
+The power on/off switch is located at the center rear of
+the cabinet.
+
+1-2
+
+S.T.U.N. Runner
+
+Volume
+Control
+
+Figure 1-1 Control and Switch Locations
+
+Volume Control
+
+The volume control is located behind the upper coin
+door under the seat.
+
+Self-Test Switch
+
+The self-test switch is located behind the upper coin
+door under the seat. See Chapter 2 for a complete de-
+scription of the self-test.
+
+Coin Counter
+
+The coin counter is located behind the lower coin door
+underneath the coin tray. The coin counter records the
+number of coins deposited.
+S-T.U.N. Runner
+
+Setting the Coin and
+Game Options
+
+The S.T.U.N. Runner coin and game options are set in
+the self-test. Refer to Chapter 2 for the recommended
+settings and the procedure for setting the options.
+
+Game Systems
+
+The S.T.U.N. Runner game uses four PCBs to give a
+realistic look and feel to the driving. These PCBs are
+the multisync main PCB, the ADSP PCB, the audio.
+PCB, and the video display board.
+
+‘The multisync main PCB, which is the largest, holds the
+68010 and the GSP microprocessor systems. The 68010
+system contains program RAM and ROM. The GSP
+(Graphic Systems Processor) microprocessor system
+controls the video RAMs (VRAMs). The ADSP board is
+mounted with the multisync main PCB.
+
+Maximizing Earnings
+
+Operator options on this game have been kept very
+simple. You should thoroughly read Chapter 2, Self-
+Test for information on the Coin Options, Game Op-
+tions, Histograms, and Statistics screens so that you can
+effectively use the available options. Use the Self-Test
+screens showing Statistics and Histograms to evaluate
+game data, and the Game Options screen to make ad-
+justments. (Refer also to the Self-Test chapter for more
+information on setting options.)
+
+The key to maximizing earnings is striking a midpoint
+on game times. Game times must be short enough so
+that player turnover is high. Conversely, game times
+must be long enough to give players a good value and
+
+ensure repeat play. (Repeat play i
+The S.T.U.N. Runner software gives the operator the
+flexibility to tune game difficulty and enough statistics
+to intelligently make adjustments.
+
+If collections seem low or are dropping off, check play-
+er controls and coin mechanisms for proper operation.
+If earnings seem low, the game is technically sound,
+
+and the average game time per credit is under 150 sec-
+onds, choose an easier difficulty level.
+
+Set-Up
+
+NOTE
+The statistics show average time per coin.
+Depending on the Coin Option settings,
+the average time per game (or credit) can
+be computed from the Total Credits, Total
+Coins, and Average Time/Cain as follows:
+
+Avg Time per Credit = Avg Time per Coin
+X Total Coins + Total Credits.
+
+One of the game option settings (“Continue Advances
+to Next Level”) can help you maximize earnings. In ad-
+dition, you can change the price of continuations.
+
+After changing game option settings, it is a good idea
+to reset the game statistics and the histograms. The
+game statistics can be cleared in the self-test on the sec-
+‘ond statistics screen by moving the left joystick and
+pressing any left player button. The histograms can be
+cleared by moving the left joystick and pressing any
+left player button while you are on the histogram
+screen.
+
+‘Game Play
+
+This section of the manual describes the theme of the
+S.T.UN. Runner game and the game play features.
+
+Introduction
+
+Take a seat, grasp the controls, and enter the world of
+the S.T.U.N. (Spread Tunnel Underground Network)
+Runner. Players travel ahead in time to the 21st century
+and experience the thrill of racing in a futuristic form of
+competitive driving. At the control of state-of-the-art
+technology, players pilot a billion-dollar vehicle capa-
+ble of attaining speeds of over 900 miles per hour!
+
+Players control their vehicles with a return-to-center
+(RTC) flight controller. Control handles adjust shot ele-
+vation and include trigger buttons for firing. The start
+button is also used as a fire button for “shock waves.”
+
+Play Mode
+
+S.T.U.N. Runner is a game of speed. The goal of this
+game is to travel as fast as possible and complete each
+race within the allotted time. Numerous enemies pre-
+vent the player from achieving this goal. Equipped with
+powerful lasers, all enemies can be gunned down with
+the exception of one.
+
+The race through the S.T.U.N. Network is made up of
+many levels. Each level presents a unique challenge to
+the player. The player's ultimate goal is to guide the ve-
+hicle through the network of levels to reach the “Ulti-
+mate Challenge.” In this never-ending race, players go
+
+1-3
+Set-Up
+
+as far as their driving skills will take them. If the dis-
+tance they travel qualifies as one of the top five, their
+name (18 letters) will be displayed along the road for
+future players to see (only if they reach this distance).
+
+In S.T.U.N. Runner, there is no foot pedal to control
+speed. Faster speed is achieved by:
+
+™ Correctly driving on the fastest portion of the tunnel
+™ Staying off side rails (on flat sections)
+
+@@ Avoiding collisions with enemy vehicles
+
+m Running over “boosts” for hyperspeed
+
+™ Avoiding areas under construction
+
+In a turn, the fastest portion of the tunnel is the outer
+wall. Like a luge or bobsled racer, players use the basic
+laws of physics to attain the fastest speed. Riding on
+the inner wall results in a slower speed and hinders a
+player’s ability to reach a finish line. On flat sections,
+running into side rails creates a visual and audio chat-
+tering resulting in a loss of speed. The first race, a
+training race, called “Cake Walk,” is intended to teach
+players how to drive correctly.
+
+Red flashing markers in tunnels and flats are called
+“boosts.” By running over these, the S.T.U.N. Runner
+gets a boost of hyperspeed. In addition to reaching the
+finish line faster, a S.T.U.N. Runner in boost is invinci-
+ble. The vehicle can pass through all enemy vehicles
+unharmed and cannot be shot. In this mode the play-
+er’s vehicle will appear transparent as though it is a
+skeleton.
+
+The underground network has three different tunnel
+sections. They include wide tunnels, narrow tunnels,
+and tunnels under construction. Under construction
+
+sections contain portions that are unsurfaced. These ar- -
+
+eas do not provide full power to the vehicle, and slow
+down the S.T.U.N. Runner.
+
+Open areas are called “flats” and are both narrow and
+wide. Being above the ground, the player is treated to
+many views of the earth’s surface in the 21st century.
+On flats, players must avoid driving along the side rails.
+The friction caused will slow down the S.T.U.N. Run-
+ner vehicle.
+
+A S.T.U.N. Runner vehicle has six shields for added
+protection. Colliding with an enemy results in the loss
+of one shield, At the end of each race, players are
+awarded bonus points for each shield remaining. A
+large bonus is awarded if all shields are intact.
+
+In the tunnels and flats are ramps. These ramps will
+catapult S.T.U.N. Runners above the track for a brief
+distance. Ramp jumping is a often a good method of
+crossing areas under construction and avoiding colli-
+sions with enemies.
+
+When players do not reach the finish line of a race
+within the allotted time, the game would normally end.
+However, they can be allowed to advance to the next
+
+1-4
+
+S‘T.U.N. Runner
+
+level on a continuation. The game option setting Con-
+tinue Advances to Next Level lets you choose whether
+players advance after 1 or 2 retries, or always, or never.
+
+Special Weapon: In selected races, a “shock wave” is
+located along the way. If the player can pick up the
+shock wave, the weapon becomes available for use.
+Also, shock waves can be awarded on some levels if
+the player hits a predetermined number of stars and
+completes the level. This information is green in the
+map at the start of each level.
+
+Players activate the shock wave by pressing the start
+button. This super weapon will destroy all enemies and
+hazards within view. It is a one-time weapon, but more
+than one can be stored. The number of shock waves
+stored is shown as blue and white icons on the screen
+below the level number display.
+
+Bonus Stars: Additional points can be scored along
+the way by running over “stars.” In the first race, the
+training race called “Cake Walk,” the stars are red. Play-
+ers should run over as many stars as possible. In the re-
+mainder of the game, all bonus stars are green.
+
+Challenge Races: These are bonus races awarded to
+players for reaching various points in the game. Races
+5, 10, and 15 are challenge races. Each presents a
+unique challenge to the
+player.
+
+@ Boost Challenge
+m Star Challenge
+m Kill Challenge
+
+In each challenge race,
+players have one goal. [
+Instructions are dis-
+played prior to the start of each race. The timer clock
+still operates, but a game will not end because the time
+expires. This is considered a free bonus for players.
+Each challenge level has its own high score table.
+
+Ultimate Challenge: For those players skillful and pa-
+tient enough, an “Ultimate Challenge” awaits them at
+the end. It is an endless race filled with enemies and
+unexpected surprises. The object is to travel as far as
+possible within the allotted time. Markers on the road
+display the names of the five best S.T.U.N, Runners. It
+is a unique method of identifying the best players of
+the game. These names are also presented on a sepa-
+rate high score table.
+
+Special Contest Feature: Every S.T.U.N. Runner game
+in the U.S. has a special built-in contest feature. A play-
+er can win a free $.T.U.N. Runner T-shirt just for play-
+ing the game. All players have to do is reach the check-
+point in the last level, the Ultimate Challenge. For more
+contest details, see the game.
+
+SELF-TEST
+&
+DIAGNOSTICS
+
+Chapter 2
+
+The S.T.U.N. Runner game is a
+complex machine. To keep it at
+peak efficiency and maximum
+earnings, you should regularly
+check the controls, RAMs,
+ROMs, PCBs, and microproces-
+sor systems. You can check all
+of these when you switch on the self-test. Also in the
+self-test, you can check the video display and the
+statistics.
+
+If you cannot use the self-test because the screen is
+dark, you can use a DIP switch on the main PCB to
+find the source of the problem. If you are having elec-
+tronic problems, you can check the state of various
+signals with the LEDs on the main PCB.
+
+You should regularly check the following screens and
+information. We recommend you check these when
+you first set up the game, each time you collect money,
+or when the game is not working correctly.
+
+@ Use the automated self-test,
+which begins automatically
+when you turn on the self-
+test to test the program RAMs
+and ROMs, the video RAMs,
+color RAMs, the ADSP PCB,
+and the sound PCB. The test
+
+takes about five minutes to run.
+
+™ Check the Control Inputs screen, which you choose
+from the Test Menu screen. This shows the voltage
+input to the main PCB from the controller poten-
+tiometers, trigger switches, and the coin mecha-
+nisms, With this information you can easily check
+how the controls are working.
+
+™ Check the Statistics and Histograms screens which
+show the statistical information about how your
+game is played.
+
+Table 2-1 shows what tests and screens to use at dif-
+
+ferent times and for different problems.
+S.T.U.N. Runner
+
+Program ROM and
+RAM Test
+
+When you enter self-test, the game tests the program
+ROM and RAM. The screen in Figure 2-1 shows the re-
+sults of a program ROM and RAM test.
+
+BAD PROGRAM ROM IS BLANK BOX
+
+Y x WV UOT SR
+200 so 8 8 8
+210 es 08 8 8
+
+ROMS AT 200R AND 210R
+CONTAIN THE SELF-TEST PROGRAM
+
+PROGRAM RAM OK
+
+PRESS START TO BYPASS SELF-TEST
+
+Figure 2-1 Program ROM and RAM
+Test Screen
+
+The top of the screen shows the ROM test result. The
+numbers on the left and the letters at the top of the
+screen show the locations of the ROMs on the main
+PCB. If a white box appears, then the ROM at that lo-
+cation is good. If an empty box appears (as shown at
+200U and 210U), then the ROM there is bad. If nothing
+appears, then nothing was tested there.
+
+The RAMs are tested after the ROMs. If the RAMs have
+no errors, then you see the message Program RAM
+OK. If the test finds an error, then you see Bad Pro-
+gram RAM At with the bad RAM location listed.
+
+This screen disappears after a few seconds and the
+self-test continues. However, the screen with the re-
+sults of the complete self-test, shown in Figure 2-2,
+will show the message Bad Program ROM (or Bad
+Program RAM) if it found an error in the program
+ROMs or RAMs.
+
+Microprocessor and
+Board Tests
+
+After checking the program RAM and ROM, the auto-
+mated self-test checks the game's microprocessor and
+PC boards. It tests the video RAM and color RAM in
+the GSP microprocessor system, the ADSP board, and
+the sound board. The test takes four to five minutes.
+You will see the screen in Figure 2-2 when it finishes.
+
+If the system or board is good, OK follows the test
+name. If it is bad, the word Bad precedes the name of
+the board or system (except for the ADSP board test,
+which gives more information). If you have a bad sys-
+
+Self-Test
+
+tem or board, then choose Special Functions from the
+test menu, choose the appropriate system or board
+tests from the special functions menu, and read the de-
+scription of the tests in this chapter.
+
+BAD PROGRAM ROM
+PROGRAM RAM OK
+
+GSP VRAM OK--SIMPLE TEST
+GSP COLOR RAM OK
+
+ADSP BOARD OK
+
+SAN TEST
+
+PRESS START TO SELECT TEST MENU
+
+Figure 2-2 Microprocessor and
+Board Tests Screen
+
+A brief description of each microprocessor and board
+test performed in the self-test is below.
+
+PROGRAM ROM: Described above.
+PROGRAM RAM: Described above.
+
+GSP VRAM: Uses the Simple GSP VRAM Test. (De-
+scribed in the section Main Board GSP Tests.)
+
+GSP COLOR RAM: Uses the GSP Color RAM Test. (De-
+scribed in the section Main Board GSP Tests.)
+
+ADSP Board: Tests the ADSP board memory and the
+ADSP-2100. Most of the error messages are self-ex-
+planatory. (Does Not Respond generally indicates a
+missing board.)
+
+SA II Test: Tests the program ROM and RAM on the
+sound PC board. If any are bad, the message SA IT
+Test Error or SA II Timeout Error appears on the
+screen.
+
+Test Menu Screens
+
+After the microprocessor and board test is finished, or
+you bypass it, press START to see the test menu
+screens. Press START once to see the screen with the
+instructions for moving and choosing in the test menu,
+shown in Figure 2-3. Press START again to see the test
+menu.
+
+To move down the menu, press the right trigger
+switch. To move up the menu, press the left trigger
+switch. You can choose the test menu item with the
+white letters by pressing START.
+
+2-3
+Self-Test
+
+USING THE TEST MENU
+
+PRESS RIGHT TRIGGER
+
+TO MOVE DOWN OR TO INCREMENT
+PRESS LEFT TRIGGER
+
+TO MOVE UP OR TO DECREMENT
+
+PRESS START TO CHOOSE ITEM
+OR TO RETURN
+
+Figure 2-3 Instructions for Test
+Menu Screen
+
+The test menu, shown in Figure 2-4, is the most impor-
+tant screen in the self-test. Use this screen to choose
+the other screens and tests in the self-test. If you
+choose any item on this test menu, a new screen on
+that subject appears. Table 2-4 lists all the screens that
+appear in the self-test.
+
+TEST MENU
+
+OPERATOR SCREENS
+CONTROL INPUTS
+MONITOR TEST PATTERNS
+‘SPECIAL FUNCTIONS
+
+S.T.U.N. RUNNER VERSION 20.0
+COPYRIGHT ATARI GAMES 1989
+
+Figure 2-4 Test Menu Screen
+
+Operator Screens
+
+Choose the operator screens in the test menu by hold-
+ing START while the words Operator Screens are in
+white. (For information about moving and choosing in
+the menu, see the section above.)
+
+If you are in the operator screens and want to go to
+the attract mode, first press START to go through the
+remaining operator screens. When you return to the
+test menu, turn off the self-test switch.
+
+Following are the screens in the operator screens sub-
+menu:
+
+ST.UN. Runner
+
+@ Coin Options
+
+m Game Options
+
+m Game Statistics
+
+m Game Histograms
+
+@ Error Count
+
+™ High Score Tables Reset Screen
+
+Coin Options
+
+The coin options appear in the first operator screen
+(see Figure 2-5). To move and choose in this screen,
+do the following:
+
+Coin Options
+
+[cin Mode
+Ls'coins 4 creat
+Right Mech Multiplier
+1 coin counts as { coin
+
+Left Mech Multiplier
+1 coin counts as 1 coin.
+Bonus Adder
+No Bonus Adder
+
+tit LEFTIRIGHT Triggers to move UP/DOWN
+old a Coin Switch and hit Triggers to cycle throuph choices
+Hold a Coin Switch and press START to restore original setting
+‘Just press START to save this selting and exit
+
+Figure 2-5 Coin Options Screen
+
+™ To move up or down the list, press the right or left
+triggers.
+
+™ To change a setting, press a trigger and either coin
+switch.
+
+™ To return to the setting originally on the screen,
+hold a coin switch and press START at the same
+ume.
+
+@ To exit the screen, press the START button.
+
+You can change an option when it is enclosed in a
+
+blue box. The default setting of each option is green.
+
+The other settings are blue when you select that op-
+
+tion. The possible settings are shown in Table 2-2.
+
+‘The coin options are explained below.
+
+™@ Coin Mode is the number of coins required for one
+credit.
+
+™@ Right Mech Multiplier is the number of coins each
+coin counts as in the right coin mechanism.
+
+@ Left Mech Multiplier is the number of coins each
+coin counts as in the left coin mechanism.
+
+m Bonus Adder lets you choose bonus coins, no
+bonus, or free play.
+S.T.U.N. Runner
+
+Table 2-2 Coin Option Settings
+
+Option
+Coin Mode
+
+Available Settings
+
+1 coin/1 credit
+
+2 coins/1 credit #
+3 coins/1 credit
+
+4 coins/1 credit
+
+1 coin counts as 1 coin
+1 coin counts as 4 coins
+
+1 coin counts as 5 coins
+
+1 coin counts as 6 coins”
+
+1 coin counts as 1 coin #
+‘coin counts as 2 coins
+
+No bonus adder #
+
+2 coins give 1 extra coin
+4 coins give 1 extra coin
+4 coins give 2 extra coins
+5 coins give 1 extra coin
+3 coins give 1 extra coin
+Free Play — : :
+
+Left Mech Multiplier
+
+Bonus Adder
+
+© Manufacturer's recommended settings
+
+Game Options
+
+Use this screen to set the game difficulty and various
+other operator options explained below. The screen is
+shown in Figure 2-6, and a table of the options is
+shown in Table 2-3.
+
+To move and choose in this screen, do the following:
+
+To move up or down the list, press the right or left
+trigger.
+
+m To change a setting, hold down a coin switch and
+press either trigger.
+
+™ To return to the setting that was originally on the
+screen, press a coin switch and the START button at
+the same time.
+
+™@ To exit the screen, press the START button,
+
+GAME OPTIONS
+
+(GAME DIFFICULTY
+MEDIUM. |
+TINUE 1S ONE COIN LESS THAN START.
+OFF
+‘SOUNDS IN ATTRACT
+OFF
+AUTO RESET HIGH SCORES
+‘ON
+HIGH SCORE NAME CENSOR
+STRICT
+T-SHIRT CONTEST
+DISABLED
+CONTINUE ADVANCES TO NEXT LEVEL
+AFTER 1 RETRY
+
+Hit LEFTRIGHT Triggers to move UP/DOWN.
+Hold @ Coin Switch and hit Triggers to eyele thraugh cholees
+Hold @ Coin Switch and press START to restore original setting
+‘Just press START to save this setting and exit
+
+Figure 2-6 Game Options Screen
+
+Self-Test
+
+Table 2-3 Game Option Settings
+
+Option ‘Available Settings |
+Game Difficulty Very Easy Medium Hard
+. Easy Hard
+“Medium Easy Very Hard
+Medium # Nasty '
+Continue is One Coin =O On |
+Less Than Start (optional) |
+Sounds in Atract = Yes @ No |
+Auto Reset High Scores. OF one
+High Score Name Censor Strict Easygoing ¢
+‘T-Shirt Contest Disabled Enabled ¢
+
+Continue Advancesto. —_— After. 1 Retry # Always
+Next Level After 2 Retries Never
+
+Manufacturer's recommended settings |
+
+You can change an option when it is inside a blue
+box. The default setting of each option is green. The
+other settings are blue when the option is selected.
+(The other settings are white when the option is not
+selected.)
+
+m Game Difficulty sets the game difficulty for the
+game. The settings are shown in Table 2-3.
+
+™@ Continue is One Coin Less Than Start enables or dis-
+ables the option that offers players an additional
+game for one coin. This option only appears if the
+coin mode option is set to 2, 3 or 4 coins/1 credit.
+
+@ Sounds in Attract enables or disables the game
+sounds during the attract mode demo sequence.
+
+™ Auto Reset High Scores enables or disables the auto-
+matic resetting of all high score tables. When en-
+abled, if 2000 or more games have been played
+overall and 200 games have been played without
+any high score entry on any table, all high score ta-
+bles are reset.
+
+™ High Score Name Censor controls a program to cen-
+sor names entered on the high score table. The pro-
+gram deletes letters in possibly objectionable words
+in the high score table.
+
+@ T-Shirt Contest enables or disables the T-shirt contest
+option. You should always have this option disabled
+after the contest ends on April 1, 1990.
+
+™ Continue Advances to Next Level: When a player fails
+to complete a level (thus ending the game), he can
+be allowed to advance to the next level on a contin-
+uation.
+
+Statistics
+
+The statistics screen is shown in Figure 2-7. The statis-
+tics are collected from the last time the statistics screen
+was cleared. Write this information on the statistics
+
+25
+Self-Test
+
+S.T.U.N. Runner
+
+Table 2-4 Summary of All Screens Appearing in the Self-Test
+
+Screen
+Automated Self-Test
+Program RAM and ROM
+Automated Self-Test Results
+_ sound PCB tests.
+Test Menu Screens : = i
+
+Instructions for Test Menu Shows information about using the test menu.
+
+Test Menu Shows a list of available tests and information you' can choose.
+Operator Screens : ee :
+
+Coin Options Sets the coin options. u
+
+Game Options Sets the game options, controls the high score ube and steering in ce attract mode.
+
+Statistics Shows game statistics,
+
+Histograms Shows game histograms, and number of sauce by length of play (six total).
+
+Error Count Shows the error count from the PC boards. Used by the factory for debugging.
+
+High Score Table Shows main high score table and allows the manual resetting of al/ high score tables.
+Control Inputs Check this screen regularly to make sure your controls are operating correctly.
+Monitor Test Patterns Use these screens to check the performance of your video display.
+
+Color Bars Shows the video display colors.
+
+Monitor Adjust
+
+Monitor Brightness
+
+Grey Scale
+
+B/W Dots
+
+B/W Grid
+
+Diagonal Lines
+
+Full Screen Grey
+
+Full Screen White
+
+Full Screen Red
+
+Full Screen Green.
+
+Full Screen Blue
+
+Monitor High Voltage Test
+
+Scrolling Test
+
+Special Functions
+
+Main Board GSP Tests
+VRAM Simple Test
+VRAM Verify Test
+VRAM Complete Test
+Test VRAM for Display Errors
+Color RAM
+RAM Shift Register Test
+
+Main Board ROM Checksums.
+Main Board ZRAM Tests
+
+Used for the monitor setup.
+Shows the brightness adjustment. :
+
+Shows the grey scale of the video display.
+
+Shows convergence and focus of the video display.
+
+Shows convergence and focus of the video display.
+
+Shows linearity of the video display.
+
+Shows the color purity of the video display.
+
+Shows the color purity of the video display.
+
+Shows the color purity of the video display.
+
+Shows the color purity of the video display.
+
+Shows the color purity of the video display.
+
+Checks the regulation of the high voltage to the video display.
+Checks the scrolling mechanism of the GSP microprocessor.
+
+Use this screen for tests of the controls, PCBs, and microprocessors.
+Use this screen if you have a VRAM failure in the automated self-test.
+Checks for bad VRAMs in the GSP microprocessor system.
+Tests all the VRAM GSP memory. oe
+Completely tests all VRAM.
+Tests for VRAM video. display ex errors.
+Tests the color RAM.
+Checks the VRAM shift register.
+
+Use this test if the program ROMs fail the automated self-test
+
+Check the ZRAMs. Use this if all the controls are oper: re eiucally or the statistics
+are not kept correctly. : oe : eee
+
+S.T.U.N. Runner Self-Test
+
+Table 2-4 Summary of All Screens Appearing in the Self-Test, Continued
+
+ADSP Board Tests :
+
+ADSP RAM TESTED BY 68010.
+ADSP PROGRAM MEMORY TEST .2100.
+ADSP DATA MEMORY TEST .2100.
+
+Use this test if the ADSP board fails the automated self-test.
+‘The 2100 runs a standard, complete test on its own program memory.
+‘The 2100 runs a standard, complete test on its own data memory.
+
+2100 TEST © Tests the response of the 2100 integrated circuit on the ADSP PCB.
+IRQ TEST Tests if the ADSP system can generate IRQs.
+ROM CHECKSUMS Tests the graphics ROMs on the ADSP PCB.
+ADSP SPECIAL FUNCTIONS Performs hardware Glagnoss a and orloscone test oops for use by a
+repair technician.
+Audio Board Tests ‘Use these tests if the SA 1 audio. board fails the aiomated self-test.
+"Sound Board Self-Test ‘Tests the sound PCB and reports the result
+Play Sounds Choose and hear game sounds.
+
+STATISTICS
+
+VERSION 20.0 FRI SEPT 8 09:
+
+LEFT COINS: 27
+RIGHT COINS:
+
+AUX COINS:
+
+IDLE MINS:
+
+ACTIVE MINS:
+
+HOLD A COIN SWITCH AND PRESS START
+TO CLEAR STATISTICS
+
+JUST PRESS START FOR HISTOGRAMS.
+TOTAL CREDITS: 49
+
+TOTAL COINS: 61
+AVG TIME/COIN: 114 SEC
+
+Figure 2-7 Statistics Screen
+
+sheet in the back of this manual to help you maximize
+your profit.
+
+To move to the next screen, just press START. To clear
+the statistics, hold a coin switch and press START at
+the same time.
+
+The statistics that the game collects are explained
+below.
+
+& Left Coins shows the number of coins counted in the
+left coin mechanism.
+
+§ Right Coins shows the number of coins counted in
+the right coin mechanism.
+
+@ Aux Coins is not used.
+
+@ Idle Mins shows the number of minutes the game
+has been idle.
+
+Active Mins shows the number of minutes the game
+has been played.
+
+™ Total Credits is calculated by multiplying the coins
+by the credit setting you chose in Coin Mode.
+
+Histograms
+
+Read the histogram screen frequently and record the
+numbers on the statistics sheet in the back of the man-
+ual. You should read and reset the screen frequently
+because if more than 256 games occur in any one time
+category, then the counts of all the time categories are
+divided by two, so the information remains propor-
+tionally accurate, but not numerically accurate.
+
+If you read the screen infrequently, it is likely that you
+will not have a true numerical count of the number of
+sessions because of the way the histogram numbers
+are handled. The histograms screens appear in Figures
+2-8 to 2-13.
+
+To clear the histograms, hold a coin switch and press
+START at the same time. To move to the next screen,
+press START.
+
+2-7
+Self-Test
+
+Histogram 1
+New Game Times
+
+dust press START
+for next level
+
+Histogram 2
+Continuation Game Times
+
+‘Just press START.
+for next level
+
+Histogram 3
+Level Died At
+
+Just press START
+for next levet
+
+Figure 2-10 Third Histogram Screen
+
+S.T.UN. Runner
+
+Histogram 4
+Level Continued From
+
+Just press START
+for next tevel
+
+Histogram 5
+Sear
+
+dust press START
+for next level
+
+Histogram 6
+Excess Time (1/10th sec)
+
+Hold a Coin Switch and press START to clear histogram
+
+dust press START for next level
+
+Figure 2-13 Sixth Histogram Screen
+STUN. Runner
+
+Error Count
+
+This screen, shown in Figure 2-14, shows the error
+counts on the PC boards. If you call Atari Game Cus-
+tomer Service, the numbers on this screen may help
+Customer Service personnel troubleshoot your prob-
+lem.
+
+Figure 2-14 Error Counts Screen
+
+Control Inputs Screen
+
+Check this screen as part of your regular maintenance
+to be sure your controls are operating correctly. The
+Control Inputs screen is shown in Figure 2-15.
+
+CONTROL INPUTS
+
+CONTROL LEFT/RIGHT
+CONTROL UP/DOWN
+
+LCOIN RCOIN. LEFT TRIGGER RIGHT TRIGGER
+
+Figure 2-15 Control Inputs Screen
+
+If you have a problem with a control, check Chapter 3
+for troubleshooting and repair information about the
+control.
+
+Self-Test
+
+When the line is shortest, the input is 0 Volts. When it
+is longest, the input is 5 Volts. If the line length for the
+control does not change, you have a problem with the
+control. See Chapter 3.
+
+Monitor Test
+Patterns
+
+Use this item to see the thirteen screens for checking
+the video display, the color RAMs, the GSP, which con-
+trols the video RAMs (VRAMs), and the video output.
+To move through the screens, press the coin switches.
+
+™ Color Bars screen shows these colors from left to
+right: white, yellow, light blue, green, purple, red,
+blue, and grey. If the colors are incorrect, see your
+video display manual for adjustment procedures.
+
+™ Monitor Adjust is used to set up the monitor.
+™ Monitor Brightness checks the adjustment of the
+video display brightness.
+
+™ Grey Scale screen shows a white line on the left,
+and a grey scale showing black on the left.
+
+™ B/W Dots screen can be used to check convergence
+and focus.
+
+@ B/W Grid scteen, shows a black background and a
+white grid pattern to check convergence. The grid
+lines should be straight within 3.0 mm. If you need
+to adjust the convergence, see the video display
+manual included with the game.
+
+™ Diagonal Lines screen can be used to check video
+display linearity.
+
+@ Full Screen colors test the color purity of the color
+RAMs and the display. The test displays a grey,
+white, red, green, and then blue screen. Each screen
+should be a rectangle of color, with no curving at
+the corners and no lines in the raster. If it is not, see
+your video display manual included with the game
+for adjustment procedures.
+
+™§ Monitor High Voltage Test screens switch between a
+white screen and a grey screen. If the high voltage
+to the display is regulated properly, the sizes of the
+white and grey screens will differ by about 3/4 inch.
+
+§ Scrolling Test screen checks the scrolling mechanism
+in the GSP.
+
+29
+Self-Test
+
+Special Functions
+Screens
+
+Use the items on this screen, shown in Figure 2-16, if a
+system or board failed the program RAM and ROM test;
+if a board and microprocessor failed the automated
+self-test; if you have problems with the flight control or
+if the statistics are erratic. A short summary of when to
+use these items is provided in Table 2-5.
+
+SPECIAL FUNCTIONS
+
+Exit
+
+MAIN BOARD GSP TESTS:
+RESERVED
+
+MAIN BOARD ROM CHECKSUMS
+MAIN BOARD ZRAM TEST
+
+ADSP BOARD TESTS
+
+SOUND BOARD TESTS
+
+Figure 2-16 Special Functions Screen
+
+The Special Functions items are explained below.
+
+& Exit returns you to the test menu.
+
+™ Main Board GSP Tests should be used if you get the.
+
+message Bad GSP VRAM or Bad GSP Color RAM in
+the automated self-test. This screen has six tests you
+can use.
+
+@ Main Board ROM Checksums should be used if you
+get the message Bad Program ROM in the automated
+self-test. This tests the program ROMs individually
+and shows the results on the screen.
+
+§ Main Board ZRAM Test should be used if your con-
+ols settings are changing or erratic. Also use these
+tests if you suspect the game is not keeping the
+Statistics correctly.
+
+@ ADSP Board Tests should be used if you get any
+message other than ADSP Board OK for the ADSP
+board test in the automated self-test. This screen has
+five tests and an ADSP ROM checksum test. It also
+has a special functions menu for factory use only.
+
+™ Sound Board Tesis should be used if you get the
+message SAII Test Error in the automated self-test.
+
+2-10
+
+S.T.UN. Runner
+
+Main Board GSP Tests
+
+If the automated self-test reports bad VRAMs, choose
+Main Board GSP Tests and the screen in Figure 2-17
+appears.
+
+EXIT
+VRAM SIMPLE TEST: 18 SECONDS
+
+VRAM COMPLETE TEST: 11 MINUTES
+TEST VRAM FOR DISPLAY ERRORS
+COLOR RAM
+
+VRAM SHIFT REGISTER TEST
+
+Figure 2-17 GSP Tests Screen
+
+First run the VRAM simple test. It gives the location of the
+bad VRAMs. If the VRAMs pass this test, but you think the
+game has a bad VRAM, run the VRAM verify test.
+
+@ VRAM Simple Test is the same test that is run in the
+automated self-test. It is run by the 68010 through
+the GSP interface and detects open or shorted ad-
+dress or data lines or missing parts. The results are
+displayed on-screen with a picture showing the
+RAM section of the main PC board. The good parts
+are shown in green and the bad parts are shown in
+red, If an entire section appears in red, the problem
+may be with a buffer associated with that section.
+The test takes about 15 seconds.
+
+m@ VRAM Verify Test is a complete memory test run by
+the GSP. The results are reported on the screen as in
+the simple test. The test takes about 90 seconds to
+run.
+
+Since the verify test is run by the GSP program in
+the VRAMs, a single bad VRAM can cause the GSP
+program to crash. When this happens, the 68010 mi-
+croprocessor reports that all the VRAMs are bad, al-
+though probably only one VRAM is bad. You must
+run the VRAM complete test (described below) to
+find out which VRAM is bad.
+
+If the VRAM verify test fails, but the VRAM simple
+test shows the VRAMs are good, you should run the
+VRAM complete test.
+
+If the verify test runs and reports that the VRAMs are
+good, then the VRAMs should be good.
+S.T.U.N, Runner Self-Test
+
+Table 2-5 When to Use the Special Function Items
+
+When to Use
+
+If you see the message Bad GSP VRAM or Bad GSP Color RAM in the automated
+self-test.
+
+If you see the message Bad Program ROM in the automated self-test.
+
+If your control settings are changing even though you have used the Set Con-
+trols screen or if the statistics are not being kept correctly.
+
+If you see any message other than ADSP Board OK for the ADSP PC board test
+in the automated self-test.
+
+____Item.
+Main Board GSP Tests
+
+Main Board ROM Checksums
+Main Board ZRAM Tests
+
+ADSP Board Tests
+
+Sound Board Tests If you see the message SAI! Test Error in the automated self-test.
+
+@ VRAM Complete Test is a complete memory test run
+by the 68010 through the GSP interface. Because the
+68010 runs the test, a single bad VRAM does not
+cause the test to report that all the VRAMs are bad
+(as it does the verify test).
+
+Any VRAMs that are bad are shown on the screen at
+the end of the test. This test takes at least eleven
+minutes to run.
+
+@ Test VRAM for Display Errors checks for video dis-
+play problems.
+
+™ Color RAM is the same test that is performed in the
+automated self-test. It tests the color RAM and re-
+ports the results.
+
+& VRAM Shift Register Test checks the shift register part
+of the video RAMs.
+
+Main Board ROM
+Checksums
+
+This screen checks the main PC board program ROMs
+for errors. Use this test if you have a bad program
+ROM message in the automated self-test or you sus-
+pect program ROM failure. To exit this screen, press
+START.
+
+When the checksum test is complete, the screen shows
+the list of ROM locations, the checksum, and what the
+checksum is expected to be (see Figure 2-18). Only
+the last two digits of the checksum are important.
+
+Main Board ZRAM Test
+
+This test checks the non-volatile RAM where the game
+statistics and control set-up values are kept. Check the
+ZRAMSs if you think the statistics are incorrect.
+
+If the game loses power or is reset while it is in this
+test, then the statistics will be lost. The statistics cannot
+be restored.
+
+PROGRAM ROM CHECKSUMS
+
+LOC. CHECKSUM EXPECT LOC. CHECKSUM EXPECT
++02 xxo2 201 xxot
+7204 xx04 8103 xx03
+1306 xx06 B705 xxKO5
+3308 xxos 2E07 x07
+AFIO xxto 709 x09
+SFi2 x2 FEV odd
+‘0000 JO 9000 bese
+9000 3000C 0000 XXX
+
+XX = DO NOT CARE
+
+Figure 2-18 ROM Checksums Screen
+ADSP Board Tests
+
+Use this item if the ADSP PC board fails the micropro-
+cessor and board tests performed in the automated
+self-test.
+
+When you select ADSP Board Tests from the test
+menu, the screen in Figure 2-19 appears. The items on
+the screen are explained below.
+
+ADSP BOARD TESTS
+EXIT
+ADSP RAM - TESTED BY 68010.
+ADSP PROGRAM MEMORY TEST .2100.
+ADSP DATA MEMORY TEST .2100.
+
+2100 TEST
+
+RQ TEST
+
+ROM CHECKSUMS
+
+ADSP SPECIAL FUNCTIONS
+
+Figure 2-19 ADSP Board Tests Screen
+
+2-11
+
+Self-Test
+
+@ Exit returns to the test menu.
+
+@ ADSP RAM Tested by 68010 tests the memory on the
+ADSP PC board. The 68010 on the main PCB tests
+the ADSP program memory, the ADSP data memory,
+and both ADSP output buffers. The memory tests
+are the standard, complete tests but are run at the
+68010's bus speed, which is slower than that of the
+2100.
+
+& ADSP Program Memory Test .2100. is a standard,
+complete memory test run by the 2100 on its own
+program memory. Since the test program must re-
+side in memory, a bad program RAM may prevent
+the test from running. However, because the pro-
+gram memory is divided into two banks, the test is
+divided into two parts.
+
+The program to test the upper bank is run from the
+lower bank; the program to test the lower bank is
+run from the upper bank. Unfortunately, the 2100 al-
+ways starts operating from a specific address in the
+lower bank. Therefore, the lower bank must be op-
+erating to the extent that it can execute a JUMP in-
+struction to the upper bank.
+
+These tests operate solely with program memory;
+they do not require that any data memory be opera-
+tional.
+
+™@ ADSP Data Memory Test is a standard, complete test
+run by the 2100. It operates solely with program
+memory and does not require that any data memory
+be functional.
+
+& 2100 Test checks the response of the 2100 integrated
+circuit on the ADSP PC board by copying data from
+one location to another using a 2100 program.
+
+IRQ Test checks if the ADSP can generate interrupts
+for the 68010.
+
+m@ ROM Checksums tests the graphic ROMs on the
+ADSP PC board. When the checksum test is com-
+plete, a hexadecimal number follows each ROM as
+shown in Figure 2-20. The first two digits in each
+hexadecimal number can be any number, but the
+last two digits must be the ones shown in Figure
+2-20. If the last two numbers are different, then the
+ROM is bad or it is not on the board.
+
+™ ASDP Special Functions performs hardware diagno-
+sis for use by a repair technician.
+
+Audio Board
+Use these tests if the SA II Audio board failed the mi-
+croprocessor and board tests in the automated self-test.
+
+If the SA II Audio board failed the test, select this item
+from the test menu and a screen such as the one in
+Figure 2-21 appears. The tests are explained below.
+
+S.T.UN. Runner
+
+ADSP ROM CHECKSUMS
+CHKSUM EXPECT.
+TFIZ XxX47
+XX18
+XX19
+xxX20
+
+Loc.
+ASDP 9K:
+
+ASDP 9/10K: 5518
+ASDP 10K:
+
+8919
+ASDP 9H: 0E20
+ASDP 9/10H: DF21 XX21
+ASDP 10H: 3022 XX22
+XX = DO NOT CARE
+
+Figure 2-20 ADSP ROM Checksums
+Tests Screen
+m Exit returns to the test menu.
+
+SA Self-Test checks the sound program ROM and
+RAM.
+
+@ Play Sounds takes you to the Requesting Sound
+Screen. Follow the instructions on the screen to hear
+the game sounds.
+
+SA AUDIO TEST
+
+SA AUDIO TEST OK
+
+Figure 2-21 SA Audio Test Screen
+
+LEDs on the Main
+PCB
+
+The LEDs (light-emitting diodes) on the main PCB
+show you the status of signals on the main PCB. Using
+the LEDs, you can check signals from various circuits
+
+* going to the 68010 processor. The state of the signals
+
+is shown by the LEDs which flash or stay lit.
+
+Figure 2-22 shows the location of the LEDs on the
+main PCB. Table 2-6 shows the possible status of the
+LEDs, with an explanation of what they indicate.
+S.T.U.N, Runner
+
+Self-Test
+
+Table 2-6 LED Status
+
+Indicates
+
+Status —
+
+Run LED State of 68010 HALT signal.
+
+State of 68010 DTACK (data acknowledge)
+signal.
+
+DTACK LED.
+
+Clock LED State of the 68010 processor clock signal.
+
+IRQS LED State of all 68010 interrupts.
+
+On when the 68010 processor is pinning and the timing cir-
+~~ cuit is probably operating.
+
+-Onwhen 68010 is running.
+
+Offwhen 68010 processor is not running.
+
+Flashing at 2 Hz if the 68010 cannot run. (The watch-dog
++and clock must be running.) :
+
+(The Run LED is ote Bate mode.)
+
+Flashes at 2 Hz when the 68010 processor cannot run. (The
+watchdog and processor clock must be running.)
+
+(The DTACK LED is on in game mode.)
+
+On when the game board is on.
+Offif the processor clock signal is stuck high or low.
+
+On in the game mode.
+
+Offin hardware diagnostic mode and the early part of self-
+
+test.
+
+Offif no interrupts are occurring or any interrupt signal is
+stuck low.
+
+DIP Switches
+
+If you try to enter the self-test, but nothing appears on.
+the screen, use the DIP switch tests. Use the informa-
+tion from these diagnostic tests to help you find the
+problem.
+
+Before you begin with these following tests, be sure
+that the problem is in the game hardware, not in the
+video display. If you have a completely dark screen,
+check the following:
+
+Do you have power to the video display?
+Are the video display’s filaments lit?
+
+@ Do you have high voltage to the video display?
+
+If the answer to any of these questions is no, then you
+have a problem in the video display. Check the video
+display service manual included with your game for
+the suggested procedure.
+
+If you are sure that the problem is not with the video
+display, then ty the DIP switch diagnostics shown in
+Table 2-7, at the end of this chapter. These tests isolate
+various ICs and systems for troubleshooting. The re-
+sults of the tests are indicated by the main PC board
+LEDs or on the video display screen.
+
+To set the DIP switches for the tests:
+1. Put a jumper across the DIAGN test points, shown.
+in Figure 2-22.
+
+. Select the diagnostic test you want to use with the
+DIP switch settings.
+
+. Turn on the self-test switch.
+
+4, Put a jumper momentarily across the RESET test
+points, shown in Figure 2-22.
+
+To change to another DIP switch test:
+
+1. Change the DIP switch settings.
+
+2. Put a jumper momentarily across the RESET test
+points.
+
+To end the DIP switch testing:
+
+1, Take the jumper off the DIAGN test points.
+
+2. Put a jumper momentarily across the RESET test
+points.
+
+The DIP switch settings are on in the top position
+when the main PCB board is in the game.
+
+Figure 2-22 DIP Switch and LED
+Locations on the Main PCB
+
+2-13
+Self-Test
+
+S.T-U.N. Runner
+
+Table 2-7 Using the DIP Switches
+
+Type of Test
+
+Uncleared Watchdog
+
+Cleared Watchdog
+
+Test LEDs
+
+Test Program ROM 0
+
+Test Menu RAM 0
+
+GSP Communications
+
+Red Screen.
+
+Green Screen
+
+Blue Screen
+
+GSP Memory Fill
+GSP VRAM Verify
+
+ROM Test Loop
+RAM Test Loop
+
+BERR
+
+Wauhdog, 7
+
+“The results are displayed on the screen.
+The results are displayed on the Screen
+
+Puts the 68010 in a loop. Does not clear the watchdog euneee ‘The
+program RAM does not need to work. If the watchdog is working, the
+run LED, DTACK LED, and IRQs LED flash at 2 Hz and the cl
+
+is on. :
+
+Puts the 68010 in a loop. Clears the watchdog counter. The program
+RAM does not need to work. If the watchdog is working, the mun TED,
+clock LED, DTACK LED and IRQS LED are on.
+
+test LEDs are workings they flash at 2 Hz.
+
+Tests ROM 0 H and 0 L, which hold the test program. (This test takes :
+about 5 seconds.) LED 1 and LED 2 flash together if both ROMs are
+good. If ROM 0 L is bad, LED 1 does not flash. TRON OM is hate
+LED 2 does not flash. eh aes
+
+Tests RAM 0 H and 0 L, which run the test menu, “Chis test takes
+about 5 seconds.) LED 1 and LED 2 flash together if both RAMs are
+good. If RAM 0 L is bad, HH | Sloss aot lash IFRAM 0 His bad, ie as
+IED 2 does not flash. :
+
+GSP Tests
+Tests if the 68010 can communicate with the GSP, which produces
+the video. If the GSP responds, the LEDs flash together. If the s P
+does not respond, LED 1 and 2 flash deny,
+
+Produces a red screen from the color RAM, regardless of. Gee VRAM xx
+input. Use this to check the red video outputs. _
+
+Produces a green screen from the color RAM, regardless of ose RAM zx ou
+input, Use this to check the green video outputs,
+
+Produces a blue screen from the color RAM, roads of GSE TAME be x ol
+input. Use this to check the | blue ‘video came : i
+
+Does a very slow GSP memory fil fi so you can test the pixel scanner” =
+Performs the GSP VRAM verify test. CThis test is also in the self-
+ROM and RAM Tests
+
+Bus Error Test 2
+
+MAINTENANCE
+&
+TROUBLESHOOTING
+
+Chapter 3
+
+This chapter includes mainte-
+nance, repair, and troubleshoot-
+ing information for your
+S.T.UN. Runner game.
+
+In the game, the hardware and software are closely re-
+lated. If you are having problems with a mechanical
+assembly, always keep in mind that your electrical
+connections may not be good or you may have an
+electronic problem. To determine what kind of prob-
+lem you have, always use the self-test screens as rec-
+ommended for each part.
+
+The first part of the chapter includes a schedule for
+
+| game maintenance and inspec-
+4 tion, a table with general trou-
+bleshooting information, and a
+table of the voltage levels and
+test points on the PCBs. The rest of the chapter is ar-
+ranged in alphabetical order by the name of the part
+or control. Under each part are maintenance proce-
+dures, troubleshooting tables and flowcharts, and re-
+pair procedures for the part.
+
+If a part is mentioned, but not illustrated, refer to
+Chapter 4, Mlustrated Parts Lists, for information.
+Maintenance and Troubleshooting
+
+S.T.U.N. Runner
+
+Table 3-1 Maintenance and Inspection Items
+
+Part ‘When to Check —
+
+‘All Controls © Every month
+
+Every 6 months
+‘Every 3 months i
+
+Coin Mechanism
+Interior Components
+
+Table 3-2 Voltage Inputs and Test Points on the Game PCBs
+
+PCB Voltage Test Points "Source and Purpose ~
+Main +5401 VDC -+5V2 Power Supply
+ADSP +5 VDC a
+
++5V1 or +5V2. ~ Regulated and supplied fro
+
+Maintaining and
+Inspecting
+
+Preventive maintenance includes inspecting, cleaning,
+lubricating, and tightening hardware. Perform the pre-
+ventive maintenance regularly so you can keep the
+game in top condition, avoid problems, and maximize
+your earnings. Preventive maintenance tasks and inter-
+vals are shown in Table 3-1.
+
+For the best performance from your S.T.U.N. Runner
+game, maintain your game according to the times
+shown in Table 3-1. Instructions for performing these
+tasks is explained in the section about that control in
+this chapter. You may want to perform these tasks
+more often if the game is heavily used.
+
+Table 3-2 shows the correct voltage levels to various
+PC boards and the test points for those voltage levels.
+Low voltages to PC boards may cause problems with
+the controls, with the video display, or in game play.
+
+Coin Mechanism
+
+The coin mechanism should be cleaned every three
+months,
+
+Maintaining the Coin
+
+Mechanism
+
+1. Turn off the power to the game. Open the upper
+coin door,
+
+2. Open the gate on the door covering the magnet.
+Use the blade of a screwdriver to scrape away any
+metal filings collected on the magnet.
+
+3. For a thorough cleaning, wash the coin mechanism
+in hot soapy water. Use a toothbrush to remove
+any stubborn build-up of residue in the coin path.
+
+4, Dry the coin mechanism with compressed air.
+
+5. If you do not want to use water, brush the loose
+dust off with a soft brush and scrub the residue in
+the coin path with a toothbrush. Blow all the loose
+dust and dirt out with compressed air.
+
+3-2
+
+NOTE
+Never lubricate the coin mechanism with
+oil or grease.
+
+Interior Components
+
+All the components in the interior of the game should
+be cleaned every three months. This includes the
+PCBs, the power supply and the video display.
+
+Cleaning the Interior
+Components
+
+Perform the following procedure to clean the compo-
+nents inside the cabinet.
+
+1. Open the rear service and top service doors.
+
+WARNING
+Turn off the AC power, but do not unplug
+the power cord before cleaning inside the
+cabinet. The power cord provides a
+ground path for static voltage that can be
+present on the cleaning tools.
+
+2. Use a vacuum cleaner with a soft long-bristled
+brush attachment or use a soft-bristled paint brush
+to remove loose dirt and dust from the inside of
+the cabinet. Be sure to clean the power supply,
+PCB assemblies, and video display thoroughly.
+
+CAUTION
+Be extremely careful when cleaning the
+electrical components inside the cabinet.
+Do not touch the electrical components
+with any solid object other than the soft
+bristles of the vacuum attachment or
+paint brush.
+
+S.T.U.N. Runner
+
+Video Display
+If you have problems with the video display, check
+
+Table 3-3, Troubleshooting the Video Display, before
+you remove the display.
+
+Adjusting the Video Display’
+
+To make adjustments to the video display, open the
+service door on the cabinet.
+
+Removing the Video
+Display
+
+Perform the following procedure to remove the video
+
+display. (See Figure 3-1.)
+
+1. Turn the game power off and wait two minutes.
+Leave the power cord plugged in.
+
+2. While you wait, unlock the top service door on the
+top of the cabinet.
+
+3. Remove the six screws that attach the shield frame
+and remove the frame, shield, and bezel.
+
+WARNING
+
+High Voltage
+The video display contains lethal high
+voltages. To avoid injury, do not service
+this display until you observe all precau-
+tions necessary for working on high-volt-
+age equipment.
+
+X-Radiation
+The video display is designed to minimize
+X-radiation. However, to avoid possible
+exposure to soft X-radiation, never modify
+the high-voltage circuitry.
+
+Implosion Hazard
+The cathode-ray tube may implode if struck
+or dropped. The shattered glass from the
+tube may cause injury up to six feet away.
+Use care when handling the display.
+
+Maintenance and Troubleshooting
+
+. Remove the four nuts and washers that service the
+
+monitor.
+
+. Discharge the high voltage from the cathode-ray
+
+tube (CRT). The display assembly contains a circuit
+
+for discharging the high voltage to ground when
+
+power is removed. However, to make certain, al-
+ways discharge the display as follows:
+
+a.Attach one end of a solid 18-gauge wire to a
+well-insulated screwdriver or wooden handle.
+
+b.Attach the other end of the wire to an earth
+ground.
+
+c. Quickly touch the blade end of the screwdriver
+to the CRT anode by sliding it under the anode
+cap.
+
+d. Wait two minutes and repeat part c.
+
+. Disconnect the harness connectors from the video
+
+display.
+
+. Pull the video display assembly out of the cabinet.
+
+Be extremely careful.
+
+WARNING
+When you take the video display out of
+the cabinet, do not drop it! The display is
+heavy. Be careful!
+Wear gloves to protect your hands from
+the sheet-metal edges.
+
+Mu
+
+Problem
+
+Table 3-3 Troubleshooting the Video Display
+
+Solution.
+
+‘Any problem.
+
+Convergence, purity, or color problems.
+
+Determine if the problem is with the display or the game hardware by per-
+forming the self-test. If you cannot perform the self-test, use the DIP switch
+diagnostics to narrow down the source of the problem.
+
+Check the voltage level to the video display
+th isplay settings with the Mc
+
+B.
+
+itor Test screens in the self-test.
+
+3-3
+Maintenance and Troubleshooting S.T.UN. Runner
+
+Replacing the Video
+NOTE
+
+Display ‘ When you replace the cathode-ray tube
+Perform the following procedure to replace the video and yoke together, adjust the brightness,
+display in the cabinet. (See Figure 3-1.) size, and centering as described in the
+1. Carefully lift the video display into the cabinet. video display service manual.
+2, Install the nuts that hold the video display assem- Check the purity and convergence ac-
+
+bly. cording to the service manual instruc-
+
+tions, but adjust nly if required.
+3. Connect the power and signal harnesses to the ions, but adjust both only if requi
+video display.
+
+4, Install the video display shield and bezel. Replace
+the display frame.
+
+5. Lock the top service door on the cabinet.
+
+NutWasher and
+Fender Washer
+
+Display
+Display Shield
+Fi
+
+Figure 3-1 Removing the Video Display
+S.T.U.N. Runner
+
+Flight Control
+Maintenance
+
+Routine preventive maintenance of the flight control,
+involves lubricating the moving parts and checking the
+mounting screws and nuts for proper tightness approx-
+imately every four months. The flight control consists
+of a handle assembly and a flight control assembly.
+The handle assembly controls the vertical motion, and
+the flight control assembly controls the horizontal mo-
+tion of the display. Routine maintenance can be per-
+formed without removing the flight control assembly
+from the game.
+
+Refer to Figures 3-2 and 3-3 for the locations of the
+parts mentioned in the following procedures.
+
+Routine Maintenance
+
+Routine preventive maintenance on the flight control
+involves lubricating the moving parts and checking the
+mounting screws and nuts for proper tightness approx-
+imately every four months.
+
+Lubrication. Lubricate the flight control assembly pe- ~
+
+riodically, as follows (see Figures 3-2 and 3-3):
+
+NOTE
+The handle assembly cover is attached
+with tamper-proof socket screws. A spe-
+cial 1/8-inch hex-key tool is supplied with
+each game (Atari part no. 178126-004).
+
+1. Use the special 1/8-inch hex-key tool to remove
+the screws from the handle assembly cover.
+
+2. Lift off the handle assembly cover and lubricate the
+following parts inside the flight controls (refer to
+Figures 3-2 and 3-3 for the position of the lubrica-
+tion points):
+
+™ Apply two drops of light machine oil lubricant
+(Atari part no. 107013-001) to the insides of the
+four shaft bearings.
+
+™ Apply a small amount of WD-40 or a light ma-
+chine oil to the potentiometer shafts as needed
+to prevent squeaking.
+
+Screw and Nut Tightness. Use the appropriate hex-
+head and combination wrenches to check the hex-
+head cap screws and mounting nuts for tightness. Re-
+fer to Figures 3-2 and 3-3 for an illustration of the cap
+screw and mounting nut locations.
+
+Maintenance and Troubleshooting
+
+Removing the Flight
+Control Assembly
+
+NOTE
+
+Certain corrective maintenance proce-
+dures can be done with the flight control
+attached to the cabinet. However, for
+convenience and to avoid damaging the
+cabinet, we recommend that you remove
+the flight control from the cabinet before
+performing any maintenance.
+
+Perform the following procedure to remove the flight
+control assembly from the control panel:
+
+1. Use a 5/32-inch hex key to remove the four flat-
+head screws that mount the flight control to the
+cabinet.
+
+2. Carefully guide the flight control through the hole
+in the control panel.
+
+Disassembling the
+Handle Assembly
+
+Perform the following procedure to disassemble the
+handle assembly.
+
+NOTE
+
+Removing the handle assembly from the
+flight control assembly is not necessary to
+perform the procedure below. However, if
+you wish to do so, refer to Disassembling
+the Flight Control Assembly in this chap-
+ter for how to separate the two as-
+semblies.
+
+1. Use the special 1/8-inch hex-key tool to remove
+the four tamper-proof cap screws from the handle
+assembly cover.
+
+2, Remove the handles and handle adapters.
+
+3. Gently pull the harness wires out of the hollow
+shaft.
+
+4, Use a 9/64-inch hex driver to remove the cap
+screw and washer that hold the spring handle pin
+to the handle assembly shaft.
+
+5. Slide the spring-handle pin out of the shaft.
+
+6. Use a 7/64-inch hex driver to loosen the cap screw
+that holds the large (60-tooth) spur gear to the
+shaft.
+
+7. Slide the large (60-tooth) spur gear down the shaft
+to expose the shaft retainer on the right side.
+
+3-5
+Maintenance and Troubleshooting
+
+WARNING
+Shield your face and eyes when prying
+out the retainers because they can fly
+loose at a high velocity. Cover the retain-
+ers with a rag or any material that will trap
+the retainer.
+
+1
+
+S
+
+1
+
+12,
+
+1
+
+1
+
+>
+
+o
+
+LY
+
+Use a right-angle slotted screwdriver, or equivalent,
+to pry the retainer from the shaft.
+
+Repeat steps 7 and 8 to remove the retainer on the
+opposite side.
+
+Gently slide the shaft from the housing. Be careful
+not to lose the torsion springs.
+
+. Use a 7/64-inch hex driver to loosen the cap screw
+
+that holds the small (14-tooth) spur gear to the po-
+tentiometer shaft.
+Use a 1/2-inch combination wrench to remove the
+nut and washer that hold the potentiometer to the
+mounting bracket.
+
+Slide the potentiometer from the bracket. Be care-
+ful not to lose the small spur gear, nut, and washer.
+
+. Use a 5/32-inch hex-head wrench and 3/8-inch
+
+combination wrench to remove the two bumpers
+from the frame.
+
+5. Reassemble the handle assembly as described in
+
+the following procedure.
+
+Reassembling the
+Handle Assembly
+
+Perform the following steps to reassemble the handle
+assembly (see Figure 3-2):
+
+1.
+
+we
+
+Use a 5/32-inch hex-driver and 3/8-inch combina-
+tion wrench to install the two bumpers on the
+frame.
+
+. Insert the large (60-tooth) spur gear with the collar
+
+facing away from the bearing. Hold the gear in line
+with the bearing hole. (The gear fits through the
+slot on the right front of the frame.)
+
+. Slide the shaft through the right-hand bearing and
+
+the spur gear. Do not insert the shaft past the out-
+side edge of the spur-gear collar.
+
+. Apply a heavy film of Nyogel 779 lubricant (Atari
+
+part no. 178027-001) to the inside of the springs.
+
+. Hook the straight end of the first torsion spring
+
+through the hole closest to the right side of the
+frame.
+
+. Hold the first torsion spring in line with the shaft
+
+so that the looped end of the spring is facing away
+from the spur gear.
+
+. Slide the shaft just through the first torsion spring.
+
+3-6
+
+S.T.U.N. Runner
+
+8. Hook the straight end of the second torsion spring
+in line with the shaft so that the looped end of the
+spring is facing the first torsion spring.
+
+9. Hold the second torsion spring in line with the
+shaft so that the looped end of the spring is facing
+the first torsion spring.
+
+10. Slide the shaft through the second torsion spring
+and the left-hand bearing.
+
+11. Position the shaft so that the retainer grooves are
+just inside the bearings.
+
+12. Install the two retainers in the shaft grooves.
+
+13. Turn the shaft so that the two large holes and the
+smaller centered hole are facing upward.
+
+14. Locate the hole in the spring-handle pin. Insert the
+end of the spring-handle pin that is closest to the
+hole through the slot in the frame and through the
+hole in the shaft. Make sure that both torsion
+spring looped ends are wrapped over the spring-
+handle pin.
+
+15, Position the spring-handle pin so that the hole in
+the pin is aligned with the hole in the shaft.
+
+16. Use a 9/64-inch hex driver to tighten the cap screw
+and washer that secure the pin to the shaft.
+
+17. Align the cap screw in the spur-gear collar with the
+threaded hole in the shaft, and use a 7/64-inch hex
+driver to tighten the cap screw.
+
+. Insert the potentiometer shaft through the hole in
+the mounting bracket. Place the washer, nut, and
+small (14-tooth) spur gear (with the collar facing
+inward) onto the shaft before fully inserting the
+shaft through the bracket.
+
+19. Align the potentiometer so that the tab key is in-
+serted into the keying slot.
+
+20. Use a 1/2-inch combination wrench to slightly
+tighten the nut on the potentiometer shaft.
+
+21. Turn the potentiometer shaft so that the flat side
+faces the center wire terminal.
+
+22. Align the cap screw on the small (14tooth) spur
+gear with the flat side of the shaft. Use a 7/64-inch
+hex driver to tighten the cap screw.
+
+23. Slide the potentiometer forward so that the teeth
+on the two spur gears are tightly meshed; then pull
+the potentiometer and small (14-tooth) spur gear
+away from the large spur gear by about 1/64-inch.
+
+24, Use a 1/2-inch combination wrench to tighten the
+potentiometer to the mounting bracket.
+
+Be
+
+&
+
++25, Perform the procedure for installing the harness as-
+sembly provided later in this chapter.
+
+26. Install the handle adapters. Do not install the han-
+dle covers until the harness is installed and the
+proper wires are soldered to the trigger switch.
+
+27. Check the vertical potentiometer alignment.
+S.T.U.N. Runner
+
+28, Install the handle assembly cover and use the spe-
+cial 1/8-inch hex tool to tighten the four tamper-
+proof socket screws that secure the cover to the
+handle assembly.
+
+Disassembling the
+Flight Control Assembly =’
+
+Perform the following steps to disassemble the flight
+
+control assembly (see Figure 3-3):
+
+1. Unsolder the three harness wires from the vertical
+potentiometer, handle and trigger microswitch.
+
+2. Use a 5/32-inch hex driver (or ball-end driver) to
+remove the three cap screws that hold the flight
+control assembly shaft to the handle assembly
+frame.
+
+3. Gently pull the two assemblies apart. Make sure
+the harness wires are free to slide out of the handle
+assembly shaft.
+
+4, Use a 5/16-inch wrench to remove the anchor nut
+on the end of the anchor pin. (The anchor nut
+faces the open end of the frame.)
+
+5. Slide the anchor pin out of the shaft.
+
+6. Grasp the large (60-tooth) spur gear and slide the
+shaft from the frame. The bearing spacer, torsion
+springs, and large flat washer will fall free.
+
+7. Use a 7/64-inch hex driver to remove the cap
+screw holding the large spur gear to the flight con-
+trol shaft and a 5/64-inch hex driver to remove the
+set screw that holds the small spur gear to the po-
+tentiometer shaft.
+
+8. Use a 1/2-inch combination wrench to remove the
+nut and washer that hold the potentiometer to the
+shaft.
+
+9. Unsolder the three harness wires from the potenti-
+ometer terminals.
+
+WARNING
+Shield your face and eyes when prying
+out the retainer because it can fly loose at
+a high speed. Cover the retainer with a
+rag or any material that will trap the re-
+tainer.
+
+10. Use a slotted screwdriver, or equivalent, to remove
+the retainer from the shaft.
+
+. Use a 5/32-inch hex driver and 3/8-inch combina-
+tion wrench to remove the two bumpers from the
+frame.
+
+12. Reassemble the flight control assembly as described
+in the following procedure.
+
+1
+
+Maintenance and Troubleshooting
+
+Reassembling the
+Flight Control Assembly
+
+Perform the following procedure to reassemble the
+
+flight control assembly (see Figure 3-3):
+
+1. Use a 5/32-inch hex driver and 3/8-inch combina-
+tion wrench to install the two bumpers onto the
+frame.
+
+2. Snap the retainer into its groove in the shaft and
+slide the large flat washer down the long end of
+the shaft and against the retainer.
+
+3. Apply a heavy film of Nyogel 779 lubricant (Atari
+part no. 178027-001) to the inside of the springs.
+
+4. Hook the straight end of the first torsion spring
+through the hole closest the the rear of the frame.
+Slide the shaft through the outside bearing and the
+first torsion spring.
+
+. Hook the second torsion spring through the hole
+on the opposite side and closest to the front of the
+frame. Slide the shaft through the second spring
+and the opposite bearing.
+
+6. Turn the shaft so that the threaded hole at the re-
+tainer end of the shaft faces up toward the open
+side of the frame. The hole through the center of
+the shaft will then be perpendicular to the open
+side of the frame.
+
+7. Use a 5/16-inch combination wrench to install the
+anchor pin and nut through the hole in the center
+of the shaft. Make sure the torsion spring looped
+ends are wrapped under the anchor pin and nut.
+
+8. Slide the large (60-tooth) spur gear onto the shaft
+with the collar facing outward.
+
+w
+
+9, Align the cap screw in the spur gear collar with the
+threaded hole in the shaft and use a 7/64-inch hex
+driver to tighten the cap screw.
+
+10. Insert the potentiometer shaft through the hole in
+the frame and align the potentiometer so that the
+tab key is inserted into the keying slot.
+
+1
+
+. Install the washer and nut on the potentiometer
+shaft but do not tighten.
+
+12. Turn the potentiometer shaft so that the flat side
+faces the center wire terminal.
+
+13. Align the cap screw on the small (28-tooth) spur
+gear with the flat side of the shaft and slide the
+small spur gear (with the collar facing inward) onto
+the potentiometer shaft.
+
+Position the spur gear so that its teeth mesh with
+
+those on the large spur gear and use a 5/64-inch
+hex driver to tighten the set screw.
+
+1
+
+ic
+
+1
+
+a
+
+Slide the potentiometer forward so that the teeth
+on the two spur gears are tightly meshed; then
+slide the potentiometer and small spur gear away
+from the large spur gear by about 1/64-inch.
+
+3-7
+Maintenance and Troubleshooting S.TUN. Runner
+
+*7a020-2004
+osoaae-o1 Toerien
+top gor
+
+196007004
+
+047349.01
+Fright Control
+‘Decal
+
+L
+04712202 Lo
+
+Left Manche mm,
+Modification
+
+72.0812 {19008-1004 “
+178012001 soc-Ha Screw Potentometer
+Retaining Fing 96007-0041
+eo ‘Adhesive 72-8604 Z
+106007-001
+Hamess Assy (4)
+
+wD
+
+os7i22.0
+yess Aanranse — 190080-001
+
+ba *7zmz0-1200 fF Weaticaion Tigger Switch
+eee ee 178249-103
+ror Hoavende
+Corer
+
+Screw
+pieces) 178248-001
+te 4 “roger
+
+SP fra-saoes
+
+PansHD Screw
+106007-001
+‘Adhesive
+
+72-8808,
+esSec Hd  047124-04
+477010248 SP Pete
+Nyloc Hex-Nut 040244.01
+Handle Spring
+
+o 047119.01
+Right Handle
+
+pier
+
+Switch Bracket
+
+047120-01
+Handle Plug
+
+Figure 3-2 Flight Control Assembly
+
+3-8
+S.T.U.N. Runner
+
+Maintenance and Troubleshooting
+
+t 17% 001
+Nyogel (Heavy Lubricant)
+4 017013-001 f
+Light Oi
+‘Spur Gear
+179012.001
+Retaining Ring
+175002.001
+Large Washer
+04023801
+‘anchor Pin
+417010-241
+Nyack Hex
+
+Nut 017013-001
+042566-01
+Steering Shaft
+
+040237-01
+Anchor Nut
+106007-001
+‘Adhesive
+
+040236-0:
+119008-1001 steering Frame
+
+Figure 3-2 Flight Control Assembly, Continued
+
+39
+Maintenance and Troubleshooting
+
+Flat-Head Screw
+(2 places)
+
+Flight Control Assy
+
+Speaker Grille
+
+S.T.UN. Runner
+
+Start Harness
+: Assy
+Formed Dash
+Q Button Asay
+‘Snap-Action
+i Switch
+Self-Tapping Screw
+(4 places) (2 places)
+
+NOTE: The flight control handle has
+been exploded for clarity (DO
+NOT remove the handle when
+removing the dash).
+
+Figure 3-3 Flight Control Removal
+
+16. Use a 1/2-inch combination wrench to tighten the
+potentiometer to the frame.
+
+17. Slide the bearing spacer over the shaft at the end
+opposite the spur gears.
+
+18. If necessary, lubricate the flight control assembly as
+previously described
+
+NOTE
+The remaining steps describe the proce-
+dure for attaching the flight control as-
+sembly to the handle assembly.
+
+19. Insert the flight control assembly shaft into the col-
+lar on the handle assembly frame.
+
+20. Align the three holes in the flight control assembly
+shaft with the three holes in the handle assembly
+collar,
+
+21. Use a 5/32-inch hex driver (or ball-end driver) to
+tighten the three cap screws.
+
+3-10
+
+22. Install the harness assembly as described in the fol-
+lowing procedure.
+
+23. Check the horizontal potentiometer alignment.
+Installing the
+Harness Assembly
+
+Perform the following procedure to install the harness
+
+assembly into the flight control (see Figures 3-2 and
+
+3.3):
+
+1. Guide the harness wires into the spur gear end of
+the hollow flight control assembly shaft.
+
+2. Route and solder the wires to the potentiometers
+and switches. Note that the wire bundle that goes
+to the right handle is identified with a labeled
+sleeve (R).
+
+3. Install the wire ties and the ground clip.
+ILLUSTRATED
+PARTS LISTS
+
+Chapter 4
+
+This chapter provides infor-
+mation you need to order parts
+for your game. Common hard-
+ware parts, such as screws,
+nuts, washers, and so on usually are not listed in the
+parts lists.
+
+The parts lists (except for the PCB parts lists) are
+arranged alphanumerically by Atari part number. All A-
+prefix numbers, which are assemblies, come first. Next
+are part numbers with six numbers followed by a
+hyphen (000598- through 201000-). Ending the list are
+part numbers with a two-number designation followed
+by a hyphen (00- through 99-).
+
+The PCB parts lists are arranged
+in alphabetical order by com-
+ponent. Within each section the
+parts are arranged numerically
+
+by part number.
+
+When you order parts, give the part number, part
+name, the number of this manual, and the serial num-
+ber of your game. With this information, we can fill
+your order rapidly and correctly. We hope this will
+create less downtime and more profit from your
+games.
+
+Atari Games Customer Service phone numbers are list-
+ed on the inside front cover of this manual.
+Mlustrated Parts Lists S.T.UN. Runner
+
+04727401
+
+‘Attraction 176013-212
+
+Shield #10 Tapping
+S
+
+crew
+176027-4424 047276-01 047346-01
+otiepley i 1/4-20 Screw- _Altraction Frame es Attraction
+Frame Lock Washer Decal
+176013-212 75-07002 1/4" Foam Tape 470003-001
+#10 Tapping 1/4 Fender Fluorescent
+re copy 72ater, —139017-208 Light 171086-001
+178263-0402 OA7275-01 TS) TEBBSTE Video Display rs Fluorescent
+1/4" Foam Display 1/4" Nu
+Tape Shield
+
+Lamp Fixture
+178232-001
+Retaining Clip
+
+A042562-02
+Flight Control Assy
+047349-01
+
+Fit Ctl Decal
+176038-4412
+
+114" Tamperproot
+Screw
+
+‘A047229-01
+Cabinet
+Assy
+
+176019-220 #8.Sq. Dr Screw
+178282-001 Washer Cap Fastener
+178282-002 Red Cap Fastener
+
+Hr <>
+178023-
+‘003
+Coster
+
+oS AY : see 178255-001
+178237-003 pr. Ena ye Adjustable _, | Hex Locknut
+Bik Button Assy fy os 3 Glide octead
+160044-001 en [ied we 047347-01 Bolt
+Snap-Action Switch fy me jth? : 047286-02 Start Button 75-045S
+‘Speaker Decal 047279-01 Split-Lock
+Bezel Forme: Washer
+
+Dash
+
+Speaker Grille
+171083-001* “476019-220
+047345-01 Coin Door #8 Sq-Drv Screw
+Assy
+
+Front Decal
+
+Figure 4-1 Cabinet-Mounted Assemblies, Front View
+A046565-01 D
+
+4-2
+S.T.U.N. Runner
+
+items Not
+Shown:
+
+178126-004
+‘Tamperproof Hex Key
+047341-0"
+Left Side Decal A
+047341-03
+Left Side Decal 8
+047342-041
+Left Side Skirt Decal
+047343-01
+Lett Display Decal
+047344-01
+Left Attraction Decal
+148007-104
+41/2" Speaker
+176015-112
+#10 Pan-Hd Screw
+
+Illustrated Parts Lists,
+
+»  047344-02
+Right Attraction
+al
+
+047280-01
+Formed Seat
+178263-0402
+
+1/4" Foam Tape
+
+160034-241
+Slide Switch
+178070-002
+Volume
+Control
+047282-01
+Utility Bracket
+176015-110,
+#10 Pan-Hd
+Screw
+
+alag
+
+Right Side:
+Decal 8
+
+99-15109
+
+Cash Box
+
+99-15111
+Coin Counter
+
+A047190-01
+
+047249-01
+‘Monitor Door
+
+A047223-01
+On/Off Switch Assy
+176015-110
+#10 Pag-Hd Screw
+
+‘Audio PCB Assy
+178120-606—
+
+PCB Support Standotf
+‘A044998-11
+S.TUNN. Runner_|
+Multi-Sync PCB Assy
+
+A047046-01__|
+ADSP II PCB Assy
+
+‘A047350-01
+Board Set Assy
+72-6616S
+#6 Pan-Hd Screw
+
+Fan Guard
+Right Skirt uedkere
+Decal
+
+047248-01
+Rear Door
+
+17504-7068
+Washer
+175004-708
+‘Washer
+
+Figure 4-1 Cabinet-Mounted Assemblies, Rear View
+
+A046565-01 D
+
+43
+Illustrated Parts Lists
+
+S.T.UN. Runner
+
+Cabinet-Mounted Assemblies
+Parts List
+Part No. Description Part No. Description
+A042562-02 Flight Control Assembly 139017-204 19-Inch Color Raster, Standard Resolution
+A046349-01 Program Plug Assembly Video Display
+A046990-01 Power Supply Assembly 148007-104 4 1/2-Inch-Diameter 8 Q, 10-Watt Speaker
+A047190-01 Audio PCB Assembly 160044-001 Gold Snap-Action Switch
+170003-001 15-Watt, 18Inch Fluorescent Light
+A047222-01 Component Bracket Assembly
+A047223-01 Assembly On/Off Switch 171086-001 —_18-Inch Fluorescent Lamp Fixture
+A047229-01 Cabinet Assembly 171093001 25¢/25¢ Coin Door Assembly
+A047322-01 Main Hamess Assembly 175004-706 Fiber Washer
+175004-708 Fiber Washer
+A047323-01 Seat Harness Assembly
+A047324-01 _+5-Volt Hamess Assembly 176013-212 #10 x 3/4-Inch Tapping Screw
+A047325-01 Video Harness Assembly 176015-110 #10 x 5/8-Inch Pan-Head Self-Tapping Screw
+A047326-01  Component/Audio Harness Assembly 176015-112 #10 x 3/4-Inch Pan-Head Self-Tapping Screw
+176019-220 #8 x 1 1/4Inch Screw
+A047327-01 Start Harness Assembly
+A047328-01 Speaker Harness Assembly 176020-220 #8 x 1 1/4-Inch Black Screw
+A047330-01 AC Hamess Assembly 176027-4424 1/4-20 x 1.50-Inch Zine Lock Hex Washer
+A047350-01_ S.T.U.N. Runner Board Set Assembly Screw
+176038-4412 1/4-20 x 3/4-Inch Tamper-Proof Flat-Head
+046989-01 Power Supply Wiring Diagram Screw
+047248-01 Door 177010-244 — 1/4-20 Polymer Hex Locknut
+047249-01 Monitor Door
+047274-01 Attraction Shield 178032-002 #10 Screw-Down Wire and Cable Tie
+178120-606 PCB Support Standoff
+047275-01 Display Shield 178126-004 _1/8-Inch Tamper-Proof Hex Key Driver
+047276-01 Attraction Frame 178232-001 Fluorescent Lamp Retaining Clip
+047277-01 ‘Display Frame
+047279-01 Formed Dash 178237-003 Black Nylon Button Assembly
+178263-0402 1/4 x 1/8-Inch Foam Tape
+047280-01 Formed Seat 178282-001 Cap Washer Fastener
+047281-01 Control Bracket > 178282-002 _5/8-Inch Red Fastener Cap
+047284-01 Speaker Grille
+047285-01 Light Fixture Panel 72-5536 1/4-20 x 2 1/4-Inch Hex Head Bolt
+72-6616S #6 x 1-Inch Pan-Head Deep Thread Screw
+047286-01 Display Bezel 75-07002 1/4-Inch Fender Washer
+047286-02 Speaker Bezel 75-9515 1/4-20 Nut/Washer Assembly
+047321-01 Main Wiring Diagram
+047333-01 ‘Installation Hamess
+These are the technical documents for the
+047346-01 Attraction Decal S.T.U.N. Runner game:
+047347-01 Start Button Decal SP-338 S.T.U.N. Runner Schematic Package
+04734702 Atari Logo Decal ST-338 S.T.U.N. Runner Self-Test Label
+047349-01 Flight Control Decal T™M-296 Wells-Gardner 19-Inch Standard-Resolution
+Color Video Display Service Manual
+TM-338 S.T.U.N. Runner Operator's Manual
+
+4-4
+
+=>
+Illustrated Parts Lists ST.U.N. Runner
+
+aaena oi 1760393604
+eee Tamper-Proot
+Cap Screw
+106007-001
+Adhesive
+
+047349-01
+
+epee SF 7
+
+|
+|
+
+‘72-8008
+‘10 Soca Sere
+totgrecwe |” 040240-01 a
+
+178240-008
+s ceri2202
+tettHencte tenner
+
+euriesen
+
+m raat Samper
+Ps re012.001
+oarrs902 F  Argstnoot scotasew Potentoretor
+
+‘Adapter 5
+
+‘Adhesive
+
+040249.01 ~
+‘Spur Gear
+
+047122-01
+72.8606 Right Hancie
+318° Soc-Hd ~Mociicaton
+Sia 178249-103
+Tngger Fight Handle
+
+Cover
+
+160050.001
+172020-1208 Tagger Switch
+2" RollPin
+
+ae ‘Sorew
+W2SocHs 047121-01 Spring
+‘Screw Stop Plate
+
+17010-2838 04023801
+Nyloc Hex-Nut 040244-01 ‘Spur Gear
+Handle Spring
+Pin
+
+040242.01
+Handle Shaft
+
+047119.01
+Fight Handle
+
+we Soc nos
+1 Soctis serow
+og007-001 ‘pot
+
+1
+‘Adhesive
+
+4080267-01 0471801 © 178247-001
+Handle Frame Spacer ‘Switch Bracket
+‘Assy
+
+047120.01
+Handle Plug
+
+82.8020
+Button-H¢ Cap
+‘Screw
+175012-0114
+
+Figure 4-2 Flight Control Assembly
+A042562-02 B
+
+4-6
+STUN. Runner Illustrated Parts Lists
+
+040963-01
+
+Spur Gear
+178012-001
+Retaining Ring
+
+478002.001
+Large Washer
+
+040238.01
+‘Anchor Pin
+
+042834-01
+
+Handle Frame. tht: a
+
+Light Oi!
+
+178101-003
+Spur Gear
+
+0a0236.02
+Steering Frame
+
+040241.01
+
+Light Oi
+‘Spacer Bearing
+
+Figure 4-2 Flight Control Assembly, Continued
+A042562-02 B
+
+47
+Ilustrated Pants Lists
+
+S.T.UN. Runner
+
+Flight Control Assembly
+Parts List
+Part No. Description Part No. Description
+
+A040468-01 Flight Control Harness Assembly 042634-01 Handle Frame
+72-1408 #4-40 x 1/2-Inch Pan-Head Machine Screw 047119-01 Right Handle Adapter
+72-8006 #10-32 x 3/8-Inch Socket-Head Cap Screw
+72-8010 #10-32 x 5/8-Inch Socket-Head Cap Screw 047119-02 Left Handle Adapter
+
+047120-01 Handle Plug
+72-8604 +#6-32 x 1/4-Inch Socket-Head Cap Screw 047121-01 Stop Plate
+72-8606 #6-32 x 3/8-Inch Socket-Head Cap Screw 047122-01 Right Handle Modification
+72-8808 #8-32 x 1/2-Inch Socket-Head Cap Screw
+72-8812 #8-32 x 3/4-Inch Socket-Head Cap Screw 047122-02 Left Handle Modification
+
+047188-01 Spacer
+72-JA4608B #6-19 Black Screw 106007-001 Penetrating Adhesive
+75-07020 Flat Washer 107013-001 Light Oil Lubricant
+78-1701 Lubricant
+82-8020 #10-32 x 1 1/4-Inch Button-Head Cap Screw 119008-1001 5 KQ Potentiometer
+
+160050-001 Trigger Switch
+040235-01  60-Tooth Spur Gear with Hub 172020-1208 3/16-Inch Diameter x 1/2-Inch Spring Roll Pin
+040236-02 Steering Frame 175002-001 Large Washer for .750-Inch-Diameter Shaft
+040237-01 Anchor Nut
+040238-01 Anchor Pin 175002-004 #10 Flat Washer
+
+175012-0114 Flat Washer
+040239-01 Steering Torsion Spring 176039-3604 #6-32 x 1/4-Inch Tamper-Proof Button-Head_
+040240-01 Stop Bumper Socket Screw
+040241-01 Spacer Bearing 177010-238 #8-32 Nyloc Hex Nut
+04024201 Handle Shaft
+
+177010-241  #10-32 Nyloc Hex Nut
+040244-01 Handle Spring Pin 178012-001 Retaining Ring for .750-Inch-Diameter Shaft
+040246-01 Handle Torsion Spring 178027-001 Nyogel (Heavy Lubricant)
+040248-01 Cover 178065-100 4-Inch Wire and Cable Tie
+040249-0114-Tooth Spur Gear with Hub
+
+178068-001 3/4-Inch Cable Tie Mount
+040968-01  28-Tooth Spur Gear with Hub 178247-001 Switch Bracket
+042566-01 Steering Shaft 178248-001 Trigger
+
+48
+
+{
+S.T.UN. Runner Mlustrated Parts Lists
+
+99-15085
+Coin Door Harness
+
+<tr 99-1508
+= Bezel for Button
+as vo-s0se AAS
+
+Spring for Button os 99-1501 thru 99-15012
+Upper Di
+pper Door a a Ret. Bution
+99-15113 99-15026 99-15104 : Tt 99-15039
+Key ie Coin inlet, Right Base Plate ie i = r Bezel for Cover
+99-15056 af e- 4 Ae
+Screw for Bezel © < a ‘| 99-15036
+99-15025 ‘i : ae
+Coin iniet, Left 7
+99-15055 DS Lae Oy
+Retaining Screw - :
+99-1514
+99-15051 ie Die Cast Frame
+Lamp Holder 9915100
+Lamp
+99-1516
+99-15053 Lower Door
+99-15041 “>. Lockt. Coil Spring
+Lockout Coil : -
+es 99-15030 |,
+> P Lockout Flap 99-15086 .
+. 99-15028 Coin Mechanism
+Coin Ret. Box
+99-15060
+99-15027
+Coin Ret. Box aad |
+99-15096 ' “lb > na 99-15089 99-15110
+Sw. Adjuster [ y ot Lock Assy Enclosure
+99-15029 aie j
+Bracket ee
+Ss
+99-15042 <]|
+Switch
+99-15060
+Sw. Cover
+99-15109
+Coin Box
+99-15112
+Locking Bar
+(Not Included)
+
+99-15111
+Coin Counter
+
+Figure 4-3 Coin Acceptors, Inc. Coin Door Assembly
+171027-001 A
+
+4-9
+Illustrated Parts Lists
+
+S.T.U.N. Runner
+
+Coin Acceptors, Inc. Coin Door Assembly
+
+Parts List
+Part No. Description Part No. Description
+160057-001 Coin Switch 99-10081 Key Holder
+70-11-47 Miniature Bayonet Lamp 99-10096 ‘Fastener
+72-94068 #4-40 x 3/8-Inch Truss-Head Screw 99-10104 Bar Retainer
+72-HA1404C_ #4-40 x 1/4-Inch Pan-Head Screw 99-10105 Bar
+72JA1405B — #4-40 x .31-Inch Pan-Head Screw 99-10115 Spring
+75-14128 ——-#4-40 x 3/4-Inch Pan-Head Screw 99-10116 Plastic Coin Return Lever
+75-9948 #4-40 Locknut 99-10117 Steel Coin Return Door
+99-1008 ——Retainer 99-10139 Coin Door
+99-10042 Coin Switch Assembly for Belgian 5 Fr and 99-10140 Coin Door Inner-Panel Assembly
+US. 25¢ 99-10141 Die-Cast Coin Retum Cover
+99-10043 Coin Switch Assembly for German 1 DM, 99-10143 Coin Door Frame
+Japanese 100 Yen, Swiss 1 Fr 99-10144 Channel Clip
+99-10044 Coin Switch Assembly for German 2 DM,
+Italian 100 L, U.S. $1.00 99-10147 Harness
+99-1045 Coin Switch Assembly for Australian $.20, 99-10148 Lock Assembly
+German 5 DM, British 10 P 99-10149 Service Door
+99-10150 Switch Cover
+99-10068 Coin Return Chute
+99-10075 Switch Wire (included in coin switch assembly 99-10151 Left Coin Inlet
+99-10043) 99-10152 Right Coin Inlet
+99-10076 Switch Wire (included in coin switch assembly 99-10153 Coin Return Box
+99-10042) 99-10154 Bracket Assembly
+99-10077 Switch Wire (included in coin switch assembly
+99-1044) 99-10160 —_1-Inch Wide Die-Cast Coin Inlet Housing
+99-10078 Switch Wire (included in coin switch assembly 99-10161 _25¢ Amber Side-Entry Coin Button Assembly
+99-10045) 99-15066 Screw for Clamp
+99-10080 Lamp Socket 171006-035 Metal Coin Mechanism for U.S. 25¢
+
+4-10
+
+¥
+S.T.U.N. Runner
+
+Illustrated Parts Lists
+
+A043967-03
+6" White
+179231-002 Jumper Assy
+2 Pos Term Bik
+A043367-02
+6 Black
+Jumper Assy
+042384401
+Line Fiter Assy
+149003-003,
+5Y, 104 Hitron
+Power Supply
+A043367-01
+Jumper Assy
+| 14608-3022
+‘3A, 250V Fuse
+i 14608-2022
+142047-001 2A, 250V Fuse
+Transformer (2 places)
+
+17925-2205
+5 Pos Fuse Blk
+
+Figure 4-4 Power Supply Assembly
+A046990-01 B
+Illustrated Parts Lists
+
+STUN. Runner
+
+Power Supply Assembly
+Parts List
+Part No. Description Part No. Description
+A042384-01 _Line Filter Assembly 146008-2022 2 Amp, 250v Slow Blow Fuse
+‘A043367-01 Jumper Assembly 1460083022 3 Amp, 250v Slow Blow Fuse
+A043367-02 6-Inch Black Jumper Assembly 149003-003 5-Volt , 10-Amp Hitron Switching Power
+04336703 _G-Inch White Jumper Assembly Supply (See Below)
+178065-101 _5.54Inch Wire and Cable Tie
+72-HAGO6S #6-32 x 3/8-Inch Screw
+72-HA48068 —_-#8-32 x 3/8-Inch Screw 179225-2205 _5-Position Fuse Block
+046924-01 Base Chassis Power Supply 179231-002 —_2-Position Terminal Block
+142047001 Transformer
+Hitron 5 Volt, 10 Amp Power Supply Subassembly
+Parts List
+Part No. Description Part No. Description
+Transistors 99-211024 Resistor, Carbon Film, 470 Ohm, 5%, 1/4W
+99-211002 ‘Transistor, NPN, 2SC1413A 99-211025 Resistor, Carbon Film, 47 Ohm, 5%, 1/4W.
+Essie ocd pene en Peer 99-211026 Resistor, Carbon Film, 330 Ohm, 5%, 1/4W
+99-211004 Transistor, PNP, PE8SS0B ; ;
+os 99-211027 Resistor, Carbon Film, 5.6 Ohm, 5%, 1/4W
+99-211062 Transistor, 28D725 5 7
+9.211063 Maaceoe BEBSSOB. 99-211028 Resistor, Carbon Film, 8.2 Ohm, 5%, 1/4W
+: 99-211029 Resistor, Carbon Film, 10 Ohm, 5%, 1/4W
+Pe 99-211030 Resistor, Carbon Film, 39 Ohm, 5%, 1/4W
+99-211005 Diode, Schottky, S10SC4M 99-211031 Resistor, Carbon Film, 56 Ohm, 5%, 1/4W
+99-211006 Diode, Fast Recovery, 30DF1 99-211032 Resistor, Carbon Film, 1K Ohm, 5%, 1/4W
+99-211007 Diode, Zener, 1N752A 99-211033 Resistor, Metal Film, 2K Ohm, 2%, 1/4W
+99-211008 Diode, Rectifier, IN4006
+; 99-211034 Resistor, Carbon Film, 180K Ohm, 5%, 1W
+99-211009 Diode, Fast Recovery, RPG10B 99-211035, Resistor, Carbon Film, 2K Ohm, 5%, 1/4W
+99-211010 Diode, Fast Recovery, RPG1OK 99-211065 Resistor, Wire Wound, 27 Ohm, 5%, 2W
+99-211011 Diode, Fast Recovery, RPG15B 99-211066 Resistor, Carbon Film, 6.8 Ohm, 5%, 1/2W
+99-211012 Diode, Switching, 1N4148
+; 99-211067 Resistor, Carbon Film, 12 Ohm, 5%, 1/4W
+99-211064 Diode, $15SC4M 99-211068 Resistor.Carbon Film, 2.4 Ohm, 5%, 1/2W
+99-211076 Diode, 31DQ04 99-211077 Resistor, 470 Ohm, 1/2W, 5%
+99-211013 Rectifier, Silicon Controlled, $2800 99-211078 Resistor, 120K Ohm, 1, 5%
+Resistors Capacitors
+99-211014 Potentiometer, Trimming, 3K Ohm 99-211036 Capacitor, Metal Film, 0.047 HF, 250V
+99-211015 Resistor, Wire Wound, 50 Ohm, 5%, 2W 99-211037 Capacitor, Metal Film, 0.22 lF, 100V
+99-211016 Resistor, Wire Wound, 150 Ohm, 5%, 2W 99-211038 Capacitor, Metal Film, 0.1 BF, 400V
+99-211017 Resistor, Wire Wound, 33 Ohm, 5%, 20 99-211039 Capacitor, Metal Film, 0.022 F, 100V
+99-211018 Resistor, Wire Wound, 0.47 Ohm, 5%, 2W 99-211040 Capacitor, Ceramic, 1800 PF, 2KV, Z5V
+99-211019 Resistor, Wire Wound, 120 Ohm, 5%, 2W 99-211041 Capacitor, Ceramic, 0.01 HF, 1KV, Z5U
+9-211020 Thermistor, 0.5 Ohm, 5%, 5W 99-211042 Capacitor, Ceramic, 0.001 HF, 2KV
+99-211021 Resistor, 2.2K Ohm, 2%, 1/4W 99-211043 Capacitor, Ceramic, 470 PF, KV, Z5P
+99-211022 Resistor, Carbon Film, 330 Ohm, 5%, 1/2W 9.211044 Capacitor, Electrolytic, 470 UF, 25V
+99-211023 Resistor, Carbon Film, 270 Ohm, 5%, 1/2W
+S.T.U.N. Runner
+
+Illustrated Parts Lists
+
+Hitron 5 Volt, 10 Amp Power Supply Subassembly
+
+Parts List
+Part No. Description Part No. Description
+99-211045 Capacitor, Electrolytic, 220 HF, 25V 99-211086 Inductor, 0.75 MH
+99-211046 Capacitor, Electrolytic, 100 HF, 200V 99-211087 Inductor, 2.2 4H
+99-211047 Capacitor, Electrolytic, 1000 WF, 25V 99-211088 Inductor, 60 MH
+99-211048 Capacitor, Electrolytic, 2200 UF, 16V Transformers
+99-211049 Capacitor, Ceramic, 4700 WF, 400V 99-211075 ‘Transformer, Power
+99-211069 Capacitor, Electrolytic, 2200 WF, 16V 99-211083 ‘Transformer, Power
+99-211070 Capacitor, Electrolytic, 220 HF, 25V 99-211089 ‘Transformer, 4.75 MH
+99-211079 Capacitor, DE7100F22M 99-211092 Transformer
+99-211080 Capacitor, 1000 MF, 35V 99-211085 Transformer
+99-211081 Capacitor, 470 UF, 25V Miscellaneous
+99-211082 Capacitor, 220 UF, 16V
+99-211090 Capacitor, Ceramic, 1000 PF, 2KV oa li0se eerie aaah
+-211091 Ca El Ih 221 Vv cptneinsd
+99. 19. ‘apacitor, Electrolytic, 2200 HF, 10 99-211057 Terminal Block, 8-CKT
+Inductors 99-211058 Fuse, 2A, 250V, Semko
+
+99-211050 Inductor, 7 HH 99-211059 Heat Sink
+99-211051 Inductor, 7 HH, 35MM 99-211060 Fuse Holder, 635MM
+99-211052 Inductor, 15 MH 99-211061 Heatsink, 1.5MM
+99-211053 Inductor, 1.5 MH 99-211072 Fuse Holder, 5.2X20
+99-211054 Inductor, 2.2 HH 99-211073 Fuse, 2A, 125V
+
+Inductor, 9.8 HH 99-211074 Terminal Block, 9-CKT
+
+99-211084
+99-211085
+
+Inductor, 8 WH
+Inductor, 9.8 BH
+
+Ilustrated Parts Lists S.T.U.N. Runner
+
+N O ae E S
+S.T.U.N. Runner Iustrated Parts Lists
+
+7
+
+mw) meme po remet
+
+<M ecm Pam ©. 0 fe a ero Pe ae
+mm pa ow ose tt Fa go
+
+‘BEL -BEBGSSORSCEERERIEZ wo SE Bee oO
+Bl ssrsi5-o08 By
+
+Jog 10g
+1a7ss-000 asa
+
+sarwun-as0 437042150”
+
+coe tox Cae 0
+
+fe
+et 008
+fer
+
+02
+
+THOT
+
+Basses
+Coss c03
+
+SBbooe
+
+&&
+
+3e070-¥x09
+
+Pie bitte
+
+136070-005,
+
+5
+13607908
+
+Figure 4-5 §.T.U.N. Runner Multisync (Main) PCB Assembly
+A046901-11 C
+Illustrated Parts Lists S.T.U.N. Runner
+
+S.T.U.N. Runner Multisync PCB Assembly
+
+Parts List
+Designator Description Part Designator Description Part No.
+Integrated Circuits 135K Integrated Circuit, 744832 137487-001
+20P Integrated Circuit, 74A1S574 137548-001
+208, 20U, 20W Integrated Circuit, 74AS823 137513-001 135M Integrated Circuit, 741874 137023-001
+30B Integrated Circuit, 7415374 137144-001 135P Integrated Circuit, 7448573 137547-001
+30P Integrated Circuit, 7418245 137134-001 1350 Integrated Circuit, 74AS00 137480-001
+135W Integrated Circuit, 7448573 137547-001
+308, 30U, 30W Integrated Circuit, 2149, 45 nsec 137199-002
+30Y it 137134-001 138¥ Integrated Circuit, 7418259 137137-001
+40H 137268-001 140c Integrated Circuit, 7418244 137038-001
+408, 40U, 40W Integrated Gieuit 2149, 45 nsec 137199002 140H Integrated Circuit, 7419393 137146-001
+140K Integrated Circuit, 74F11 137583-001
+40Y Integrated Circuit, 741S245 137134-001
+45B Integrated Circuit, ADCO809 137243-001 140M Integrated Circuit, 74ALS74 137156-001
+S0H Integrated Circuit, 7415123 137268-001 140P Integrated Circuit, 7418244 137038-001
+508, 50U, SOW Integrated Circuit, 74ALS574 137548-001 140U Integrated Circuit, 74AS08 137484-001
+150C Integrated Circuit, 7418245 137134-001
+Py Integrated Circuit, 7448573 137547-001
+Integrated Circuit, 7415244 137038-001 150E Integrated Circuit, 7418244 137038-001
+eis ,605,60U,60W Integrated Circuit, VRAM, 64K x 4, 137553-002 150H Integrated Circuit, 741874 137023-001
+150 nsec (Acceptable substitute is 150K Integrated Circuit, 741820 137060-001
+64K x 4, 120 nsec VRAM Integrated 1508-GSP__ Integrated Circuit, 34010-50 137538-002
+Circuit, part no. 137553-001)
+oy Integrated Circuit, 7448138 137522-001 150U Integrated Circuit, 7448573 137547-001
+65C Integrated Circuit, 7418259 137137-001 150W Integrated Circuit, 74F04 137437-001
+150Y Integrated Circuit, 74F161 137343-001
+70P, 708, Integrated Circuit, VRAM, 160¢ Integrated Circuit, 7418244 137038-001
+70U,70W 64K x 4, 150 nsec 137553-002
+(Acceptable substitute is 64K x 4 160E Integrated Circuit, 74ALS161 137470-001
+120 nsec VRAM Integrated Circuit, 160H Integrated Circuit, 74ALS32 137464-001
+part no. 137553-001) 160K Integrated Circuit, 74ALS138 137517-001
+70Y Integrated Circuit, 74AS08 137484-001 160M Integrated Circuit, 74F04 137437-001
+75C Integrated Circuit, 7418259 137137-001
+75H Integrated Circuit, 741814 137056-001 160U Integrated Circuit, 744832 137487-001
+160W Integrated Circuit, 741874 137023-001
+80M Integrated Circuit, 74ALS138 137517-001 170C Integrated Circuit, 7418245 137134-001
+1708 Integrated Circuit, 7418244 137038-001
+85P,855,85U,85W Integrated Circuit, VRAM, 64K x 4, 137553-002
+150 nsec (Acceptable substitute 170H Integrated Circuit, 7418148 137417-001
+is 64K x 4, 120 nsec VRAM Integrated 170K Integrated Circuit, 7441161 137470-001
+Circuit, part no. 137553-001) 175R Integrated Circuit, 7418245 137134-001
+Integrated Circuit, 74ALS08 137460-001 175T Integrated Circuit, 744808 137484-001
+Ps 958,95U,95W Integrated Circuit, VRAM, 64K x 4, 137553-002
+150 nsec Note: Acceptable substitute is 175W Integrated Circuit, SCOM 137526-001
+64K x 4, 120 nsec VRAM Integrated 180C Integrated Circuit, 74ALS138 137517-001
+Circuit, part no. 137553-001 180E Integrated Circuit, 74415139 137467-001
+100M Integrated Circuit, 74ALS161 137470-001 bao Integrated Circuit, 7418395 baa
+110 Integrated Circuit, 7406 137052-001 ieee
+110K Integrated Circuit, 74ALS138 137517-001 Tok tet cea Prore eo
+120H Integrated Circuit, 74F74 137436-001 190N Integrated Circuit, 7418245 137134-001
+120K Integrated Circuit, 7415393 137146-001 feet eee seni 137535-006
+120M Integrated Circuit, 74ALS574 137548-001
+120P Integrated Circuit, 7448573 137547-001 , : :
+120S-PSP_—_Integrated Circuit, 34012-50 137559-001 pa ea rd oe RAM Brea
+1200 Integrated Circuit, 74F244 137502-001 bag 200) pice i ree ean
+120W, 120Y _ Integrated Circuit, 744$573 137547-001 Z
+135C, 135H__ Integrated Circuit, 74774 137436-001
+
+4-16
+S.T.U.N. Runner
+
+Illustrated Parts Lists
+
+S.T.U.N. Runner Multisync PCB Assembly, Continued
+
+Parts List
+Designator Description Part No. Designator Description Part No.
+C274 Capacitor, 47 pF, 100 V, Ceramic 122016-470
+2001 Integrated Circuit, 74ALS32 137464-001
+200M Integrated Circuit, 74AL$138 137517-001 ©323-C326 Capacitor, 10 pF, 100 V, Ceramic 122016-100
+200N, 200P Integrated Circuit, 7415245 137134-001 €332, C333, C343 Capacitor, .1 pF, 50 V, Ceramic 122002104
+200R Integrated Circuit, EPROM 136070-2102
+C344-C347 Capacitor, 100 pF, 100 V, Ceramic 122016-101
+2008 Integrated Circuit, EPROM 136070-2104 C359, C360 Capacitor, .001 pF, 50 V, #10% — 122015-102
+200T Integrated Circuit, EPROM 136070-2106 Diodes
+200U Integrated Circuit, EPROM 136070-2108 CRI, CR2, CRO, CRI-CR12
+200 Integrated Circuit, EPROM 136070-2110 Diode, MV5053, LightEmitting _131027-002
+R13 Diode, 1N4002 131048-002
+200W Integrated Circuit, EPROM 136070-2112 R14 Diode, MV5053, Light-Emitting 131027-002
+200¥ Integrated Circuit, EPROM 136070-1116 R18, CR23. Diode, 1N4002 131048-002
+210C, 210D —_Integrated Circuit, RAM, 137535-006
+8K x 8, 150 nsec Transistors
+2108, Integrated Circuit, 48202-15, RAM — 137442-150 Q, @2 ‘Transistor, 2N6044 133042-001
+s ‘Transistor, 2N3904 133041-001
+210F Integrated Circuit, 7418245 137134-001 rod ‘Transistor, 2N3906 133040-001
+210H, 210), 210K Integrated Circuit, 7418244 137038-001 a ‘Transistor, 2N3904 133041-001
+210L, 210M —_ Integrated Circuit, 7418245 137134-001
+210N Integrated Circuit, 7418244 137038-001 fers] ‘Transistor, 2N3906 133040-001
+ror) ‘Transistor, 2N3904 133041-001
+210P Integrated Circuit, 7418245 137134-001 Quo ‘Transistor, 2N3906 133040-001
+210R Integrated Circuit, EPROM 136070-2101 Qi ‘Transistor, 2N3904 133041-001
+2108 Integrated Circuit, EPROM 136070-2103
+210T Integrated Circuit, EPROM 136070-2105 Resistors
+R1-R10 Resistor, 100 Ohm, $5%, 1/4 W —110000-101
+2100 Integrated Circuit, EPROM 136070-2107 R29-R45, Resistor, 1 K Ohm, +5%, 1/4 W — 110000-102
+210V Integrated Circuit, EPROM 136070-2109 RAG-RAS, Resistor, 470 Ohm, #5%, 1/4 W — 110000-471
+210W Integrated Circuit, EPROM 136070-2111 R49, R50-R54 Resistor, 4.7 K Ohm, 45%, 1/4 W  110000-472
+210Y Integrated Circuit, EPROM 136070-1115
+R55 Resistor, 100 Ohm, +5%, 1/4 W 110000-101
+Capacitors R57-R6O Resistor, 1 K Ohm, +5%, 1/4W —110000-102
+cL Capacitor, 100 HF, 35 V, Electrolytic 124000-107 ROL Resistor, 4.7 K Ohm, +5%, 1/4 W  110000-472
+C2 Capacitor, .01 pF, 50 V, Ceramic 122002-103 R62, R63 Resistor, 220 Ohm, +5%, 1/4 W 110000-221
+3-C14, Capacitor, .1 UF, 50V, Ceramic -122002-104
+C16, C19-C21, C24-C43, C44-C4T ROB Resistor, 1 K Ohm, +5%, 1/4 W —110000-102
+Capacitor, .001 UF, 50 V, £10% 122015-102 R70-R73, Resistor, 220 Ohm, #5%, 1/4 W  110000-221
+R74, R75 Resistor, 10 K Ohm, +5%, 1/4 W 110000-103
+C65-C78, C86, C87, C94-C106, C116, C117, C123, C124, C131-C137 R76 Resistor, 220 Ohm, +5%, 1/4W —— 110000-221
+Capacitor, .1 MF, 50 V, Ceramic 122002-104
+C138, C139 Capacitor, 1000 pF, 100 V, Ceramic 122016-102 R77, R7B Resistor, 4.7 K Ohm, 45%, 1/4. W — 110000-472
+C140, C141 Capacitor, 1 uF, 50 V, Ceramic _122002-104 R79 Resistor, 47 K Ohm, +5%, 1/4 W — 110000-473
+C142 Capacitor, .22 WF, 50 V, Ceramic 122015-224 R80, R81 Resistor, 1 K Ohm, +5%, 1/4 W —_110000-102
+R82, R83 Resistor, 470 Ohm, +5%, 1/4 W 110000-471
+€143,C144——Capacitor, 1 UF, 50 V, Ceramic 122002-104
+C145 Capacitor, 10 WF, 35 V, Electrolytic 124000-106 RELRES Resistor, 10 K Ohm, +5%, 1/4 W —110000-103
+C146, C155, C158-C185, C187-C189, C193-C202, C204-C227 RE9-ROG Resistor, 33 Ohm, +5%, 1/4 W 110000-330
+Capacitor, .1 UF, 50 V, Ceramic 122002-104 R97 Resistor, 3.3 K Ohm, +5%, 1/4 W — 110000-332
+R98-R101 Resistor, 100 Ohm, +5%, 1/4 W —110000-101
+C228 Capacitor, .001 pF, 50V,£10% — 122015-102
+C229 Capacitor, 47 pF, 100 V, Ceramic 122016-470 R102-R107__—Resistor, 33 Ohm, +5%, 1/4 W 110000-330
+€230-C238, C243-C249 R108 Resistor, 3.3 K Ohm, +5%, 1/4 W — 110000-332
+Capacitor, .1 HF, 50V, Ceramic 122002104 R109-R1L1 Resistor, 100 Ohm, 45%, 1/4.W 110000-101
+C250 Capacitor, 47 pF, 100 V, Ceramic 122016-470 RUZ Resistor, 3.3 K Ohm, +5%, 1/4 W — 110000-332
+€251-C259, C264-C273 RU3Z-R115 Resistor, 100 Ohm, +5%, 1/4 W —110000-101
+Capacitor, .1 MF, 50V, Ceramic 122002-104 R16-R123 Resistor, 33 Ohm, +5%, 1/4 W 110000-330
+
+4-17
+Illustrated Parts Lists S.T.UN. Runner
+
+S.T.U.N. Runner Multisync PCB Assembly, Continued.
+
+Parts List
+Designator Description Part No. Designator Description Part No.
+R125-R131 Resistor, 1 K Ohm, +5%, 1/4 W — 110000-102 JI6 Connector, 11 Circuit, Header, .100 Ctr 179118-011
+y Connector, Header, 60 Circuit, .1 Ctr 179021-060
+R132 Resistor, 4.7 K Ohm, +5%, 1/4. W 110000472 J8-f10 Connector, 11 Circuit, Header, .100 Ctr 179118-011
+R134 Resistor, 1 K Ohm, £5%, 1/4 W 110000-102 SPEED Connector, 6 Ckt, Hdr, .100 Ctr 179177-006
+RISS Resistor, 0 Ohm, £5%, 1/4 W 110005-001 VCLK. Connector, 6 Ckt, Hdr, .100 Ctr 179177-006
+R1G4-R167_Resistor, 470 Ohm, +5%, 1/4 W 110000471
+Sockets
+R1GS-R171_—_Resistor, 10 K Ohm, +5%, 1/4 W 1100-103 1205-PSP, 1505-GSP Socket, 68 Pin 179237-068
+R177, R178._—_—Resistor, 100 Ohm, +5%, 1/4 W ——110000-101 190K Socket, 64 Pin, 900" 179256-064
+R194 Resistor, 10 K Ohm, +5%, 1/4 W —110000-103 200E Socket, 24 Pin, .600" 179257-024
+200K Socket, 20 Pin, .300" 179259-020
+RN1, RN2 Resistor Network, 470 x 9 Ohm,
+45%, 1/8 W, SIP (10-Pin) 118010-471 200R, 2005, 2007, 200U, 200V, 200W, 200X, 200Y
+RN3-RNS Resistor Network, R2R Ladder 118015-001 Socket, 28 Pin, .600" 179257-028
+RNG Resistor Network, 4.7K x 9 Ohm,
++£5%, 1/8 W, SIP (10-Pin) 118010-472 2108 Socket, 24 Pin, .600" 179257-024
+210R, 2108, 210T, 210U, 210V, 210W, 210X, 210Y
+Connectors Socket, 28 Pin, .600" 179257-028
+BCLK, SPEED, Connector, Rept, 2 Ckt 179178-002
+VCLK Note: Place receptable for SPEED Crystal
+on “A” "B", BCLK on “QB", XOSC2 Crystal, 48 MHz, Oscillator Module 144008-003
+and VCLK on *QB/2.”
+BCLK. Connector, 4 Ckt, Hdr, 100 Ctr —_-179177-004 Oscillator
+SCOM Connector, 11 Circuit, Header, .100 Ctr 179118-011 XOSC4 Oscillator, 40 MHz 144008-004
+a Connector, 12 Circuit, Header .250 Cur 179069-012 XOSCI Oscillator, 32 MHz 144008-002
+Miscellaneous
+sw Switch, 8-Position DIP 160031-008
+Test Point 179051-001
+
+4-18
+Illustrated Parts Lists
+
+S.T.U.N. Runner
+
+4-19
+
+Pe
+ar ne
+
+4g O
+a
+a OSE Sa
+
+|
+
+1s ws =r =
+
+g wear
+
+—— aa — es aaa
+
+doa YOR oa we SO
+
+Jog a 0 O
+
+Oia atl SF ergs eoga og bog UE Seo gong o
+
+gwen UR ee
+2
+
+aa Og Sg gene
+El DSS
+
+a Ula! OL
+
+a po P= sae) $05 x 0 a 0 ea
+
+ae oS QS Yoee yoyo
+SH I
+
+Figure 4-6 ADSP II PCB Assembly
+A047046-02 C
+
+Illustrated Parts Lists S.T.U.N. Runner
+
+ADSP II PCB Assembly
+Parts List
+Designator Description Part No. Designator Description Part No.
+Integrated Circuits 7K Integrated Circuit, 7418259 137137-001
+ADSP2100 —_Integrated Circuit, ADSP-2100, 7 Integrated Circuit, 74A1S74 137156-001
+16-Bit DSP, PQFP 137629-001
+WB Integrated Circuit, RAM, 8K x 8, 150 nsec137535-006 8/9F/H, 8/9H/J Integrated Circuit, 74A1S169 137471-001
+1c Integrated Circuit, 7418373 137143-001 8/9) Integrated Circuit, 7418139 137097-001
+1D, 1E Integrated Circuit, 7418245 137134-001 8/9K, 8/9L Integrated Circuit, 74ALS169 137471-001
+8A, 8B Integrated Circuit, 7418245 137134001
+1F Integrated Circuit, 7418373 137143-001
+1H Integrated Circuit, RAM, 8K x 8, 150 nsec137535-006 8C, 8D Integrated Circuit, 7418244 137038-001
+2c Integrated Circuit, 7418373 137143-001 8E Integrated Circuit, 7418245 137134-001
+2D, 2E Integrated Circuit, 7418245 137134-001 8F Integrated Circuit, 7415244 137038-001
+8H Integrated Circuit, 74832 137487-001
+2F Integrated Circuit, 7418373 137143-001
+3A/B Integrated Circuit, RAM, 8K x 8, 150 nsec137535-006 8H) Integrated Circuit, 7418244 137038-001
+3C, 3D, 3E, 3F Integrated Circuit, 7418244 137038-001 8K Integrated Circuit, 74AS00 137480-001
+3H Integrated Circuit, RAM, 8K x 8, 150 nsec137535-006 8L Integrated Circuit, 7415244 137038-001
+9H Integrated Circuit, EPROM 136070-2120
+3K Integrated Circuit, 7418244 137038-001 K Integrated Circuit, EPROM 136070-2117
+4A, 4B, 4C, 4D, 46, 4F, 4H, 4J
+Integrated Circuit, 74ALS569 137476-001 9/10 Integrated Circuit, OTP, 27C512-250 136070-2121
+5A, 5B, 5C, 5D, 5E, 5F, 5H, 5}
+Integrated Circuit, SRAM, 4K X 4, 9/10K Integrated Circuit, OTP, 27C512-250 136070-2118
+45 ns 137537-003 9A, 9B, 9C, 9D, 9E, 9F, 10A, 10B, 10C, 10D, 10E, 10F
+5K Integrated Circuit, 7448138 137522-001 Integrated Circuit, SRAM, 4K x 4, 45 ns 137537-003
+10H Integrated Circuit, OTP, 27C512-250 136070-2122
+SL Integrated Circuit, 744508 137484-001 10K Integrated Circuit, OTP, 27C512-250 136070-2119
+6A, 6B Integrated Circuit, 7418245 137134-001
+6C, 6D. Integrated Circuit, 7418244 137038-001 Cay
+gq Integrated Circuit, 744832 137487-001 cl Capacitor, 100 IF, 16 V, Electrolytic 124008-107
+2-095 Capacitor, 1 UF, 50 V, Ceramic 122002-104
+6K Integrated Circuit, 74ALS74 137156-001
+OL Integrated Circuit, 744504 137433-001 ~ Diode
+7A Integrated Circuit, 7441832 137464-001 CRI-CR3 Diode, MV5053, Light-Emitting 131027-002
+7B, 7C Integrated Circuit, 74ALS138 137517-001
+Resistors
+7D Integrated Circuit, 7418244 137038-001 RL-RI2 Resistor, 10 K Ohm, +5%, 1/4 W _110000-103
+a Integrated Circuit, 7448138 137522-001 R13, R14 Resistor, 150 Ohm, +5%, 1/4 W — 110000-151
+R15 Resistor, 220 Ohm, #5%, 1/4 W —110000-221
+RIG-RIS Resistor, 10 K Ohm, +5%, 1/4 W — 110000-103
+
+R19-R23, R48, RADResistor, 1 K Ohm, 45%, 1/4W —110000-102
+
+$.T.U.N, Runner Illustrated Parts Lists
+
+13757-0031
+
+ae
+
+Fy
+137401-001
+
+oa
+”
+toy
+ry
+is
+
+re
+
+we
+
+1
+198070-1127,
+
+Sate
+
+jo 136070-1120,
+
+137535-006
+436070-1123
+
+137526-001
+
+:
+
+i
+2093 4
+
+196070-1125,
+
+usr aud 5
+
+_
+196070-1124
+
+4137607-001
+
+vm
+
+Figure 4-7 Stand-Alone Audio I PCB Assembly
+A047190-01 B
+Ilustrated Parts Lists
+
+Stand-Alone Audio If PCB Assembly
+
+S.T.U.N. Runner
+
+Parts List
+Designator Description Part No. Designator Description Part No.
+Circuits €24-C36 Capacitor, 1 WF, 50V, Ceramic ——-122002-104
+1A/B Integrated Circuit, TDA2030 137301-001
+1c/D Integrated Circuit, OTP, 300 ns ——_-136070-2127 37 Capacitor, .22 wF, 50 V, Ceramic —_122017-224
+1D/E Integrated Circuit, OTP, 300 ns 136070-2126 C38 Capacitor, .0068 HF, 50 V, Ceramic 122015-682
+1E/E Integrated Circuit, OTP, 300 ns 13607-2125 39 Capacitor, .22 HF, 50 V, Ceramic —_122017-224
+C40, C41 Capacitor, 10 pF, 25 V, Electrolytic 124009-106
+1E/H. Integrated Circuit, OTP, 300 ns_——-_-136070-2124
+2a Integrated Circuit, TLO84CN 137579-001 C42.C45 Capacitor, .1 pF, 50 V, Ceramic 122002-104
+2E/F Integrated Circuit, MSM6295 C46 Capacitor, 10 uF, 25 V, Electrolytic 124009-106
+(Surface-Mount) 137607-001 C47-C49 Capacitor, .1 UF, 50 V, Ceramic 122002-104
+25 /H Integrated Circuit, 741874 137023-001 50 Capacitor, 100 pF, 100 V, Ceramic 122016-101
+3B/C, 3C/D _ Integrated Circuit, TLO84CN 137579-001 C51 Capacitor, .1 MF, 50 V, Ceramic 122002-104
+3R/H Integrated Circuit, 741886 137079-001 C52-C55 Capacitor, 100 pF, 100 V, Ceramic 122016-101
+4a Integrated Circuit, YM3012 137402-001 C56-C66 Capacitor, .1 HF, 50 V, Ceramic 122002-104
+5E Integrated Circuit, 74L$174 137122-001 C67 Capacitor, 39 pF, 100 V, Ceramic 122016-390
+SE Integrated Circuit, 741874 137023-001 C68 Capacitor, .1 HF, 50 V, Ceramic —-122002-104
+5H Integrated Circuit, 7415393 137146-001
+6A Integrated Circuit, YM2151 137401.001 Diodes
+6B Integrated Circuit, 4066B 137580-001 CR1, CR2 Diode, MV5053, Light-Emitting 131027-002
+CR3 Diode, 1N754 A, Zener 131002-001
+TE Integrated Circuit, 7415138 137177-001 CR4, CRS Diode, 1N4001 131048-001
+TE Integrated Circuit, 741814 137056-001 CRO-CRO Diode, 1N5401 131051-002
+TH Integrated Circuit, 7418393 137146-001
+8c Integrated Circuit, RAM, 8K x 8, R10 Diode, MV5053, Light-Emitting _131027-002
+150 nsec 137535-006 R11, CR12_ Diode, 1N4001 131048-001
+9E Integrated Circuit, 7418273 137040-001 Heat Sink
+10A Integrated Circuit, 6502 A 137577-001 HSL Heat Sink 178190-032
+10c Integrated Circuit, EPROM, 300 nsec 136070-2123,
+10E Integrated Circuit, 7418240 137251-001 Inductor
+ra Inductor, 100 #H 141002-001
+1c Integrated Circuit, PALIGL8 136056-2101
+42C Integrated Circuit, SCOM 137526-001 ‘Transistors
+Uw ‘Transistor, 2N3904 133041-001
+Capacitors 3-05 Transistor, 2N5306 133033-001
+cl Capacitor, .22 pF, 50 V, Ceramic —122017-224 6 Transistor, 2N3904 133041-001
+2 Capacitor, 22 UF, 35 V, Electrolytic 124000-226
+C3, C4 Capacitor, .1 HF, 50 V, Ceramic —_-122002-104 Resistors
+cos) Capacitor, .22 MF, 50 V, Ceramic _122017-224 R1 Resistor, 1 Ohm, +5%, 1/8 W 110027-010
+R2, R3 Resistor, 1 K Ohm, 45%, 1/8 W —110027-102
+6 Capacitor, 3300 HF, 25 V, RE Resistor, 180 Ohm, +5%, 1/2W —_110001-181
+Electrolytic, Radial 123003-338 RS Resistor, 22 K Ohm, +5%, 1/8 W —110027-223,
+c7-€10 Capacitor, .1 UF, 50 V, Ceramic -122002-104
+cu Capacitor, 10 UF, 25 V, Electrolytic 124009-106 R6 Resistor, 10 K Ohm, +5%, 1/8 W —_110027-103
+c12.c14 Capacitor, .1 UF, 50V, Ceramic ——-122002-104 R7 Resistor, 1 K Ohm, +5%, 1/8 W —110027-102
+R8 Resistor, 10 Ohm, +5%, 1/4 W 110000-100
+cis Capacitor, 3300 UF, 25 V, RO Resistor, 20 K Ohm, +5%, 1/8 W —110027-203
+Electrolytic, Radial 123003-338
+C16 Capacitor, .001 UF, 50 V, Ceramic 122002102 R10, R11 Resistor, 12 K Ohm, 45%, 1/8 W  110027-123
+C17 Capacitor, 3300 pF, 50 V 122015-332 R12 Resistor, 6.8 K Ohm, +5%, 1/8 W — 110027-682
+C18 Capacitor, 0022 WF, 100 V, Plastic 121022-222 R13 Resistor, 20 K Ohm, +5%, 1/8 W  110027-203
+RI4 Resistor, 10 K Ohm, 45%, 1/8 W — 110027-103
+cy Capacitor, .0068 HF, 50 V, Ceramic 122015-682
+C20 Capacitor, .001 UF, 50 V, Ceramic —122002-102 RIS Resistor, 6.8 K Ohm, +5%, 1/8 W — 110027-682
+C22 Capacitor, .015 uF, 100 V, +5%, R16 Resistor, 16 K Ohm, +5%, 1/8 W —-110027-163
+Poly, Radial 126009-153 R18 Resistor, 560 Ohm, +5%, 1/8 W 110027-561
+
+4-22
+S.T.U.N. Runner Mlustrated Parts Lists
+
+Stand-Alone Audio Il PCB Assembly, Continued
+
+Parts List
+Designator Description Part No. Designator Description Part No.
+R19 Resistor, 470 Ohm, 45%, 1/8 W — 110027-471 R59 Resistor, 240 Ohm, $5%, 1/8 W — 110027-241
+ROO Resistor, 100 K Ohm, £5%, 1/8 W — 110027-104
+R20, R21 Resistor, 100 K Ohm, 45%, 1/8 W 110027-104 + R61 Resistor, 470 Ohm, +5%, 1/8 W —-110027-471
+R22 Resistor, 15 K Ohm, +5%, 1/8 W — 110027-153
+RB Resistor, 7.5 K Ohm, +5%, 1/8 W — 110027-752 RO2 Resistor, 0 Ohm, +5%, 1/4 W 110005-001
+R24 Resistor, 15 K Ohm, #5%, 1/8 W — 110027-153 ROS Resistor, 220 Ohm, +5%, 1/8 W —-110027-221
+R64, ROS Resistor, 150 K Ohm, +5%, 1/8 W — 110027-154
+R25 Resistor, 30 K Ohm, 45%, 1/8 W — 110027-303
+R26 Resistor, 10 K Ohm, +5%, 1/8 W —110027-103 Connectors
+R27 Resistor, 47 K Ohm, +5%, 1/8 W 110027473 ACDC Connector, 12 Ckt, Header,
+R28 Resistor, 33 K Ohm, 45%, 1/8 W  110027-333 156 Ctr, Key 11 179213-012
+COIN Connector, 11-Ckt, Header, .100 Ctr 179118-011
+R29 Resistor, 1 K Ohm, 45%, 1/8 W — 110027-102 SCOM Connector, 11 Ckt, Header, .100 Ctr 179118-011
+R30 Resistor, 2 K Ohm, 45%, 1/8 W — 110027-202 SPKR Connector, 2 Ckt, Header, .156 Cur. 179213-002
+R31 Resistor, 150 K Ohm, +5%, 1/8 W —110027-154
+R32 Resistor, 10 K Ohm, +5%, 1/8 W —110027-103 Miscellaneous
+R33 Resistor, 68 K Ohm, +5%, 1/8 W — 110027-683, Socket, 20 Pin, 300" 179259-020
+R34 Resistor, 10 Ohm, +5%, 1/4 W 110000-100 Socket, 24 Pin, .600" 179257-024
+R35, R36 Resistor, 7.5 K Ohm, +5%, 1/8 W — 110027-752 Socket, 28 Pin, .600" 179257-028
+R37 Resistor, 15 K Ohm, 45%, 1/8 W — 110027-153 Socket, 40 Pin, .600" 179257-040
+R38 Resistor, 30 K Ohm, 45%, 1/8 W — 110027-303 GA/B) Nut/Washer Assy, #6-32 75-9516
+R39, RAO Resistor, 10 K Ohm, 45%, 1/8 W — 110027-103 Ga/B) Screw, Pan Hd, Cross-Recessed,
+R41 Resistor, 1 K Ohm, #5%, 1/8 W 110027-102 #6-32 x 3/8" Long 72-1606S
+RQ Resistor, 470 Ohm, 45%, 1/8 W —-110027-471
+AGNDI, +#1005V1, GND1, GND2, CC1+, CCl-, CC2+, CC2-
+R43 Resistor, 1 K Ohm, +5%, 1/8 W —-110027-102 ‘Test Point 179051-001
+R44 Resistor, 470 Ohm, +5%, 1/8 W 110027471 swi Switch, Slide, SPDT 160040-001
+R45 Resistor, 1 K Ohm, £5%, 1/8 W — 110027-102 vRI Potentiometer, 10 K Ohm, Horiz.  119022-103
+RAG, RAT Resistor, 10 K Ohm, 45%, 1/8 W —110027-103 x1 Crystal, 3.579 MHz 144007-001
+a/B) ‘Thermal Compound 78-16001
+RAB-RSS, Resistor, 1 K Ohm, 45%, 1/8 W —110027-102
+
+4-23
+Table of Contents
+
+STUN Runner™ Main Wiring Diagram .... .. Page 1
+
+STUN Runner™ Multisync Game PCB ..
+
+. Page 2-11
+
+STUN Runner™ SA Audio I] PCB . Page 12-13
+
+Power Supply and Coin Door Wiring Diagrams and
+Schematic Diagram for the Hitron Power Supply ....
+
+STUN Runner™ Memory Map ...
+
+A
+
+ATARI
+
+GAMES
+
+Atari Games Corporation * P.O. Box 361110 © Milpitas, CA 95035 © (408) 434-3950 * Telex 5101007850
+
+SSSA
+
+Me
+
+GAMESSs
+a S
+NI
+. S
+SVP VLE Hy
+NS
+NS
+XS
+
+& NS
+NEN LY CK VK KYL
+. . & &
+NS x °* & NY
+NNN VY VHP VY KV VV x gy
+Ys &
+
+VW YN gg gy
+
+NN ce ww NN
+
+& Y LYK VLG Vyy NS  gpads S
+Ist printing
+HY VK NTE VCK GC Ys CF
+LS NS
+Ss NS N
+NN S S Ss
+NNN SSE SSNS S S N
+SS S
+YS YQLNSN YA N x NS N
+
+YK KL YY VV
+wy SV
+
+VY yvy
+&X
+
+SX
+
+NS NINE NINSNSNS
+NOTE
+This staple temporari- Nyy NS
+ly holds the schemat-
+Sy. SW VO BVH ys
+Sic package together. SSS
+Remove the staple
+before using these xX NN
+schematics.
+NS SJ x Set SSNS LY LL
+S
+SX
+NS
+wy s NESSES NS YS NNN
+N NS
+x N
+x NS XS
+Wy LY VK KY NINN NS SNSINSESS YS LV
+wx
+N <& \
+Ws
+NSS NINN SINS NINES NISSEN YS LV
+w
+NS
+NES NINN NEN NESS Y LN
+NEN SAK
+\S
+WHY So
+NSNS Se SSS Y KYB YF GC Ves Ss NN
+NN NS
+NS
+N \
+s SA x 9/89
+NS ~ Ne
+
+ES NK WK KL WH WG KF GA K WKH WW KW G XS
+3 BN vio
+1 PON 6 8" | 9 | compre
+10
+MIDEO DISPLAY 1 1"
+2 8| KEY a
+3 Be 1 MO RIN - n 8 85
+4 te 2] BLUE 5 ne & 2 ge
+s+ 4| GREEN ee (U8 Hba- 6 ze Fee.
+6 6 | RED woe uw grog
+heSa>za00>7> eSZZZ0>z ~ozts >~o8
+sascaceg g Wesaeussae? 88888248 gerbe esEsas
+—— BHOSSSS= a © Q
+++ +5555 B[-anenenwod=| Ffanna-vnooge | 8 necoe] S[erwaon 1 a
+|
+wl- « afen-odo w 8K
+g el y) =lzl>lal al>lelelgx Saleh ss aeeia asia rs | S3 START |
+| zl<lelzizle al ja Ea =| Ww + {ye Woo BK s4 start |
+“| ® * a ek | 2 |
+3
+ae 4
+P24 |
+w/or_/]| ]
+P100 P5S wy]!
+oT la 2 |
+BK, BK, 3
+OR 2 OR 2 4 |
+Yo13 yY3 W/Bu-| 5 |
++SENSE O- BM i 4 WV 6
++5V R 5 7 |
+POWER SUPPLY +5V 0 6 all | |
+WIRING DIAGRAM GND © BN Bu 4 Bu 7 W/R R
+046989-01 hn BN Bu_| ¢ Ev wer] .°,| | 18K + |
+“SENSE © BN/W gH 6|H--~»— 9 BK} 43} | 8K |
+Na
+Pe
+ia P3t Vit W Ld |
+eK BK P35 | 8K i. R BK t rR |
+° —
+GN GN 3 suyw | , Busw_(5] 18 | A L |
+Ww Ww +——
+° 3 | R3/ Ra |
+COIN _ _
+ROLL RT; (PITCH UP)
+w oR/w or/w 8K COUNTER | (ROLL RT) (PITCH y
+ono cr [+R __ 8 1 | ROLL PITCH |
+Ss L MODIFIED FUGHT CONTROL J
+v ¢ GN (elle. sit Test sw |
+ve Y. GY wGY. BK
+12 VAC HI F3 eee 1 Beam ° | oo |
+12 VAC LO F2 8 et 2 o8 3 Tok ye |
+wet 7 2 | Hay 7$ votuwe |
+13 1 CONTROL,
+wt UT Tae)
+eu P29
+.
+|?
+P30
+Woe, W tsi
+BN] BN SPEAKER
+EI Pr
+3S el>| ala =/5|>[8| B|>|Slelals S| gl s r -
+e[SePeaneoen-] sLoaneeonwods | beE a]
+8
+8 z PERSONS
+< opozeooza> Be<zEE5NSORz +4 - o RECEIVING THIS DRAWING ™
+BY IO SEELED PEEL Y8dsseF 8° eB CONFIDENTIAL: Reproduction forbidden With- S.T.U.N. Runner™ Main Wiring Diagram
+gen + S w x ‘out the specific written permission of Atari
+See & Games Corporation, Milpitas, CA. This drawing
+ad is only conditionally issued and neither receipt
+= nor possession thereof confers or transfers any
+right in, of license to use, the subject matter of,
+the drawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the compote - ,
+tion's written license, no right is gramied (0
+reproduce this daawing ore suber mater = ANTAAR| ; ; SP-338 Page 1
+thereof, unless by written agreement with or © 1989 Atari Games Corporation Ast printing
+‘written permission from the corporation. GAMES (04732101 4
+
+PRI PRZ PRI PRY PRS PRE PRT PRE
+rim fares Saize Srizz nize Seize beist Saiz *3¥
+JL-2 ney
+si-3 | RT 320
+- aSbe- 220
+Ji-10 + 100-35u cxz4 Lay
+Ji-ut ot cre MOUNTING HOLE,
+4 -
+en mvs053 at ° MOUNTING HOLES Jt2-6 =r]
+is a.
+IL-5 oes ote ows cts os bs i c309 a I
+————o =
+J1-8 = nesyt -
+ares
+}——____o
+si2-4
+| a.)
+*12y | ;)
+sive se-4
+sine % Ld, =
+Ji-4
+J12-2 cas
+re) >
+C4: +4 3 7
+ott Rooz a.) =
+ASihoy >> ee eps
+al
+tL J12-7)—4
+= = v -
+-22v
+J12-8 >
+SOUND
+“5yt
+Ji-6 iss
+JL-7 |
+Cie -Su NOT LOADED
+POWER SB285y |
+L
+G z
+NOT LOADED
+NOTICE TO ALL PERSONS
+CoNOENTAL fepeducion fen with: S.T.U.N. Runner™ Multisync Game
+he specific written permission of Atari -
+Games Corporation, Milpits, CA This drawing PCB Schematic Diagram
+
+is only conditionally issued and neither receipt
+
+‘nor possession thereof confers or transfers any
+
+right in, oF license t0 use, the subject matter of
+
+the drawing or any design or technical informa-
+
+tion shown thereon, nor any right to reproduce
+
+this drawing, or any part thereof. Except for
+
+‘manufacture by vendors of Atari Games Compo-
+
+ration, and for manufacture under the corpora-
+
+tion's written license, no right is granted (0 sP-338 2
+thereof, unless by written agreement with or GAMES © 1989 Atari Games Corporation 1st printing
+‘written permission from the corporation. 0550-11 8
+
+az
+4HHZ
+az
+L6MHZ
+ad
+zmuz——lda_ W}E— 12SKHZ
+yes = cf c2soK>
+onl ¢ 500K)
+net | eRtgee elegy €300K>,
+gs 2°
+2N3908
+T 120K
+a GLY could ‘ 12J, oo}2——7.8KHZ
+¥ L2SKHZ
+Gitisu =o k gol c15.6K>
+2470 tel. = wHoC at.2K>
+= = & onttic 2.5K)
+Tsi4
+Re: 10H
+ee cuz —b ttf so — 4a8HZ
+6 az
+= ey
+12 Boalt
+= 40H r—PRT
+aasHz tJ, co}+— 30HZ ly_150H
+. ant lo Pals,
+THES ald C244HZ > Hox 6 /1RQ.
+us7e ft
+SH rr rina}
+Bras +s
+1000PF 10K
+pani
+R75
+3y
+I, CCLOCK)
+Roo Soc cRie re
+30nz——t4n 0— 1.92 getiz 40 iw—i
+yolk 220 MvsO53
+te AIOE, Boe oy :
+/PCLR etd cm i _- rr
+/MOCLR 00 a4 PRS osu =
+10)
+ig0c 1000PF 40K qiRas °
+Cy
+1.4Hz7— Fada OE are
+alt
+Los}. = wot? - a
+ei cal aus COTACK>
+ists cet”
+yorecx —He oa
+220 mvs053
+
+cite
+
+at
+PRS I
+
+/OUIRG.
+
+“LINKIRG
+/CSPIRQ
+/POSP IRQ’
+/MSPIRQ.
+
+CIRQS)
+oy
+aro
+
+220 «= MvSOS3
+
+“uv
+
+ROS ROT
+10K 3 10K
+
+REG
+10K
+
+Res
+10K
+
+ROW
+10K,
+
+Ri
+10K
+
+170H|
+az
+
+7 TRO
+
+arpl
+
+43)
+
+A
+
+RI7
+4.7K
+
+11, 140K
+
+ii
+
+Sr NU Sue ~
+
+pr7 4
+
+190K
+
+rea
+
+tae
+
+TAL
+
+Las
+
+Lsi468
+
+TPL
+TPLO
+
+arse ais |
+
+82 8
+
+bi /IROS
+
+hy
+
+oe
+
+u
+
+sv
+
+R61 R78
+3 4.7K S4.7K
+
+1.9Hz 4}
+
+Ls7# | an ae pre
+
+rz ft
+area
+
+ats P24
+ais het}—__8.2.4f
+
+68010
+
+/YPA—_4
+/RESET
+/OTRCK
+
+prs CHENG
+lex val end
+a AS ent
+
+Fil
+
+140K LS74 /13
+32
+
+PRT
+(S84 —— Typ 135
+szlp * als
+
+1608,
+Tene rca}.
+CLR
+ALsi61
+
+0A 08 oc a)
+
+___Seistatiais
+2MHZ
+
+ese: pave n73 RZ $
+(RESET —"Vitgs ead HvS083
+
+RUN)
+
+RESET
+
+HL Uuit
+
+gee
+Bee
+
+g
+
+ree ov fe De
+2
+
+CONFIDENTIAL: Reproduction forbidden with-
+out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+is only conditionally issued and neither receipt
+‘nor possession thereof confers or transfers any
+fightin, oF license to use, the subject matter of
+the drawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the corpora-
+tion's’ written license, no right is granted to
+reproduce this drawing or the subject matter
+thereof, unless by written agreement with or
+written permission from the corporation.
+
+S.T.U.N. Runner™ Multisync Game
+PCB Schematic Diagram
+
+A
+
+ATARI
+
+GAMES
+
+‘© 1989 Atari Games Corporation
+
+‘SP-338 Page 3
+
+wee 1st printing
+
+FCz
+L—§f1soKx
+re
+
+Fc. -————
+
+ver
+C tt
+
+OK
+Frco— is20 Rva— J FtOK
+7HSBUS 520 y— “TACK PR? r
+QUART 475R
+o ua 23
+ae SK sco7n-———‘*?__ © ois f———5Y_-» scom-10
+/CSPHAITE tp Sis J 7RMS scooa————"#_ 5} 1s
+JMSPHAIT _ 5 23Y_s scom-it
+ScDS mg eit ors
+scoy—————> 3 it 12
+sco3 sla & olt2 ois SX scom-2.
+scoz——————4"# 5 /4% ps0 GO yscom-6
+sco. Ha aft? gg |
+— PR? PR? scoo Poco} — 08
+9 135C yo 135H) rT
+lp * ols azlo * ala RUA RWNB
+toon 1
+rs — Pe ox, ya}t—7s4 arpz—ttlex, val 7RVA OrHZ—_4 135K /scRo 137, scoat Riba _A,AUDAT »,sonm-3
+Fry [3s fr) ss 470
+rr i /SCUR S08 Ries no
+ava /SCFLAG WY SCOM=&
+on Jy 1380 . 135H 7], 1208 Rigs
+a wc osu A. AUDCLK -
+ups al) 7OTRCK 4 xy % eae 470 =r
+ALSa2 erz——ex ra = ick sa¢— RvAso = Bex sa/¢&— /RVAS 343 Ri67 ALFULL.
+12,400H F74 [t [rr a F7a Ih /LINKIRG WS SCOM-4
+aps Be HEL 175H_lar =
+PRT ——2lor ** c347_ Loave Lesus Leauy
+sco7 or = - zr
+sco lor ashi Sdorr Taek 7 Tecer 7 T00rF
+anison scos bad
+ans > rine ScD4 3200 rut pt — /LINKIRG =
+sco3 103 F-TEST
+scoz Zio2  eusr}®— /SCBUSY ELF -TEST — oe SCOM-3
+— scox ———Hor a
+scoo 2400 so}. sca L
+te0e PRESET 7ST ism- =
+3 RESREQ
+psis—e — rs rams /SCRES eleru
+Lope 200" paty—Ha & re — enna 120K ASO8 esce due 5
+cv & vs /zraw 5 ye °
+\822__af Sn pre—t{ar_ 7 sanci2 0)
+\822__F O04 Sora | v4 vreven—he @ ro}¢ — vouart 7RvRS cen _vep——roce “SRD bir
+Set Sen Br ALSBUS ——Yoze rs /SH2 aa se
+3 by
+. ars 1908
+\ats___slsne rz rers—2f rahe.
+eT ee BLS la & veh?
+AZ ______ilsein ya] a yah ssp
+/RHSBUS —H4c © rok2—— /csp
+
+160K
+
+py
+
+pro ——S{ar v7} RAMEN
+
+q
+
+As (CZAR Yop—— /HSBUS
+feza me rsk2_— /LSBUS
+Brepd— vexteus
+= avai — /naus
+822 flere ve2— opto
+
+\a2t_—____ilsia ve} — /ROMEN
+
+cHsBUS 3
+
+/RHSBUS
+/RVRSO
+
+PLS32
+
+Hi
+eur —— if S$ noun
+/RVAS:
+
+NOTICE TO ALL PERSONS
+RECEIVING THIS DRAWING
+CONFIDENTIAL: Reproduction forbidden with-
+out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+48 only conditionally issued and neither receipt
+not possession thereof confers or transfers any
+right in, or license t0 use, the subject matter of
+the drawing or any design or technical informa-
+tion shown therdon, nor any right 10 reproduce
+this drawing, or any part thereof. Except for
+manufacure by vendors of Atari Games Corpo-
+ration, and for manufacture under the corpora-
+tion's written license, no right is granted to
+reproduce this drawing or the subject matter
+thereof, unless by written agreement with or
+
+‘writen permission from the corporation.
+
+S.T.U.N. Runner™ Multisync Game
+
+PCB Schematic Diagram
+
+ATARI
+
+GAMES
+
+SP-338 Page 4
+
+© 1989 Atari Games Corporation ‘Ist printing
+
+044958-01 B
+
++s
+cir
+200x 200W 200v 200uU 200T 200s 200R +—{
+\sBte aes 200P vt
+en 2 . ease.
+- ort MOS O52 2s, =
+emia ee od’ mas ala asr_ony 200K |» 200y
+Ceniz tla om Ymia—lafae asa, front —Ses aims
+- ovfie__6022 SL a ALS gy 38
+Neat) tiles I ofa la _ olas_ni2, fA13 slats est! FALe —Zlnr9 rma ca
+vt |e 3}
+en at efi emo oa ale & olism \eni2 ileus eal tne gslar emia
+| - az na Seed ales eaiz ——t3lmas
+ee be 2 [tt ovke —HOA2
+ale Gian Hod _tia @ oft? ora, ania tse esol? aati tins :
+$87 Stay mog tia |= a2, 889__28}aq 2810 _2¥teq [a3 nao
+Sas $s hans 3a 28323!
+slap |s4—Da {na ee y(n
+eg sl /ot__|
+aed < g Fa g g < oe arth a, 688 lay
++ ee 3 3 EB % Ey E} TF Kee Tae Keating 0)
+ante Fa Fa £ Fa FY 2 RWNB 285 tls hfe Sls
+2 ere cen SS: - | AES __|
+\ 882 ia 7ROVEN aaa aim 5 nae)
+oe ce oe ce Oe ce oe oe oe ee a-4 an? \ 2st Tag Z
+F zo ez |z0 FE 20 F feo ee eo jee Yeo (22 Jeo VT a eee al 5
+\et_____itlar 7 \882____1j
+ad [zo
+7ROMG — /ROMS — /ROMY — /ROM3 — /ROMZ — /ROM1 — /ROMO - 7ROM? T
+2107
+ie
+18 gy |___wn7
+asi ——2tlas lis ane
+\eaia lass lar
+210x 210W 210v 210uU 210T 2108 210R B12 23laee ene N
+\SBe __tfars 210P OGt1 tiara g3[as_ na
+8825 20s _ ort__wo7. | wor ay }ae_oz_, 2810 leq lian?
+[ate elas 10 Oe oO 2 ro B89 25lag sz wns
+813 __ hase : ost s ° ° haf a
+2812 23iexg rT my \ -MOs____ia je __O5_, [882 __Shag,
+- oO
+S:.} 5 ne > 2)
+sue z is 3 Y mos sla 5 itso, veel
+AB eng - oe Mata 2 ss 03, ee r}
+ean la T ot nN mmo M2 __tla & o|s2__o2, sate 8
+887 ____lay MOL tla = jak \282___as
+ape sles das a \ p88 p
+885 ________6 o oa Q o oa o oa 9 fe
+at las 3 S s FE 3 3 JF fez feo
+ASS la Fa 2 2 o 2 ra RWNB- 7ROM7
+282 | =
+be u nn _ nu a had x /ROMEN
+i. io-4 Se [= 4 [i= 4 [= 4 Ce ce ce
+FF fez Jeo FF FF FP fee Teo FF
+/ROMG /ROMS: /ROMY 7ROM3 ROM, /ROML 7ROMO
+{OTICE TO ALL PERSONS
+RECEIVING THIS DRAWING
+
+CONFIDENTIAL: Reproduction forbidden with-
+‘out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+is only conditionally issued and neither receipt
+nor possession thereof confers or transfers any
+right in, or license to use, the subject matter of
+the drawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the corpora
+tion’s written license, no right is granted t0
+reproduce this drawing or the subject matter
+thereof, unless by written agreement with or
+‘written permission from the corporation.
+
+S.T.U.N. Runner™ Multisync Game
+
+PCB Schematic Diagram
+
+ATARI
+
+GAMES
+
+‘SP-338 Page 5
+
+‘© 1989 Atari Games Corporation 1st print
+
+04455611 B
+
+48Z02-15 48Z02-15, a8
+S811 taro | : Je-1 — TSA
+ABN 22/nq typa}82_—___oors 8811 _*Marg ,
+AAO 2log ppg|A2—__no7 wae RXDR
+\281—23lag ror }ae —____nois ° \s83__23] [ye one
+\e88 tar ryog[i2 nos Vena ile Vogts ons /RTSA———} 2-3 McasesA.
+ABT las rast pniz aT aie oe poe a
+2 Has ryos}t2 ___O014 Ztae 10st ————————§e-7 Tioorr
+oe ea ——— noi. Sasa EN w=
+na roe|te. oma sor pea shy trclio oni = rire
+aga | q ona -0>—T
+sie vs pos ge 82__tlee teal? CN ee vee cassia ase
+-882__?) 2008| = =) ee ak 4
+\ 281 tla | os_ia \BE1 tag 2208 Mb_iin 8 ra ia
+= = *
+sata a RE [tosh 5 2088 uae FT
+/oni2__sia 3 3 /RHN Dosa _ its Toot; I-49
+jaan 5° a rae /bo2__a ge s Ra47 “sy
+boww_t\a 4 a al ooz_ila 3s *12V 100K
+Oo __8ia 8
+26s mos ‘la os ee j 8 2058 risa
+; ° a 26 It a ge 40668) pts p——> J2-12
+B13 _2lase FF S812 _Zlaae ie
+BAI2 28les or[t_onss RWNB 8812 23lay
+BBL 2arg Fry RAMEN ——— ~aBii 23 or R18
+S81 28a oo eo aap De 10K
+3 Q gel? 0014 [A aBO 219 8
+\283_t5}n9 S 8 is. 283 __25lag 5 SR + +5
+288 lar oS OTN 288 aay ae
+a — is oS oT oie BAZ lag a
+285 they 012 OD, ‘Bei Shas on
+284 tlas S § oo} O08. ABS sin @ 09 SERIAL B
+rie 3 “su +Su aetna 3 8
+\ABa Se & = ona las = ey 13-5
+\282 sles S 3 ceo eae al? S 3
+ag SS g ar 2 Z J3-1>——/cTsB =
+ee 7 toa Res EBL _itlng © ° 2 08
+= 40 4.7K ce =
+aang CE PR cra a= |, Teoerez — Jeokertez oy 2 6
+7RPMO Ct ere. orecx pS QUDTACK 7Rena TxDA +
+rts = tPF | ey [2008 Tra /OUTRA /RE RI, = 3-8
+eine Ayer esc rma TxA ale txoa eg Br
+7RUNB cz Tx2 = if
+exe} RXOR los ge L aTa— J3-3 45
+! s* pra }tk— Tx08 ors Laie So o1zy —7 T"
+pos slop cel axos fata 20s ae
+ET oS I ;
+los ara =
+noi 23loy sit. 1P3 cat =
+Ooi au ree}3¢__ 1p2 5y ro
+Onin. a rer}t_—— /CTSB a
+peek 1b} roll. /CTsa a
+-s0—
+R1I464 Ri4S.
+oi 10K 10K
+ori
+crs! ops NOT LOADED
+oy ops
+rs)
+rz}
+ort
+ora
+oo
+28
+NOTICE TO ALL PERSONS
+RECEIVING THIS DRAWING
+
+SERIAL A
+
+CONFIDENTIAL: Reproduction forbidden with-
+out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+is only conditionally issued and neither receipt
+‘nor possession thereof confers or wansfers any
+‘ight in, or license to use, the subject matter of
+the drawing or any design or technical informa
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof, Except for
+manufacture by vendors of Atari Games Corpo
+ration, and for manufacture under the corpora-
+tion's’ written license, no right is granted to
+reproduce this drawing or the subject matter
+thereof, unless by written agreement with or
+writen permission from the corporation,
+
+S.T.U.N. Runner™ Multisync Game
+PCB Schematic Diagram.
+
+SP-338 Page 6
+
+© 1989 Atari Games Corporation 1st printing
+
+4558-11 8
+
+jie 5
+
+FLEELEELEMEERER
+
+13
+
+FREEREEREEE EEE
+
+EDLS__2A pr ppp e_ Das Kate _2fa > year, uneasy soca
+oit__ala aly nna, Aisa yeaa oes alas
+fnia sla {ae ona aig tla = yiis_eata, \Oai2__lh og
+\eni2__Sla | aji8__ni2, arate _ viz sa12, \0812__Sia |
+Lentt tla % ply oss, arz2 tila Foyle sanz, tai la 3 5
+enin__tla & lis ~ oa Veit _iala @ rr_rany, nia _tla Fs
+fox__tla ~ sjiz_ ns ara isle ~ rfp sara, Oa___tla ~ 5
+enti ag pa, \at__irla  yfp__sagy Kona as
+£o7r__zlaprpj5}i2_o7_, on__2la> ys ea, na?__2l 798
+£ph__sla azine Kaz__sia rie ear, Deel;
+ena_sla alas ns 26 tla rity eae oas___l; 5
+fot sla | sis py, axle | riz__ras, O84 __sia | 8
+ena__la 3 gle na eu tile F vfs cau, Koa cla 3
+en2___tla & ala oz, o2__tala & yr cag, \ne2___tla 3 5
+Eor____sla ~ altz___oa, \a2___ssia ~ y/s__eaz, tar_tla ~ 9
+eon___ila, ,e[u1 na Atle, gf Fan \oaa__ila, 8
+RANG.
+= /LSBUS ——
+WN: 2th > soe Ho /ERWN \Ble__2fA 759 yet ABI o HOLS __2fA > pone
+7RS sa yike___ veRWS Ais Sa yee 9BtS HOLY aia 8
+DRURS sla HS peruns ab gla = yfts__apsa \uoia ta
+vexTaus————2" RR yexTa ed eee Mmiz__sa
+Reo ila Z vl ergo )\erz__sile 2 rf__agi2 \uOi tia Za
+asa sala & rip EAL 2 sila & vit aps Ho1o tla Sag
+aie ala ~ rs case so 23lq ~ yis__agio uaa
+aur 22h6 4 jaef2—— EAL? \et_ule yaa) una tas
+“EF \88___2iR 9 5)y [te AB HO ___2iR sag
+arse ris az Kune alan
+= Afb __¢la vit AB HOSA
+85a. YAR ABS Hoe ___ sta, a 8
+795 ——2F pag kt— seas \au___idn 3 rft_ana \woa__tia 2 a)
+yeu a rhe ewe A2___i3la @ y{P__ana 0: ta Se
+NEL sla y8 eye Kae isla viS_ae ni__tla os
+tee Sia. 1H exon \ai___itle. _gfpp—aat | \upa_la oe
+eerd tia Fa ri 6M Emme ir
+(RESET Aza. yi ___ ares Cy Rune
+RWN: aA RWNB = “HsBuS ———
+az AL a peg’ DCL,
+
+EXPANSION BUS
+
+WEBI 7-4,
+£82___y 57-2
+£83 7-3
+VEBt > 7-4
+£855, 7-5
+NEB > J7-6
+VEAL 7-7
+£88___y 57-8
+£89 ___y 7-4
+VE£a10 > y7-10
+E811» j7-11
+EA12__» 7-12
+F813 5 7-13
+NEELY > y7-14
+£815 5 57-15
+VEB16 > j7-16
+EBL 5 7-17
+ES18__» 7-18
+ES1S 5 7-19,
+\ £820» 7-20
++5¥ 57-21
+7-22
+(ExT IT -28
+7S ——> 7-24
+17-25
+L—> 17-26
+7ERWN——— 57-27
+FERVAS ———— 17-28
+FERS —— 57-24
+
+FDI 5 7-30
+E01 7-34
+£02 __» 7-32
+-£03___5 7-33
+EDS __y 7-34
+£055, 7-35
+£06 __» j7-36
+£02 __» j7-37
+£08.» 7-38
+£095 7-39
+£0105 j7-49
+VEDLL > 37-41
+EDI2__y 57-42
+£DL3 _» 7-43
+EDLY 5 57-4,
+VEDLS > 7-45
+> J7-46
++5V Ly s7-47
+7-48
+7MRES J7-44
+> J7-50
+/LINKIRGQ: JT-51
+
+JEWEU S752
+
+(EWEL I7-S3
+7POSPIRO 7-3
+J?-58
+J7-56
+een ——_t-5 7-87
+t—> J7-58
+£164—— 7-59
+t—>J7-60
+
+NOTICE TO ALL PERSONS
+RECEIVING THIS DRAWING
+CONFIDENTIAL: Reproduction forbidden with-
+out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing.
+is only conditionally issued and neither receipt
+‘nor possession thereof confers or transfers any.
+‘ight in, oF license to use, the subject matter of
+the drawing or any design or technical informa-
+tion shown thereon, nor any Fight t0 reproduce
+this drawing, or any part thereof, Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the compors-
+tion's’ written license, no right is granted to
+reproduce this drawing or the subject matter
+thereof, unless by written agreement with or
+
+‘written permission from the corporation,
+
+A
+
+ATARI
+
+GAMES
+
+PCB Schematic Diagram
+
+© 1989 Atari Games Corporation
+04459611 B
+
+S.T.U.N. Runner™ Multisync Game
+
+SP-338 Page 7
+1st printing
+
+-5V
+RNG _4.7! SWITCHES A —_
+RNL 470 it
+1506 soc
+2 ns. era a Sep Ter TsO
+eo yscousr ——3f* Hides
+sa rit, oy JH-1 > CENTER Sta yie__ORLE,
+ula re nu wz > Re sla.) vie oma
+ft Swi. ‘6 bia z yiae O12 Jee ik R30 la zy
+ru ala & fe mu He5 aan wile & of onus
+i sila rf Dio Ji-6 Wamed yija ye,
+a Sa THe OL / wer R33 tk 15] ys ns
+am.) 23) R i fal] J4-8 ik Ra i es sj D8
+ts coal 1K L f
+= 7st 2 iceq Lce A i os
+=: “Lees |“ Leay ~~ Lees cee Cer
+Hed0 1 T? 7? TT Bae!
++su Joe1t I
+osu 1 1
+COIN DOOR | osu - reve
+RBS RYT S REG RGB
+470 wag 470 aK SWITCHES B
+RY3 RN: 470
+Je-4 EOIN WW 4708
+My | zn Z.
+2 >-SOTNe_ Rt
+J6 a via ye oe Tess) Wiad R35 160C
+= Zin Y
+46-3 SELESTEST hs sa, rhe os jet — 2
+gla = yz LS vie __ fe 7)
+z ye J5-2 Ra? in tla. ype nas 7
+sila & rien 15-3 °
+ila 2 IS-5 ix i Ag
+ee, ‘se T- R34 1k 1tjq @ yis__o8a/
+tary yoo 1K__ RYO 33a ype
+Raced JS-7 Rul 1K asia yf OBL
+5-8
+tk R42 wa 2 Dan,
+15-9 AM [ [ ag eg
+ed Lege 203 Led Lesa berg ker = ices
+i: . Leas] "Leas" Lc37 ic73 7S
+we ay cP] rt ey ey eet
+Sad I I
+= aS ¢
+18K2
+COIN-CNTRA
+——> 6-7
+mysos3
+COIN-CNTR2
+Jo-6
+Jo-4
+Jo-8
+NOT LORDED =
+NOTICE TO ALL PERSONS
+RECEIVING THIS DRAWING TM
+COXMENTIAL Reproduction fen with S.T.U.N. Runner™ Multisync Game
+fhe specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing PCB Schematic Diagram
+is only conditionally issued and neither ceceipt
+nor possession thereof confers or transfers any.
+right in, or license to use, the subject matter of
+the drawing or any design or technical informa- |
+tion shown thereon, nor any right to reproduce
+this drawing, or any pan thereof. Except for ) \
+manufactuce by vendors of Atal Games Corpo-
+ration, and for manufacture under the corpora- \,
+tion's written license, no right is granted 0
+roduce this drawing or the subject matt ' SP-338 Page 8
+secs mer tee t — ATART cise naccanescapoaton 5 358 tage 8
+‘waiten permission from the corporation, GAMES ouspett B
+
+J14-10 >> J14-21 > STRAINOB- +isy +S
+J24-4 >-— SELY JA4-23 > c112 ci
+J1-3-——— SELB -*SV Ja4-20 GNOA NOT LOADED |
+Ja4-25$—— sez 12y da4-24 a a
+314-1 >—— SELL J14-22 ca rs
+J14-15 > 414-25 > SLR. +
+414-198 $———_______} J28-26 suo 10-350
+Ja4-17 J1¥-6 > Tega Eegiz t Legos an
+wa418 qi = jess TOT : = «0
+S144 > = -22V - - Zia Y}8_—_O87_/
+1 Ja4-7 Wut-4 Pots C an RiS6 Re? 26 is, ula rite __ pe
+ot 100 _ Rit sueS anes 257 5.6K ReG 5.6K nike or}?! a, Yat nas
+eaig 100 Les 74, Lesa al dare 56k R158 Sek ROS ried pres ln ey
+- Z vp2__one,
+a cys RIS? 5.6K Rev Scck ried ot — & yy___nea,
+= Jia-7 AW AW 0 os — ae a
+error cent 0337 Peal 3.6K | oat tala > 7
+= 01 8 PLES pesca ii eal cna ci a Ay
+JLL-1L a
+NOT LOADED 1 _ ad
+ese PL -cee ra
+or” Ob CC1 Rig FS psy = ROAZA fo
+IseLc sii? +18v 20, SK
+STEERING sep asl Yoy ke roizcon WR ches Tess re
+ese WHEEL slena ase ratty T ov { 180 S800PF
+R175,
+oa We as 118-16 aura in Ct RT wn —— > Ji1-3 ics
+oa AW 315-18 (RESET alt too Lev creo +> s13- ers.
+lo af __R2* 100 uase22 cue IN¥00z
+a
+lo F ais 200 _ R22 J15-10 Rave SYR sat-1
+S ghz 823 100 15-15
+lo 4 JUS-11 + 7001 ¥ PLCS
+Dl 100 Red 18-6 15-131 7 ye
+£20 Lois
+pois Ai i“ sis-4 3 ha5-8 cus Geasus BS
+Pe roe WA J15-2 19
+ccm 100 iced ice iceq ics —— 15-7 a ri Srvines
+vee sl dest Les C56 }—} 15-5 - & ING? 338 T
+> t—S J15-3
+ri) PL eas f
+.001 8 PLCS = = tee rr eoce ene
+ee oma sca, IN SLR aie FSP f ried a -_ rote
+- |__. sca. = —w—————_
+case suo ° RSS dork SRéBoe So ml tla log pOLZCON
+. WN m™7 8 07]
+° 100 sine Soe 22 Sa. rie Ho oft poize
+1 Ra ihe! ost ta = alo 2 ob poa2a
+38-5 a Aes | tila & ys lo & ale p0c3
+J8-5 100 Fine 10 J sala ve slo > als
+= J8-7 RA 2.00 28lme oe 3S 7 45) s 7 " oct
+Ja-4 100 ie i fied a ra 47 i , 18} i ‘ oy ae
+J8> Jae waa ——109 iss ¥ a Pe ae ne
+EE
++5y 8-6 400 a ZWR3 t
+100 =
+dcye ice | Lee Len Les NDA
+J8-4 8-4 . . 2c} . act . C13 +
+8-2 8-10 L- -L: T° =
+J8-22 a5
+ae Ja4 =
+ane sa-10 J8 = POTS A
+39-3 Jd-1t
+= JV = POTS B NOTICE TO ALL PERSONS
+
+RECEIVING
+
+CONFIDENTIAL: Reproduction forbidden with-
+out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+is only conditionally issued and neither receipt
+nor possession thereof confers or transfers any
+right in, of license t0 use, the subject matter of
+the drawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the corpora-
+tion's’ written license, no right is granted to
+reproduce this drawing or the subject matter
+thereof, unless by written agreement with or
+‘written permission from the corporation.
+
+S.T.U.N. Runner™ Multisync Game
+
+PCB Schematic Diagram
+
+ATARI
+
+GAMES
+
+‘SP-338 Page 9
+
+© 1989 Atari Games Corporation Ist printing
+
+4499611 B
+
+34010-50
+GSP
+
+vo0-v015
+
+34012-50
+PSP
+
+‘Address _MAQ-MA7.
+Butters
+
+RAM Array (16)
+
+/HSYNCX
+
+AYSTYNCX
+
+Ri77
+4
+
+100
+R178
+AW
+
+100
+
+at
+
+310-11
+
+Ji0-10
+
+$00-S015 SPIXO-SPIXT, REDO—RED7
+ixel olor GRNO—GRN7
+Scanner RAM
+BLO—BL7
++30
+Wiss
+eR
+7vora
+lato ls
+PRL SSent say 1504
+Tene RCo 5 > /Loro
+: leur Fos
+su Fi6t
+lex cw os oc 5)
+ca¥e Ercrerpests
++—_}
+aA Lt 98
+xOSce RA
+4f gomHz le 160H
+tzlo ® als conv
+F
+[ she val
+= OR
+us74 [23 0872
+0g
+PRL
+
+Correct Jumper Settings for
+
+S.T.U.N. RUNNER
+
+Jumper Setting
+Speed AB
+BCLK QB
+VCLK QB/2
+
+BCL
+
+VCLK
+
+As623
+8
+
+RREIRRLSs
+
+p
+HL
+Eb
+Pee
+ia
+
+is
+ay
+
+BSB 8
+
+Ase23
+
+7BLANKY
+
+at
+
+ipppeRgageee?
+
+78
+
+sa}22 BRY
+Tears BRY
+
+osu
+
+Rid
+g 100 a7
+2N3404
+
+ZESYNC ——————> J10-4
+
+CONFIDENTIAL: Reproduction forbidden with-
+out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+is only conditionally issued and neither receipt
+‘nor possession thereof confers or transfers any
+right in, oF license 10 use, the subject matter of
+the drawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the corpora
+tion's’ written license, no right is granted to
+reproduce this drawing or the subject matter
+thereof, untess by written agreement with or
+swniten permission from the corporation.
+
+S.T.U.N. Runner™ Multisync Game
+
+A
+
+ATARI
+
+GAMES
+
+PCB Schematic Diagram
+
+© 1989 Atari Games Corporation
+ong90-11 8
+
+SP-338 Page 10
+Ist printing
+
+su
+
+RL79 BRIO 4 R182
+
+10K 10K 3 10K ap 8p
+Jaaa reas Piste
+255H , 105K
+\§ 2 .
+J13-2 Drew Pa a
+ASSH .185H
+spe BSE
+413-3) I [ reis Viste
+aK Rise
+1 iter ler 7 ber sit ma? othe
+0 <=
+413-4 >> PRI - +s
+3-$)>——+ Bel > ae
+as Fica4 tsis srl? als Ries
+113-6) 24 apt bu le *
+=; sat
+413-7 > Leaes Bais Tsi¥
+c7 PRO
+rT: spt us7e 33
+113-8) HCL4
+413-4) ss
+413-11 >}
+7LKIN-———————
+ZCLKUP 3358.
+PRY Ses 7
+PROPS cen op
+195H 70PTO——“c28 @ S22
+ZOPTORES GU a an Be /orroRo
+is 5 ha Jo 3 2
+RANG. sac rz ZCENRES
+Oe eee peis——2isers 12% — voptores
+aol, 408T Cie 2. rey Asa roles.
+a, tsis3 Sle cy
+on}2—— co.
+FER STI 85R.
+c7.—2 a] O15
+ce. “to als. O14
+cs. Yo, ot —013
+|S fo |e cy. —4o = ot oz
+a
+A auc | cr. c3. 40 aeons
+i SS a Co. cz.—tHo = ali _ oro
+rr t cs. cr. —40 ak lg
+PRA Oo. co. —140,, ,,@{—s
+3 Taz.
+
+*1zv
+Riss 10
+82
+LiFe gaeetBS a iFthey
+“ il 378
+Rist
+a
++ aK 001
+Ri92
+WA
+185U. 270K
+at. fo newos +100
+oo, —$o 8 newao aZy
+ke R187
+Newor——fo i bese 330/4/2W
+nenog ak B ale o  $08.1N Bine
+ON: jo aa /CLKON . Leyer SC8.OUT
+yup —t4f0 ~ oft erxup .
+PR io als = R193
+1819 9 aK
+sc.si
+78HZ aK =
+
+BREE
+
+Sa/2oust
+
+|
+
+THIS SHEET NOT LOADED
+
+FSC Uame
+
+itay aol
+
+aaa asi
+
+ieee
+
+tn e3f
+
+A} age iE
+LESicee aij2—— /0N
+© eoli— up
+
+NOTICE TO ALL PERSONS
+
+CONFIDENTIAL: Reproduction forbidden with-
+out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+is only conditionally issued and neither receipt
+‘nor possession thereof confers or transfers any
+fightin, of license to use, the subject matter of
+the drawing or any design of technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the
+
+tion's written license, no right is granted to
+reproduce this drawing ot the subject matter
+thereof, unless by written agreement with or
+‘writen permission from the corporation
+
+S.T.U.N. Runner™ Multisync Game
+
+PCB Schematic Diagram
+ATARI cet
+‘SP-338 Sheet 11
+GAMES (© 1989 Arar Games Corporation Ist printing
+
+ACOC-11 >-- KET
+
++14
+acoc-19>22¥8GL0 +14V5, pcpc-4
+cis
+300/250 R2
+aK
+cre
+ro? Renvsosa
+ACC 12, £2 acoc-7
+ow Y,
+l ce. Ler, ne ‘AGNO
+‘3300/25 Re anrsan [+4
+3 6.80
+ators 4
+V5053 osu
+‘180 1/2W
+ag > 1QURC =14V5 acoc-2 f sy 3F/
+“ ? PR. as
+a “ cee (S86
+cas ob
+t 38 +——t n14y R6S
+4 150K 0S 06
+10
+elk ‘GND Ecer 23904
+eeS 4 30/0 ayPF net ar
+Pri ome 70
+4 a
+ss a x2. Lsi4
+He [3.57 cso
+}—-6.80 Rea * ry
+150K 100rF 100UH
+R63
+220
+ory
+Lge a scons
+1 Tose 9.
+Tt CRI ces
+INa001 ct
+cOIN-20
+a7 3 dees Cd
+cere nsaoe C$
+aK . REZ
+r aa 0
+Sat. r =
+= ‘$13. 1 a 78R0 4 COIN-7
+- Sa 5 tees &
+rr LL i
+eng ols — “nest - 9 cornea
+Ir 179}
+SR// ro 7ROM “Co
+corr. Ave.
+4
+— COIN-1L
+Acoc-s>—
+su
+acoc-6>—
+a
+acoc-8> cas Teas dics LcialcsaLcashcae Lees
+isie a a Pa Papapapa Pa
+a2, 3F/H
+sap!
+PR—e 1 s86
+
+SPER» spKR-1
+RE
+10K
+RP
+aK
+thee
+22/35v
+are asousra ora At s74 POND. soxp-g
+Htlosat— los 1193K
+3 SF fH 3F/H
+cfs
+ew Ll ale Lob ale Veo
+(S86; rsa ca ¢ os
+PR. PR—a
+sr_As sre
+oa H+ al 10K
+oat ¢
+ma #jis393 7 71RQ
+Hae le
++s ale
+ey alt
+mad SG ie a2
+t4—1790K [ar |is393 j2N3904
+jisa93 5
+RS
+1K 1]
+COIN _
+cOIN- t q
+AK RSL ‘SFULL- q
+cotn-2>22!83 L = i HY
+corn-3>Olé a 1 Rey
+COINL ak RSS aay
+COIN-S. A ad |
+| cot BUS 4
+cnog| 1 ces oon
+cn 2 a
+COIN-67 >
+NOTICE TO ALL PERSONS
+RECEIVING THIS DRAWING TM
+CONFIDENTIAL: Reproduction forbidden with- S.T.U.N. Runner™ SA Audio I
+‘out the specific written permission of Atari 7.
+Games Corporation, Mipits, Ca. This drawing PCB Schematic Diagram
+is only conditionally issued and neither receipt
+nor possession thereof confers or transfers any
+right in, or license to use, the subject matter of
+the drawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo
+ration, and for manufacture under the corpora- ,
+tion's written license, no right is granted to 5P-338 Page 12
+ae cee! ATARI 358 Page
+thereof unless by witen agreement wih ot © 1969 Atari Games Corporation Jot printing
+‘written permission from the corporation. GAMES
+
+osu
+csr ass ey
+. « SELF-TEST»
+rt ed ScOM=11
+R46 «i = Latte su a7
+10K oo ~ brea sroneae af eta SELF-TEST.
+4+ Ed sm Lose s07- lor 20K ——____SELE-TEST scom-1
+Me RE, eer scov-9>2 re oe
+SHES S obte cme oel— 28! EEE mph vownes pe FOU scone
+PR: 38459 mae Sats ss osf= sos scom-2 $03 2 03 rap S— set 1K
+tae Maree Ss Stee = BESS emptor cet,
+miot tt SALO S4ne oe}-t2-so2 SCOM-S>-- KEY so joe 7 Raz, : DATA,
+aft sas at oro pada scoM-3
+eof Sag re oof 00 SEIN Ras Aid aecrea Te 375 sz
+oh ee scot re riser
+sa Sas foo ee fae eop——iedag | 00"
+es CLK ut
+estas SAS 790m scon-7 = Ree
+a Less 10K
+a mL gat att tore Toor
+/SNORES- RES orbs sor patel oz =
+6502A o6/35- S06 SA12—Fjmiz 35 seve
+ost sai1-tan 35 4a Nu eee sare
+ost S04 Sato fase a9 zo 2] ott SING30/¢ |
+cee Soe sls 20K 1k ts tet ih 31 rote ue
+Lene os Sor Sa7—2lnr ort 16 An
+oo ot sAs—H}xe et car ‘00.
+SA4—Siaa al ‘YaMAul———|—4
+aa Saa—tlns oy bs Grea 2 ‘AGNO
+sree ae HE /OKIRES. ror
+= lain fg
+= Eo fe /vennes 13a
+E 47K
+oi —Ler Jerenee op
+ae
+x the 75RO. R23
+a *vOP 7.5K :
+Lc20 ci? v SPO. Seo 2
+Foo. F.0n68 a | dy, i enyTs
+SINGS | aa Ree *
+S ie ? L088 2K 15)
+5 . K
+aie | Ris wl, Dige A
+6.8K 6.0K 8 cz9
+b—-o.00
+0068 a
+a7 jt» 32
+3300°F| 3300°F ia
+cro dcez &,
+wre +15 ‘AGND ‘yAMAUD
+7|
+6]
+msne299s FS} — vas “su
+apse yang Vesna “su
+mat vet cae Pe
+bived I 1c/0 10/E AF/H
+au [—vati f
+ea aes Fee ft he
+¥ aie =
+77
+wes vae ize. Vata tates Sb6ape map nes rau conf je 40668
+x ie Fra
+= ino vara—stared Soa loe Sy ate wee me
+Fy a bed a9 elm S034 fos SHeme Sts
+fer i vas ar] ye Save tis einen
+i me ror 42-vor o Lit-vor  Yar—Her or At vor so 4etor amo acl 3) De
+qo aa] jae 06 $8- v6 | He-vog  vn6—Hiae ost vg 0042400 por oH vy, Th084
+es a as sth vos 33 HE vos vas—les ost vos 3579 jon 2 oo} sore es
+Txt vss 4 abs vO4 o is YRS YAR yee Oats 08 shoe 2 ‘eona 3 C36
+ae faa aap 93 mes) rc = 5 $— 6. ~
+—F 43 v03 Hy-vo3  vas— Le 03 ZNRORES- Sart 6.80 7.5K
+= iF %y a a Z zie ISS anes aes ¥ “To
+ae pe sya tomar
+je co} YOO on Hi-voo = vad4ao oot E00 ype yt
+ee oe ceo vss vss| 4
+193K = vr 20 0 zz feo Jee. faa Jee a faa L,
+43) 312 GND
+isi4
+7F
+1039
+Lsi4
+NOTICE TO ALL PERSONS
+RECEIVING THIS DRAWING _TM
+CONFDENTIAL, Reproduction forbidden with. S.T.U.N. Runner™ SA Audio II
+out the specific written permission of Atari i
+Games Corporation, Milpitas, CA. This drawing PCB Schematic Diagram
+is only conditionally issued and neither receipt
+nor possession thereof confers or transfers any.
+right in, or license to use, the subject matter of
+the drawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the corpora- °
+tion's writen license, no right is. granted (0 ATARI sp-338
+feproduce this drawing or the subject matter i -338 Page
+thereof, unless by written agreement with or GAMES © 1989 Atari Games Corporation Ist printing
+written permission from the corporation, 1750-01 B
+
+FL
+T2A
+250V
+
+py
+
+man A 2S0v
+« (8N) or Gt 3K 1 8N M9 po
+= a ‘< ha = 2 a rune eu
+= CLS 3 -
+VIS VAC ON/OFF ru
+WNPUT ST al ‘NEUTRAL
+) aK UNE
++5 10 AP
+SMTCHING
+TO —- +SENSE ‘SUPPLY
+P35 Sev
+Te een
+TO GN
+potttt 7 bs
+BN, t—O - ~SENSE
+120 vac 1
+100 wc ¥ I |
+com i: Buf t + wi (COM)
+2a aso! | 1
+vy ol i 8 (120),
+rawe mS ase
+we! I
+0c \
+12 vA lo 2 i
+F2
+or !
+17 we \
+7
+Pe a r
+i
+H
+H
+Switching/Linear Power Supply '
+t
+{
+i
+R4 t
+0.47 sw GND {1 | 8K_1
+IA ~ aw RIGHT COIN sw |2LO8 1
+LEFT COIN sw |3 yt
+H
+= : i
+400v eno |7L-eu_!
+SV AC |g | SN
+CHASSIS GND |9 LGN 4
+'
+oo H
+2 _300F1 i
+H {
+1 At i
+! 150 {
+1 3Ww H
+H i
+! L
+H 1N752A
+1 zor + ee .
+{ ne Coin Door Wiring Diagram
+|
+{
+{
+H
+t soo
+{
+{
+{
+{
+{
+{
+H NOTICE TO ALL PERSONS:
+
+Hitron 5V 10A Switching Power Supply
+
+ATARI PART NO: 149003-003 (120V)
+149003-103 (240V)
+
+RECEIVING THIS DRAWING
+CONFIDENTIAL: Reproduction forbidden with-
+‘out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+is only conditionally issued and neither receipt
+nor possession thereof confers or transfers any
+fight in, or license to use, the subject matter of
+the drawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+ration, and for manufacture under the corpora
+tion's written license, no right is granted to
+reproduce this drawing or the subject matter
+thereof, unless by written agreement with or
+‘written permission from the corporation,
+
+Switching/Linear Power Supply, Hitron 5V,
+10A Switching Power Supply, and Coin Door
+
+A.
+
+ATARI
+
+GAMES
+
+Wiring Diagrams
+
+SP-338 Page 14
+
+© 1989 Atari Games Corporation 1st printi
+
+8045550-01 A, 149003-003, & 171027-001
+
+Main Board Memory Map
+
+ROMEN: Program ROM {Read Only}
+
+00 0000 - 01 FFF ROMO 128K Bytes
+02 0000 - 03 FFFF ROM 1 128K Bytes
+(04 0000 - 05 FFFF ROM 2 128K Bytes
+06 0000 - 07 FFFF ROM 3 128K Bytes
+08 0000 - 09 FFFF ROM 4 128K Bytes
+0A 0000 - 08 FFFF ROM 5 128K Bytes
+OC 0000 - 00 FFFF ROM 6 128K Bytes
+OE 0000 - OF FFFF ROM7 128K Bytes
+OPTO: Optical Steering Wheel Reader
+40 0000 {R} OPTORD _—_ Read the Optical Counter
+40 4000 wr OPTORES Reset the Optical Counter
+40 8000 iw) CENRES —_Reset the Optical Center Flag
+NBUS
+60 0000 {RW} = SCOM ‘Serial Sound Communications
+60 4000 {R} SCRES Reset SCOM IC (Address Strobe) READ ONLY
+60 4000 Ww) Latches on Address Strobe (Data is ignored)
+60 4000 LED 1 off
+60 4002 LED 2 off
+60 4004 LC1ON ‘Aux Control 1 High (Latched)
+60 4006 LC20N ‘Aux Control 2 High (Latched)
+60 4008 ZPIWEN ZeroPower RAM Enable 1 (Latched)
+60 400A, ZP2WOIS ZeroPower FAM Disable 2 (Latched)
+60 4006 GSP Reset Low
+60 400 MSP Reset Low
+60 4010 LED 1 on
+60 4012 LED 2 on
+60 4014 LC1OFF ‘Aux Control 1 High (Latched)
+60 4016 LC20FF ‘Aux Control 2 High (Latched)
+60 4018, ZP1WDIS ZeroPower RAM Disable 1 (Latched)
+60 401A, ZP2WEN ZeroPower RAM Enable 2 (Latched)
+60 4016 GSP Reset High
+60 401E MSP Reset High
+60 8000 ™ WOCLR Clear Watch Dog (Address Strobe)
+60 C000 {A} swi
+018 Option Switch 7 (0 = on)
+14 Option Switch 6 ("= on)
+013 Option Switch 5 ("= on)
+12 Option Switch 4 (0 = on)
+on Option Switch 3 (0 = on)
+Oto Option Switch 2 (0 = on)
+D9 ‘Option Switch 1 (0' = on)
+De Option Switch 0 (0 = on)
+07 Coin Switch 1 (0" = on)
+De Coin Switch 2 {0° = on)
+05 Seif-Test Switch (0 = on)
+
+60 C000
+
+AQ 0000
+AO 0000
+
+‘Ao 0000
+‘AQ 0002
+AO 0004
+‘AO 0006
+
+AO 0008
+AQ 000A
+AO 000C
+AQ 000E
+
+‘0.0010
+‘0.0012
+A0 0014
+‘A0 0016
+
+A0 0018
+AQ 001A
+A0 001C
+AO 001E
+
+A8 0000
+A8 0000
+
+Bo 0000
+Bo 0000
+
+88 0000
+88 0000
+
+08 - AD12BS.
+07 - AD12CON
+D6 - AD12B
+DS -AD12A
+
+03 - ALE, SC
+D2 - ADDC
+01 -ADDB
+00 - ADDA
+
+FF 0000
+FF 4000
+FF 8000
+FF C000
+
+Main Board Memory Map, Contd.
+
+8 Bit ADC, End of Conversion = ‘t"
+12 Bit A/D, End of Conversion = ‘1°
+Vertical Sync from GSP
+
+Horizontal Syne from GSP
+Diagnostic Switch (‘0° = on)
+
+™ Clear Timer IRQ (Address Strobe)
+
+LSBUS
+
+{R)
+WRO, Write to Shifter interface and Coin Counters.
+Latches on Address Strobe (Data is ignored)
+
+SEL 1 Low
+SEL 2 Low
+SEL 3 Low
+
+SEL 4 Low
+
+Coin Cointer 1 off
+Coin Counter 2 off
+
+SEL 1 High
+SEL 2 High
+SEL 3 High
+
+SEL 4 High
+
+Coin Counter 1 on
+Coin Cointer 2 on
+
+(R) 1SW2, Sixteen External Switch Inputs
+w ‘WRI, Shifter Interface Latch, D8 - D15
+
+(A) /RD2, Read 8 Bit A/D
+mM ‘AWR2, Steering Wheel Latch, D8- D15
+
+{R) IRD3, Read 12 Bit AD
+‘ANR3, A/D Control
+
+12 Bit A/D Byte Select
+12 Bit A/D Write
+
+12 Bit AD Address 1
+12 Bit A/D Address 0
+
+8 Bit A/D Write
+8 Bit A/D Address C
+8 Bit A/D Address B
+8 Bit A/D Address A
+
+RAMEN: Ram and DUART {R/W}
+
+QUART
+- FF 4FFE ZRAM (4K Bytes)
+
+- FE BFEF RAM 0 (16K Bytes)
+- FF FFFF RAM 1 (16K Bytes)
+
+NOTICE TO ALL PERSONS
+RECEIVING THIS DRAWING
+CONFIDENTIAL: Reproduction forbidden with-
+out the specific written permission of Atari
+Games Corporation, Milpitas, CA. This drawing
+is only conditionally issued and neither receipt
+‘nor possession thereof confers or transfers any
+right in, of license to use, the subject matter of
+
+the deawing or any design or technical informa-
+tion shown thereon, nor any right to reproduce
+this drawing, or any part thereof. Except for
+manufacture by vendors of Atari Games Corpo-
+
+ration, and for manufacture under the corpora
+
+tion’s written license, no right is granted to. "a
+thereof, unless by writen agreement with or
+‘written permission from the corporation. GAMES
+
+S.T.U.N. Runner™ Memory Map
+
+SP-338 Page 15,
+
+© 1989 Atari Games Corporation ‘st printing
+
