@@ -11,7 +11,7 @@ import sys
 import subprocess
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from mame_harness.process import find_lua_errors, run_mame
+from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
 
 
 FIRST = re.compile(
@@ -123,8 +123,9 @@ def main() -> int:
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    if completed.returncode or lua_errors:
-        raise SystemExit(f"MAME or its Lua script failed; see {log}")
+    if completed.returncode:
+        raise SystemExit(f"MAME failed; see {log}")
+    check_lua_errors(text, log)
     # `execution_landmarks` is the only evidence here that the GSP itself ran.
     if observer_missing(result["gsp_execute_tap_status"], execution_first):
         raise SystemExit(

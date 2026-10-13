@@ -62,7 +62,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from mame_harness.process import run_mame
+from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
 
 SCHEMA = "stunrun-gsp-program-upload-result/v1"
 
@@ -92,14 +92,6 @@ DONE = re.compile(
 )
 TRUNCATED = re.compile(
     r"M1_GSP_UPLOAD_TRUNCATED release_seq=(\d+) stored=(\d+)")
-LUA_ERROR = re.compile(r"^.*\[LUA ERROR\].*$", re.MULTILINE)
-
-
-def find_lua_errors(text):
-    """Return MAME Lua errors that invalidate otherwise plausible captures."""
-    return LUA_ERROR.findall(text)
-
-
 def parse_log(text):
     return {
         "release": None if not RELEASE.search(text) else {
@@ -260,8 +252,9 @@ def main() -> int:
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n",
                                              encoding="utf-8")
 
-    if completed.returncode or lua_errors or parsed["done"] is None:
+    if completed.returncode or parsed["done"] is None:
         raise SystemExit(f"GSP program-upload capture failed; see {log}")
+    check_lua_errors(text, log)
     # Zero host-port events across a whole run is this tool's own failure mode,
     # not a finding about the board: reading the GSP share silently kills these
     # taps. Refuse to publish a "the 68010 never wrote to the host port" result.

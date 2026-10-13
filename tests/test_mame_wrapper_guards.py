@@ -74,7 +74,7 @@ class GspBoundaryScriptTests(unittest.TestCase):
     def test_wrapper_refuses_a_dead_observer(self):
         wrapper = self.WRAPPER.read_text(encoding="utf-8")
         self.assertIn("find_lua_errors", wrapper)
-        self.assertIn("if completed.returncode or lua_errors:", wrapper)
+        self.assertIn("check_lua_errors", wrapper)
         self.assertIn("M1_GSP_EXECUTE_TAP_STATUS", wrapper)
 
     def test_observer_missing_is_decided_by_behaviour_not_by_text(self):

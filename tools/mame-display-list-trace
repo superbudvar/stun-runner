@@ -12,7 +12,7 @@ import sys
 import subprocess
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from mame_harness.process import run_mame
+from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
 
 
 CALL = re.compile(
@@ -25,7 +25,6 @@ FIFO = re.compile(
     r"addr=([0-9A-Fa-f]+) data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+)"
     r"(?: destination=([0-9A-Fa-f]+))?"
 )
-LUA_ERROR = re.compile(r"^.*\[LUA ERROR\].*$", re.MULTILINE)
 HOST = re.compile(r"M1_GSP_DL_HOST id=(\d+) hi=([0-9A-Fa-f]+) "
                   r"lo=([0-9A-Fa-f]+) control=([0-9A-Fa-f]+)")
 DONE = re.compile(
@@ -231,11 +230,6 @@ def parse_log(text: str) -> dict:
             "consumer_capture_status": consumer_status}
 
 
-def find_lua_errors(text: str) -> list[str]:
-    """Return MAME Lua errors that invalidate otherwise plausible captures."""
-    return LUA_ERROR.findall(text)
-
-
 def export_small_upload(calls: list, output: pathlib.Path) -> dict:
     """Export oracle words, not an invented decoder or pixel interpretation."""
     eligible = [c for c in calls if c["fifo_count_matches_decode"]
@@ -348,8 +342,9 @@ def main() -> int:
         result["fifo_truncated"] = done[4] == "true"
     (args.output / "result.json").write_text(
         json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    if completed.returncode or not parsed["done"] or lua_errors:
+    if completed.returncode or not parsed["done"]:
         raise SystemExit(f"display-list trace failed; see {log}")
+    check_lua_errors(text, log)
     summary = {key: value for key, value in result.items() if key != "calls"}
     print(json.dumps(summary, separators=(",", ":")))
     return 0

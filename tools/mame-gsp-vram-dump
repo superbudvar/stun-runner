@@ -52,8 +52,8 @@ import re
 import subprocess
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "mame_harness"))
-from process import run_mame
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
 
 
 DUMP = re.compile(
@@ -135,6 +135,7 @@ def main() -> int:
         "frames": args.frames, "target": args.target, "words": args.words,
         "input": args.input, "nothrottle": args.nothrottle,
         "returncode": completed.returncode,
+        "lua_errors": find_lua_errors(text),
         "capture": None,
         "dump": str(dump_path),
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
@@ -151,6 +152,7 @@ def main() -> int:
         json.dumps(result, indent=2) + "\n", encoding="utf-8")
     if completed.returncode or match is None:
         raise SystemExit(f"GSP VRAM dump failed; see {log}")
+    check_lua_errors(text, log)
     capture = result["capture"]
     if capture["frame"] != args.target:
         raise SystemExit(

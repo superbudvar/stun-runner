@@ -12,8 +12,8 @@ import subprocess
 import tempfile
 
 import sys
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "mame_harness"))
-from process import run_mame
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
 
 
 SNAPSHOT = re.compile(
@@ -142,15 +142,19 @@ def main() -> int:
         if snapshot["frame"] in screens:
             snapshot["screen"] = screens[snapshot["frame"]]
     canonical = re.sub(r"output=[^\n]+", "output=<output>", text)
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-gsp-state-snapshot-result/v1",
         "frames": args.frames, "targets": args.targets, "input": args.input,
         "load_state": str(args.load_state) if args.load_state else None,
         "nothrottle": args.nothrottle,
         "returncode": completed.returncode, "snapshots": snapshots,
+        "lua_errors": lua_errors,
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # Written before the check so the diagnosis has an artifact to point at.
+    check_lua_errors(text, log)
     if completed.returncode or len(snapshots) != len(args.targets.split(',')):
         raise SystemExit(f"GSP state snapshot failed; see {log}")
     if args.screen and not args.screen.is_file():

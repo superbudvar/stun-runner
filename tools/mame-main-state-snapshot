@@ -9,7 +9,11 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 SNAPSHOT = re.compile(
@@ -84,17 +88,20 @@ def main() -> int:
         for match in SNAPSHOT.finditer(text)
     ]
     canonical = re.sub(r"output=[^\n]+", "output=<output>", text)
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-main-state-snapshot-result/v1",
         "frames": args.frames, "targets": args.targets, "input": args.input,
         "load_state": str(args.load_state) if args.load_state else None,
         "nothrottle": args.nothrottle,
-        "returncode": completed.returncode, "snapshots": snapshots,
+        "returncode": completed.returncode, "lua_errors": lua_errors,
+        "snapshots": snapshots,
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     if completed.returncode or len(snapshots) != len(args.targets.split(',')):
         raise SystemExit(f"main state snapshot failed; see {log}")
+    check_lua_errors(text, log)
     print(json.dumps(result, separators=(",", ":")))
 
 

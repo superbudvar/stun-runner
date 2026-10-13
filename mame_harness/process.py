@@ -7,7 +7,9 @@ import re
 import signal
 import shutil
 import subprocess
+from os import PathLike
 from typing import IO, Mapping, Sequence
+
 
 # MAME reports a failed `-autoboot_script` as a line in its own output and then
 # carries on, exiting 0. A wrapper that only looks at the return code therefore
@@ -26,6 +28,23 @@ LUA_ERROR = re.compile(r"^.*\[LUA ERROR\].*$", re.MULTILINE)
 def find_lua_errors(text: str) -> list[str]:
     """Return the MAME Lua errors in captured output, in order."""
     return LUA_ERROR.findall(text)
+
+
+def check_lua_errors(text: str, log: PathLike) -> None:
+    """Raise SystemExit if the MAME log records a Lua error.
+
+    Every scripted experiment in this repository should end with this call (and
+    record `find_lua_errors(text)` in its result). MAME reports a failed
+    `-autoboot_script` as a line in its own output and then carries on, exiting
+    0, so a wrapper that only inspects the return code publishes a capture that
+    stopped collecting the moment the script threw -- and an absent observation
+    reads as a fact about the machine rather than about the observer.
+    """
+    errors = find_lua_errors(text)
+    if errors:
+        raise SystemExit(
+            f"MAME's Lua script failed; the capture is incomplete. See {log}\n  "
+            + "\n  ".join(errors[:5]))
 
 
 def run_mame(

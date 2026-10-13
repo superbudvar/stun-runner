@@ -10,7 +10,11 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 EVENT = re.compile(
@@ -128,6 +132,7 @@ def main() -> int:
             event.update({"a10": int(match.group(9), 16),
                           "a11": int(match.group(10), 16)})
     done = DONE.findall(text)
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-ram-read-trace-result/v1",
         "device": args.device, "space": args.space, "base": args.base, "end": args.end,
@@ -138,6 +143,7 @@ def main() -> int:
         "pc": args.pc,
         "registers": args.registers,
         "returncode": completed.returncode, "events": events, "event_count": len(events),
+        "lua_errors": lua_errors,
         "reader_pcs": sorted({event["pc"] for event in events}),
         "pc_counts": {f"0x{pc:X}": count for pc, count in
                        collections.Counter(event["pc"] for event in events).items()},
@@ -146,6 +152,9 @@ def main() -> int:
     if done:
         result["truncated"] = done[-1][2] == "true"
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # The result is written first so the failure names a log that exists on disk,
+    # and a dead observer can never exit 0 with a published capture.
+    check_lua_errors(text, log)
     if completed.returncode or not done:
         raise SystemExit(f"RAM read trace failed; see {log}")
     print(json.dumps({key: value for key, value in result.items() if key != "events"}, separators=(",", ":")))

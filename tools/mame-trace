@@ -78,6 +78,36 @@ SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-dummy}" \
     -autoboot_script "$repo_dir/mame/lua/trace.lua" \
     >"$output/mame.log" 2>&1
 
+# MAME reports a failed `-autoboot_script` as a line in its own output and then
+# carries on, exiting 0. A trace that stopped collecting therefore looks like a
+# CPU that never executed the requested window. The decision itself belongs to
+# every wrapper, so it lives in mame_harness/process.py; this shell wrapper has
+# no Python of its own and calls it once, recording the errors in result.json
+# before the check so the diagnosis has an artifact to point at.
+python3 - "$repo_dir" "$output/mame.log" "$output/result.json" "$trace" "$cpu" \
+    "$frames" "$input_mode" "$trace_start_frame" <<'PY'
+import json
+import pathlib
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from mame_harness.process import check_lua_errors, find_lua_errors
+
+log = pathlib.Path(sys.argv[2])
+text = log.read_text(encoding="utf-8", errors="replace")
+lua_errors = find_lua_errors(text)
+pathlib.Path(sys.argv[3]).write_text(json.dumps({
+    "schema": "stunrun-trace-result/v1",
+    "trace": sys.argv[4],
+    "cpu": sys.argv[5],
+    "frames": int(sys.argv[6]),
+    "input": sys.argv[7],
+    "trace_start_frame": int(sys.argv[8]),
+    "lua_errors": lua_errors,
+}, indent=2) + "\n", encoding="utf-8")
+check_lua_errors(text, log)
+PY
+
 [[ -e "$trace" ]] || { echo "trace was not produced: $trace" >&2; exit 1; }
 if [[ ! -s "$trace" ]]; then
     echo "trace is empty for the requested bounded window: $trace" >&2

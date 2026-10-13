@@ -8,6 +8,10 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 DONE = re.compile(r"M3_ADSP_LISTING frame=(\d+) output=(.+)")
@@ -45,14 +49,17 @@ def main() -> int:
     matches = DONE.findall(text)
     if completed.returncode or not matches or not listing.is_file() or not listing.stat().st_size:
         raise SystemExit(f"ADSP listing failed; see {log}")
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-adsp-init-listing-result/v1",
         "frame": int(matches[-1][0]),
         "listing": listing.name,
         "listing_sha256": hashlib.sha256(listing.read_bytes()).hexdigest(),
         "returncode": completed.returncode,
+        "lua_errors": lua_errors,
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    check_lua_errors(text, log)
     print(json.dumps(result, indent=2))
 
 

@@ -14,7 +14,7 @@ import tempfile
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from mame_harness.process import run_mame
+from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
 
 
 EVENT = re.compile(
@@ -157,6 +157,7 @@ def main() -> int:
         if match.group(11) is not None:
             event["order"] = int(match.group(11))
     done = DONE.findall(text)
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-ram-write-trace-result/v1",
         "device": args.device, "space": args.space,
@@ -169,6 +170,7 @@ def main() -> int:
         "playback": str(playback) if playback else None,
         "returncode": completed.returncode, "events": events,
         "event_count": len(events),
+        "lua_errors": lua_errors,
         "writer_pcs": sorted({event["pc"] for event in events}),
         "address_counts": {f"0x{address:X}": count for address, count in
                             collections.Counter(event["address"] for event in events).items()},
@@ -177,6 +179,10 @@ def main() -> int:
     if done:
         result["truncated"] = done[-1][2] == "true"
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # Written before the check so the diagnosis has an artifact to point at, and
+    # checked before the DONE/returncode branch so a dead observer can never
+    # exit 0 with a published capture.
+    check_lua_errors(text, log)
     if completed.returncode or not done:
         raise SystemExit(f"RAM write trace failed; see {log}")
     print(json.dumps(result, separators=(",", ":")))

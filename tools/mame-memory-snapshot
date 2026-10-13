@@ -9,7 +9,11 @@ import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 MARKER = re.compile(r"MAME_MEMORY_SNAPSHOT frame=(\d+) path=(.+) nonzero=(\d+)")
@@ -142,6 +146,7 @@ def main() -> int:
             raise SystemExit(f"snapshot marker mismatch: {path}")
         snapshots.append(payload)
     canonical = re.sub(r"path=.*? nonzero=", "path=<snapshot> nonzero=", text)
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-memory-snapshot-result/v1",
         "frames": args.frames,
@@ -158,6 +163,7 @@ def main() -> int:
         "load_state": str(args.load_state) if args.load_state else None,
         "nvram_directory": str(args.nvram_directory) if args.nvram_directory else None,
         "returncode": completed.returncode,
+        "lua_errors": lua_errors,
         "snapshots": [{"frame": item["frame"], "sha256": item["sha256"],
                        "nonzero": item["nonzero"]} for item in snapshots],
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
@@ -165,6 +171,7 @@ def main() -> int:
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     if completed.returncode or [item["frame"] for item in snapshots] != list(dict.fromkeys(expected)):
         raise SystemExit(f"memory snapshot failed; see {log}")
+    check_lua_errors(text, log)
     if args.save_state and not args.save_state.is_file():
         raise SystemExit(f"MAME did not produce save state: {args.save_state}")
     print(json.dumps(result, separators=(",", ":")))

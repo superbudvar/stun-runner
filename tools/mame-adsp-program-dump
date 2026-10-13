@@ -9,6 +9,10 @@ import pathlib
 import re
 import struct
 import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 WORD = re.compile(r"M3_ADSP_WORD address=([0-9A-Fa-f]+) value=([0-9A-Fa-f]+)")
@@ -69,6 +73,7 @@ def main() -> int:
     }
     (args.output / "image.json").write_text(json.dumps(image, indent=2) + "\n", encoding="utf-8")
     canonical = re.sub(r"output=[^\n]+", "output=<output>", text)
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-adsp-program-dump-result/v1",
         "frame": args.frame,
@@ -78,8 +83,10 @@ def main() -> int:
         "capture_pc": image["capture_pc"],
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         "returncode": completed.returncode,
+        "lua_errors": lua_errors,
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    check_lua_errors(text, log)
     print(json.dumps(result, indent=2))
 
 

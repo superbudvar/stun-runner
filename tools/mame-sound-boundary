@@ -8,6 +8,10 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 EVENT = re.compile(
@@ -54,11 +58,13 @@ def main() -> int:
         for match in EVENT.finditer(text)
     ]
     canonical = re.sub(r"M1_SOUND_BOUNDARY_DONE frames=\d+", "M1_SOUND_BOUNDARY_DONE frames=<frames>", text)
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-sound-boundary-result/v1",
         "frames": args.frames,
         "input": args.input,
         "returncode": completed.returncode,
+        "lua_errors": lua_errors,
         "events": len(events),
         "event_counts": {
             label: sum(event["label"] == label for event in events)
@@ -73,6 +79,10 @@ def main() -> int:
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # This tool has no DONE-marker check, so a script that threw before its
+    # taps were installed would otherwise exit 0 with `events: 0` -- an absent
+    # observation that reads as a fact about the sound board.
+    check_lua_errors(text, log)
     if completed.returncode:
         raise SystemExit(f"MAME failed; see {log}")
     print(json.dumps(result, separators=(",", ":")))

@@ -8,6 +8,10 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors
 
 
 HIT = re.compile(r"M1_LANDMARK_HIT pc=([0-9A-Fa-f]+)")
@@ -45,17 +49,22 @@ def main() -> int:
     text = log.read_text(encoding="utf-8")
     hits = [int(match.group(1), 16) for match in HIT.finditer(text)]
     canonical = re.sub(r"output=[^\n]+", "output=<output>", text)
+    lua_errors = find_lua_errors(text)
     result = {
         "schema": "stunrun-landmark-probe-result/v1",
         "pcs": [int(value, 0) for value in args.pcs.split(",")],
         "frames": args.frames,
         "input": args.input,
         "returncode": completed.returncode,
+        "lua_errors": lua_errors,
         "hits": hits,
         "hit_counts": {f"0x{pc:06X}": hits.count(pc) for pc in sorted(set(hits))},
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    # A probe that never installed its execute taps reports no hits, which reads
+    # as "this landmark never ran" rather than "we stopped watching".
+    check_lua_errors(text, log)
     if completed.returncode:
         raise SystemExit(f"MAME failed; see {log}")
     print(json.dumps(result, separators=(",", ":")))
