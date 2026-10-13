@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""
+Dump the STUN Runner character glyph font from the MC68010 ROM as a PNG.
+
+Glyph table base: MC68010 address 0x1FBC
+Each glyph: 16 bytes (one byte per row, 8 pixels per row, 1 bit per pixel)
+Formula: glyph(ch) = 0x1FBC + 16 * (ch - 0x2A)
+Character range in ROM: $2A..$155 (300 glyphs, 4800 bytes total)
+Character $2A = '*' (blank glyph), $2B = '+', etc.
+
+The ROM is byte-interleaved (even file / odd file), assembled by
+tools/build-maincpu-image.
+
+Usage:
+    tools/dump-glyph-font [--roms DIR] [--output PNG] [--chars CHARS]
+"""
+import argparse
+import pathlib
+import struct
+import sys
+
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit("PIL/Pillow is required: pip install pillow")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument(
+        "--roms",
+        type=pathlib.Path,
+        default=pathlib.Path(__file__).resolve().parents[1] / "roms/stunrun",
+        help="directory holding the ROM files",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=pathlib.Path,
+        default=pathlib.Path(__file__).resolve().parents[1]
+        / "roms/stunrun.manifest.json",
+    )
+    parser.add_argument(
+        "--output",
+        type=pathlib.Path,
+        default=None,
+        help="output PNG path (default: glyph-font.png)",
+    )
+    parser.add_argument(
+        "--chars",
+        default="A-Z",
+        help="characters to render (default: A-Z, also accepts: digits, full)",
+    )
+    parser.add_argument(
+        "--pixel-size",
+        type=int,
+        default=4,
+        help="pixels per glyph pixel (default: 4)",
+    )
+    args = parser.parse_args()
+
+    # Build the flat MC68010 ROM image
+    import json
+
+    manifest = json.loads(args.manifest.read_text())
+    cpu_region = "mainpcb:maincpu"
+    by_offset = {r["offset"]: r for r in manifest["roms"] if r["region"] == cpu_region}
+
+    # Collect all needed offsets (bank bases must be even)
+    rom_size = 0
+    for base in sorted(o for o in by_offset if o % 2 == 0):
+        rom_size = max(rom_size, base + 2 * 65536)
+
+    image = bytearray(rom_size)
+    banks = []
+    for base in sorted(o for o in by_offset if o % 2 == 0):
+        even_r, odd_r = by_offset[base], by_offset[base + 1]
+        even = (args.roms / even_r["filename"]).read_bytes()
+        odd = (args.roms / odd_r["filename"]).read_bytes()
+        for i in range(len(even)):
+            image[base + 2 * i] = even[i]
+            image[base + 2 * i + 1] = odd[i]
+        banks.append(base)
+
+    GLYPH_BASE = 0x1FBC
+    GLYPH_SIZE = 16  # bytes per glyph
+
+    # Read a glyph from the flat image
+    def read_glyph(ch: int) -> bytes:
+        addr = GLYPH_BASE + GLYPH_SIZE * (ch - 0x2A)
+        if not (0 <= addr < len(image) - 15):
+            return bytes(GLYPH_SIZE)
+        return bytes(image[addr : addr + GLYPH_SIZE])
+
+    # Parse character range
+    char_ranges = []
+    raw = args.chars.upper()
+    if raw == "FULL":
+        char_ranges = list(range(0x2A, 0x156))
+    elif raw == "A-Z":
+        char_ranges = list(range(0x41, 0x5B))
+    elif raw == "DIGITS":
+        char_ranges = list(range(0x30, 0x3A))
+    else:
+        char_ranges = [ord(c) for c in raw if c.isalnum()]
+
+    # Render
+    glyph_pixels = 8
+    ps = args.pixel_size
+    cols = 10
+    rows = (len(char_ranges) + cols - 1) // cols
+    img_w = cols * glyph_pixels * ps
+    img_h = rows * glyph_pixels * ps
+    img = Image.new("RGB", (img_w, img_h), (0, 0, 0))
+    white = (255, 255, 255)
+    gray = (128, 128, 128)
+
+    for idx, ch in enumerate(char_ranges):
+        glyph = read_glyph(ch)
+        col = idx % cols
+        row = idx // cols
+        x0 = col * glyph_pixels * ps
+        y0 = row * glyph_pixels * ps
+
+        for row_byte in range(8):
+            byte = glyph[row_byte]
+            for bit in range(8):
+                pixel_on = bool(byte & (0x80 >> bit))
+                color = white if pixel_on else (0, 0, 0)
+                for py in range(ps):
+                    for px in range(ps):
+                        img.putpixel((x0 + bit * ps + px, y0 + row_byte * ps + py), color)
+
+        # Draw character label in gray below the glyph
+        label = chr(ch) if 0x20 <= ch < 0x7F else f"${ch:02X}"
+        # (No text rendering needed; just show pixel bitmap)
+
+    out_path = args.output or pathlib.Path("glyph-font.png")
+    img.save(out_path)
+    print(f"Wrote {out_path}  ({img_w}x{img_h} pixels, {len(char_ranges)} glyphs)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

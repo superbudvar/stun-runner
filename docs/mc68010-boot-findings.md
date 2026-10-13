@@ -6039,98 +6039,100 @@ silently not applied and an observation that reads as a fact about the machine.
 `tests/test_mame_lua_hooks.py` now asserts no `mame/lua` script applies input
 through `emu.register_prestart`, with the reason recorded in the failure message.
 
-### 31.4 Why the writes are discarded: the host-port decode
+### 31.4 CORRECTED — the host-port decode is on WORD offsets, and every write lands
 
-Found by reading the pinned driver rather than the ROM. `multisync_68k_map`
-maps the window with no shift (`harddriv.cpp:611`):
+**The first version of this section was wrong and is retracted.** It claimed the
+driver discards everything at `$C00008` and `$C0000C`, that "every host-port
+constant in the project is off by one register", and therefore that `$548E`
+could not touch memory. All three are false. The error was reading
+`(offset / 2) ^ 1` as if `offset` were a byte offset.
 
-```text
-map(0xc00000, 0xc03fff).rw(FUNC(harddriv_state::hd68k_gsp_io_r),
-                           FUNC(harddriv_state::hd68k_gsp_io_w));
-```
-
-and `hd68k_gsp_io_w` (`harddriv_m.cpp:215-221`) does:
-
-```c
-stunrun_hostprobe(offset, data);
-offset = (offset / 2) ^ 1;
-m_hd34010_host_access = true;
-m_gsp->host_w(offset, data);
-m_hd34010_host_access = false;
-```
-
-`tms34010.cpp:1875` switches on that value against **four** cases:
+It is a **word** offset. `hd68k_gsp_io_w` divides by 2 precisely because the
+device registers are words, so the window is eight words wide and the decode is:
 
 ```text
-#define TMS34010_HOST_ADDRESS_L     0
-#define TMS34010_HOST_ADDRESS_H     1
-#define TMS34010_HOST_DATA          2
-#define TMS34010_HOST_CONTROL       3
+reg = ((cpu_addr - 0xC00000) / 2 / 2) ^ 1        integer division throughout
 ```
 
-Any `offset` that is not 0-3 falls through the switch and is **discarded with no
-side effect**. So the window only has four live words:
+which gives, measured against MAME's own `stunrun_hostprobe`:
 
-| 68010 address | word offset | `(off/2)^1` | register |
-| --- | --- | --- | --- |
-| `$C00000` | 0 | 1 | HSTADRH |
-| `$C00002` | 1 | 0 | HSTADRL |
-| `$C00004` | 2 | 3 | HSTCTL |
-| `$C00006` | 3 | 2 | HSTDAT |
-| `$C00008` and up | >=4 | 5+ | **discarded** |
+| 68010 address | word offset | reg | register | probe count |
+| --- | --- | --- | --- | --- |
+| `$C00000`/`$C00002` | 0/1 | 1 | HSTADRH | 39 |
+| `$C00004`/`$C00006` | 2/3 | 0 | HSTADRL | 39 |
+| `$C00008`/`$C0000A` | 4/5 | 3 | HSTCTL | 6 |
+| `$C0000C`/`$C0000E` | 6/7 | 2 | HSTDAT | 780,315 |
 
-**Every host-port constant in the project is wrong by one register.** The table
-in `native/mc68010_text_writer.h` and the constants beside it claim
+An independent `install_write_tap` on the maincpu program space over
+`$C00000-$C0001F`, run in the same session, counts the same writes at the
+absolute addresses `$C00002`(39), `$C00004`(39), `$C00008`(6), `$C0000C`(388,723),
+`$C0000E`(132,696) — and **nothing at `$C00000` or `$C00006`**. Mapping each
+through the word-offset rule reproduces the driver's four counts exactly. That
+is the whole argument; there is no residual.
+
+**So the decode table in `native/mc68010_text_writer.h` was right all along:**
 
 ```text
-$C00002 HSTADRH   $C00008 HSTCTL
-$C00004 HSTADRL   $C0000C HSTDAT
+$C00000-$C00003  HSTADRH      $C00008-$C0000B  HSTCTL
+$C00004-$C00007  HSTADRL      $C0000C-$C0000F  HSTDAT
 ```
 
-but under this decode `$C00008` and `$C0000C` are word offsets 4 and 6, both
-discarded. `STUNRUN_TEXT_HSTCTL` (0x00C00008) and `STUNRUN_TEXT_HSTDAT`
-(0x00C0000C) point at nothing. `STUNRUN_TEXT_HSTADR_HI` (0x00C00002) is
-actually HSTADRL and `STUNRUN_TEXT_HSTADR_LO` (0x00C00004) is actually HSTCTL.
+and `STUNRUN_TEXT_HSTCTL` / `STUNRUN_TEXT_HSTDAT` are correct as written. Do not
+change them. Nothing in this repository needs a constant fix.
 
-This retires section 31.2's puzzle and explains section 30.4 at the same time.
-The `$548E` fill's `ori.w #$1800,$c00008.l` never sets INCW, and every one of its
-230,400 `move.w D0,$c0000c.l` writes is dropped — which is exactly why patching
-the fill value to `$1a1a` produced a byte-identical frame-600 image. And
-`$25E8` writes its glyph data to `$C0000C`, so **the text routine has never put
-a byte in VRAM under this driver either.**
+### 31.5 What this does to section 31.2 — the no-op claim is withdrawn
 
-That last point was in the committed oracle the whole time and was read as a
-PC-filter artefact: `service-f2-text-host-writes` `address_counts` is
-`{'0xC00002': 520, '0xC00004': 520}` — address latches only, **not one HSTDAT
-write**. Those 1040 taps are the latches; there are no data writes to find.
+With the decode corrected, `$548E` does exactly what it reads as:
 
-MAME's own probe agrees about what does get through:
+* `ori.w #$1800,$c00008.l` sets HSTCTL bit 11 (INCW), so HSTADR post-increments
+  by one 16-byte cell per HSTDAT write — the walk works;
+* `move.l #$ff800000,$c00002.l` sets HSTADRH=`$FF80`, HSTADRL=`$0000`, i.e. the
+  base of the share;
+* 230,400 `move.w D0,$c0000c.l` writes land on **HSTDAT**, covering
+  0x384000 bytes from share offset 0 — 88% of the 4 MiB share.
 
-```text
-reg 0 HSTADRL  writes 39      first: raw=0x02 data=0x0100
-reg 1 HSTADRH  writes 39      first: raw=0x01 data=0xc000
-reg 2 HSTDAT   writes 780315  first: raw=0x06 data=0xb800
-reg 3 HSTCTL   writes 6       first: raw=0x04 data=0xa000
-```
+**The share reading zero at frames 44-52 is therefore not a mystery at all: the
+routine had just zeroed it.** That was the answer, and the "discarded" theory
+was a wrong road to a right observation.
 
-780,315 HSTDAT writes do reach the GSP — but from raw offset `$C00006`, not from
-`$C0000C`. Different routines use different host-port addresses, and the ones
-using `$C00008`/`$C0000C` are the ones being dropped.
+The patched-ROM experiment in 31.2 is **withdrawn as evidence.** It concluded
+that changing the fill value to `$1a1a` produced a byte-identical frame-600
+image, and concluded from that the writes were discarded. The conclusion does
+not follow from the measurement, and the measurement itself is now suspect: if
+the patch had landed, a share still zero at frames 48-360 is inconsistent with
+a fill that walks 3.5 MiB with `$1A1A` in the data register. The likely
+explanation is that the two bytes I patched
+(`136070-2102.200r`/`136070-2101.210r` index `0x2A51`) did not reach the
+executing image, even though reassembling them with the repo's own interleave
+produced the expected instruction. **That has not been established either
+way**, and until it is, 31.2's table of nonzero-word counts stands as
+measurement but its conclusion does not.
 
-**This is either a ROM/driver mismatch or a driver defect and it is not yet
-decided.** Either the ROM targets a register layout this driver does not
-implement, or `(offset/2)^1` is wrong and the driver drops writes real hardware
-accepts. Do not "fix" the project constants to match until that is settled: if
-the driver is right, the correct fix is to stop the ROM's writes going nowhere;
-if the driver is wrong, the correct fix is upstream and the constants stay as
-the ROM intends. Filed for `BUGS.md` as a possible MAME entry, pending a
-measurement that separates the two.
+`native/gsp_zero_fill.{h,c}` inherited the withdrawn claim from the brief and
+must be corrected: its census treats `$C00008`/`$C0000C` as discarded, and its
+`live_data_writes == 0` assertion is wrong. It is not merged-ready.
 
-The measurement that separates them: write a known value to `$C0000C` and to
-`$C00006` from the 68010, and separately from a direct space write, then read
-back. If `$C00006` lands and `$C0000C` does not, the driver is behaving as
-written and the question becomes what real hardware does. Nothing in this
-repository answers that yet.
+### 31.6 What the early text is, given all of the above
+
+The strongest candidate, and the one the user's framing points at: the glyphs
+live in the **68k's domain**. `$25E8` reads the font at `$1FBC + 16*(ch-$2A)`,
+reads the descriptor from ROM, and writes words to HSTADR/HSTDAT. The 68010
+composes the glyph; the GSP is not asked to interpret text at all.
+
+If that is right then the text region is knowable without any GSP cooperation:
+ROM descriptor plus ROM font bitmap predicts the exact VRAM words, which is
+directly checkable against the captured stream. And the sharing agreement of
+game and service mode (section 30.3) already fits — same descriptors, same
+addresses, same words, different frames.
+
+What is still unexplained, and is the next measurement: the share is zero at
+every frame from 44 to 360 (section 30.1) while text is on screen at frame 48.
+If `$25E8` writes land, something zeroes the region again before frame 48 is
+sampled, or the fill runs later than assumed. **The fill's start frame was never
+established** — the traces that appeared to show it at frames 43-44 each
+saturated at 4,000 events, so only the first few thousand of 230,400 writes
+were ever visible. Finding the real frame range of `$548E` is a one-line
+`--pc 0x54ac` capture and it decides this.
 
 ## 31.548E The `$548E` zero-fill transcribed to C: 231,303 bus cycles, none of which touch VRAM
 
