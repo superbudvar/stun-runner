@@ -6806,3 +6806,100 @@ real host port -- `HSTADR=$FF800010`, `HSTDAT=$1234` -- with the tap installed,
 and see whether the callback reports `0x1234` at offset `0x10`. If it does, the
 tap works and 33.8 stands and 33.9 says the text writes are not landing. If it
 does not, the tap is blind and both sections fall.
+
+### 33.10 RESOLVED: the tap works, and the text writes genuinely never land
+
+`mame/lua/gsp-tap-window.lua`, `--input none`, printing **every nonzero write**
+to the GSP program space in frames 43–50:
+
+```text
+frame=43 writes=290428 nonzero=0
+frame=44 writes=302510 nonzero=0
+frame=45 writes=314590 nonzero=0     <- 331 x $00DF and 330 x $DFDF/$DF00
+frame=46 writes=326670 nonzero=0        are issued by the 68010 in this frame
+frame=47 writes=338750 nonzero=0
+frame=48 writes=350832 nonzero=0
+frame=49 writes=362910 nonzero=0
+frame=50 writes=374990 nonzero=0
+```
+
+12,080 writes per frame, stepping `0x000000, 0x000010, 0x000020 …` with
+`mask=0xFFFF` — the `$548E` zero fill, exactly as §31.1 predicted. **The tap is
+not blind.** It sees the fill perfectly.
+
+And across frames 45–47, when the 68010 demonstrably issues `move.w D0,$c0000c.l`
+with data `0x00DF` and `0xDFDF`, **not one nonzero value reaches the share.**
+
+So §33.8's conclusion **survives**, and §33.9's tension is **the bug**:
+
+* every write that reaches the GSP program space in game mode is `0x0000`;
+* the text routine's colour words do not land, even though the CPU-side bus tap
+  sees them issued at `$C0000C` and MAME's own `stunrun_hostprobe` counts
+  780,315 HSTDAT writes.
+
+Both observations are true and they cannot both describe a working host port.
+The fill's `$C0000C` writes land; the text's `$C0000C` writes do not. Same
+address, same instruction form, same `host_w` path — which leaves the difference
+in *what the routine believes HSTADR holds*, not in the bus.
+
+**A reconciliation the evidence does not yet exclude, and which fits everything
+so far:** `ori.w #$1800, $c00008.l` sets INCW and post-increments HSTADR by one
+16-byte cell per HSTDAT write. The fill latches `HSTADR = $FF800000` once and
+then relies on that increment. If the text routine's own `andi.w #$e7ff, $c00008.l`
+at `$25EE` clears INCW **before** the fill set it — or if the two runs interleave —
+the text's writes would all land on one fixed cell rather than walking. That is
+checkable from the CPU-side bus trace alone and needs no new tooling. **Not
+tested. Do not assume it.**
+
+### 33.11 An unreconciled count, recorded rather than smoothed
+
+§33.8 reported **492,544** writes total to frame 600. This run reaches
+**374,990** by frame *50*, at 12,080 per frame — which extrapolates to roughly
+7.2 million by frame 600. The two do not agree, and I cannot currently say why.
+Both used the same corrected range `$FF800000–$FFBFFFFF`; the difference is that
+§33.8's script summarised and this one prints. Until it is explained, §33.8's
+*write count* should not be quoted. Its *conclusion* — zero nonzero writes — is
+independently reproduced above and stands on its own.
+
+### 33.12 MD-09 is this same bug, and the manual says what to do about it
+
+`BUGS.md` **MD-09** records "Service mode `BAD GSP VRAM` in MAME": the MC68010
+diagnostic at `$004F82` fills `$FF945E` with eight longwords of `0x01010101`,
+then reads 16 words back through the GSP host port and gets `0xFFFF` for every
+one. That is **the same failure with a different payload** — a nonzero value
+written through the host port that does not come back.
+
+MD-09 is scoped to service mode because the diagnostic only runs there. It does
+not run in `--input none`, so its absence from the run above says nothing about
+it. But 33.10 shows the text routine failing the same way in **game** mode, which
+MD-09 does not mention and which was not previously connected to it.
+
+The manual names the symptom and the remedy. From the GSP Tests section:
+
+> VRAM Complete Test is **a complete memory test run by the 68010 through the GSP
+> interface**. Because the 68010 runs the test, a single bad VRAM does not …
+
+and from Table 2-5, *When to Use the Special Function Items*:
+
+> If you see the message **Bad GSP VRAM** or **Bad GSP Color RAM** in the
+> automated self-test. → **Main Board GSP Tests**
+> If you see the message **Bad Program ROM** in the automated self-test. →
+> **Main Board ROM Checksums**
+
+So `Bad GSP VRAM` is a *self-test verdict*, not a hardware name, and Atari's own
+first move is to run the GSP tests rather than to suspect VRAM silicon. The GSP
+Tests menu is: *GSP Tests* ("Tests if the 68010 can communicate with the GSP …
+if the GSP does not respond, LED 1 and 2 flash differently"), *Red/Green/Blue
+Screen* ("Produces a [colour] screen **from the color RAM, regardless of VRAM
+input**"), *GSP Memory Fill*, and *GSP VRAM Verify*.
+
+That last parenthetical is independent confirmation of the Color RAM being a
+device in its own right — it can produce a full-screen colour with no VRAM input
+whatsoever — and it gives a VRAM-independent way to test the video path, which
+is worth having while §33.10 is open.
+
+**Next action, and it is the cheapest useful thing left:** run the GSP VRAM
+diagnostic under service mode with this same tap and see whether its
+`0x01010101` writes land. If they do not, MD-09 and §33.10 are one defect and
+should be tracked as one. If they do, then the text routine's failure is
+specific and INCW-related as §33.10 suggests, and that is a much narrower bug.
