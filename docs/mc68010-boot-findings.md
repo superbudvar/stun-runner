@@ -5882,3 +5882,159 @@ and `docs/gsp-display-scanout-contract.md` §"Service mode" — which places the
 text at VRAM base `0x016040` and points the rasteriser at `rowaddr=0x3C,
 DPYSTRT=0x00F000` — is describing a region that is provably zero at the moment
 the text is on screen.
+
+## 31. The `$548E` boot fill writes 230,400 words to nowhere, and `emu.register_prestart` never fires
+
+Two findings, both measured 2026-10-13. The second one is the harness defect that
+had been hiding input schedules from eight Lua scripts.
+
+### 31.1 The routine, transcribed
+
+`$25E8` was not the only thing running at frames 43-47. The host-port tap shows
+PC `$54AC` writing `HSTDAT=0x0000` more than 4000 times **inside a single
+frame**. That is the inner loop of `$548E`:
+
+```text
+0000548e: 00 79 18 00 00 c0 00 08  ori.w   #$1800, $c00008.l
+00005496: 23 fc ff 80 00 00 00 c0 00 02  move.l  #$ff800000, $c00002.l
+000054a0: 30 3c 00 00           move.w   #$0, D0
+000054a4: 34 3c 03 83           move.w   #$383, D2
+000054a8: 32 3c 00 ff           move.w   #$ff, D1
+000054ac: 33 c0 00 c0 00 0c     move.w   D0, $c0000c.l        <- inner loop
+000054b2: 51 c9 ff f8           dbra     D1, $54ac            <- 256 iterations
+000054b6: 42 79 00 60 80 00     clr.w    $608000.l            <- watchdog kick
+000054bc: 51 ca ff ea           dbra     D2, $54a8            <- 900 iterations
+000054c0: 4e d0                 jmp      (A0)
+```
+
+256 x 900 = **230,400 HSTDAT writes**. With HSTCTL bit 11 (INCW) set, that would
+be 230,400 x 16-byte cells = 0x384000 bytes = 3.5 MiB, i.e. 88% of the share.
+
+**Where it is called from** — it has no `jsr`/`jmp` xref at all. It is reached
+by `bra` through a continuation-address chain, which is why a xref search finds
+nothing:
+
+```text
+$506C: movea.l #$ffffc000, A7
+$5072: lea ($6,PC), A0     ; A0 = $507A
+$5076: bra $53F2           ; GSP boot (clear regs, delay, set mode), ends jmp (A0)
+
+$507A: lea ($6,PC), A0     ; A0 = $5082
+$507E: bra $548E           ; <- THE FILL, then jmp (A0) at $54C0
+
+$5082: lea ($6,PC), A0     ; A0 = $508A
+$5086: bra $54C2           ; pattern fill: 0x0101 ramp at $F5000000,
+                           ; 0..255 ramp at $F5800000
+
+$508A: move.w #$47, D0
+$508E: lea ($8,PC), A2     ; A2 = $5098
+$5092: jmp $25E8.l         ; <- DRAWS SELECTOR $47
+```
+
+**So the answer to "can we link it to the char ROM text" is yes, and it is
+adjacent.** The zero fill and the first text draw are consecutive stages of one
+straight-line boot routine: `$548E` returns straight into `$54C2`, which returns
+straight into `$508A`, which draws selector `$47` = `PRESS*START*TO*BYPASS*SELFTEST`.
+The fill is not "before the text" by coincidence of timing; it is the previous
+basic block.
+
+### 31.2 The fill has no observable effect on the share
+
+Patched `move.w #$0,D0` at `$54A0` to `move.w #$1a1a,D0` in a copy of the ROM
+set. MAME warns the checksums no longer match and runs anyway.
+
+```text
+patched  $548e: 30 3c 1a 1a  move.w  #$1a1a, D0
+```
+
+Then, `--input none`, whole 4 MiB share, exhaustive read:
+
+```text
+frame  48   nonzero 0        (would be nonzero if one write had landed)
+frame 100   nonzero 0
+frame 200   nonzero 0
+frame 300   nonzero 0
+frame 360   nonzero 0
+```
+
+and at frame 600, where the unpatched machine has 1,664,200 nonzero words:
+
+```text
+patched  frame 600  sha256 35c9262190d8ec85183af255ba1962429897dec157a95793d61d06feee2210ba
+original frame 600  sha256 35c9262190d8ec85183af255ba1962429897dec157a95793d61d06feee2210ba
+differing bytes: 0 of 4194304
+```
+
+**Byte-identical.** Changing the fill's data value changes nothing at all. If
+even one of the 230,400 writes had landed, the frame-48 image would contain a
+nonzero cell. It contains none.
+
+So the answer to "is the area it is zeroing a mirror of the framebuffer" is
+neither yes nor no: **the writes are discarded.** They do not blank a mirror,
+they do not blank the framebuffer, they do not reach any storage the share
+exposes. The `HSTDAT` writes issued while the GSP is still in reset go nowhere.
+That also sharpens section 30.4: the reason the share is zero at frames 44-52 is
+not that it was cleared and is not that it was never written — it is that this
+routine is a no-op, and whatever else was supposed to draw the early text did
+not draw it here either.
+
+The routine is still worth porting: it defines the mechanism the boot path uses,
+and "this loop is a no-op on memory" is only a portable claim once the C mirror
+reproduces the no-op. But it is **not** on the path to the screen, and a port
+whose test asserts it clears VRAM would be asserting something false.
+
+### 31.3 `emu.register_prestart` never fires in this build
+
+The obvious way to answer "which cells were touched" is to poison the share
+before frame 0. There is exactly one pre-frame hook, and it is dead:
+
+```text
+machine.register_init   = nil
+machine.register_start  = nil
+emu.register_prestart   = function       <- exists
+emu.register_preinit    = nil
+emu.register_init       = nil
+emu.register_start      = nil
+```
+
+`register_prestart` is registered here (`luaengine.cpp:862`):
+
+```cpp
+machine().add_notifier(MACHINE_NOTIFY_RESET,
+    machine_notify_delegate(&lua_engine::on_machine_prestart, this), true);
+```
+
+That trailing `true` is `one_time`, so the callback fires on the **first reset
+only**. `-autoboot_script` loads later than that, so a callback the script
+registers is never invoked. Verified directly: a prestart callback that prints
+produces no output, under `-seconds_to_run 1`, `-seconds_to_run 3`, and
+`-autoboot_wait 2`.
+
+**Eight harness scripts rely on it:**
+
+| script | prestart applies to |
+| --- | --- |
+| `gsp-vram-dump.lua` | `sw_off_prestart`, `drive`, `late`, `late_drive` |
+| `gsp-state-snapshot.lua` | same four |
+| `trace.lua` | `drive`, `late`, `late_drive` |
+| `gsp-boundary.lua` | `sw_off_prestart`, `drive` |
+| `display-list-trace.lua` | `drive`, `late_drive`, **`service_f2`** |
+| `adsp-window.lua` | `sw_off_prestart` |
+| `checkpoint.lua` | **unconditional** — `initial_events` |
+| `memory-snapshot.lua` / `ram-write-trace.lua` | do not use it |
+
+For all of those, the DIP prefix or initial events have **never been applied**,
+in any capture ever taken. Committed artifacts affected:
+`gsp-display-list-trace-600` (`drive`),
+`display-list-gsp-state-late-1200` (`late_drive`),
+`display-list-service-f2-60-180` and `-60-300` (`service_f2`), and every
+`checkpoint.lua` capture.
+
+Not affected: `service-f2-3600-stages` and all the `--input service` and
+`--input none` screen captures, because `service` is not in any prestart gate.
+That is why section 30's measurements stand.
+
+This is the same class of failure section 29 describes — a setting that is
+silently not applied and an observation that reads as a fact about the machine.
+`tests/test_mame_lua_hooks.py` now asserts no `mame/lua` script applies input
+through `emu.register_prestart`, with the reason recorded in the failure message.

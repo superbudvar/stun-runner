@@ -103,7 +103,10 @@ local function apply_event(event)
     field:set_value(event.action == 'press' and 1 or event.action == 'release' and 0 or event.value)
 end
 
-emu.register_prestart(function()
+local pr_start_applied = false
+emu.register_frame_done(function()
+    if pr_start_applied then return end
+    pr_start_applied = true
     for _, event in ipairs(initial_events) do
         apply_event(event)
     end

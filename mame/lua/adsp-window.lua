@@ -55,7 +55,16 @@ local function apply_event(event)
 end
 
 if input_mode == 'sw_off_prestart' then
-    emu.register_prestart(function()
+    -- emu.register_prestart never fires on this build: MAME registers it as a
+    -- one_time MACHINE_NOTIFY_RESET notifier (luaengine.cpp:862) which fires
+    -- before -autoboot_script is loaded. Applied here at the first frame
+    -- instead. That is later than a true prestart, so any input that must be
+    -- in effect before frame 0 needs a different answer, not this one.
+    -- See docs/mc68010-boot-findings.md section 31.3.
+    local pr_start_applied = false
+    emu.register_frame_done(function()
+        if pr_start_applied then return end
+        pr_start_applied = true
         for _, event in ipairs(sw_off_prefix) do
             apply_event(event)
         end
