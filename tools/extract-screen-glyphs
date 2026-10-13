@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Extract the on-screen glyph bitmaps the MC68010 text path actually produced.
+
+Answers a different question from tools/dump-glyph-font. That tool reads the
+glyph table out of ROM at $1FBC + 16*(ch-$2A) and asks "what does the ROM say
+this character looks like". This one asks "what did the machine actually put on
+the screen", by reading it back off a MAME frame capture.
+
+That distinction is the whole point, and it is not academic. The ROM glyph rows
+are 16-bit words -- the live trace shows A1 stepping $221C, $221E, $2220 ... one
+word per row, 8 rows, 16 bytes per glyph -- and the on-screen cell is an 8x8
+1-bit-per-pixel bitmap. The word is not the bitmap: the screen bitmap for 'P' is
+FC C6 C6 C6 FC C0 C0 00, and that byte sequence appears nowhere in the ROM at
+stride 1 or stride 2. So there is a transform between the ROM font and the
+screen font, and until someone identifies it, a ROM-side dumper cannot be
+checked against anything.
+
+This tool produces the other half of that pair, so the transform can be fitted
+rather than guessed:
+
+    tools/extract-screen-glyphs roms /tmp/stage --frame 48 \\
+        --expect "PRESS*START*TO*BYPASS*SELFTEST" --output screen-glyphs.json
+
+It reads `screens/frame-000048.png` from a tools/mame-gsp-state-snapshot run
+(`--input none`, which is deterministic; see docs/mc68010-boot-findings.md
+section 29.2a), locates the text band, slices it into 8x8 cells, and writes both
+the bitmaps and their ROM-side counterparts keyed by character.
+
+Gotchas this handles, each of which has already cost time:
+
+  * the font draws with 2-pixel strokes, so a 1-pixel-accurate cell needs the
+    cell origin, not the first lit pixel. Cells are laid out on a fixed 8-pixel
+    pitch from the first lit column, which is what the ROM stride implies.
+  * rows are trimmed by finding the band of lit rows, not assumed to be 7 or 8,
+    because a string with descenders or a different font revision would change
+    that. Unlit rows inside the band are emitted as 0x00 so the bitmap is a
+    fixed height.
+  * '*' renders as the blank glyph because the font entry at $1FBC is all zero
+    (findings section 20.6), so it comes back as an all-zero cell. That is the
+    correct answer, not a decoding failure.
+"""
+
+import argparse
+import json
+import pathlib
+import sys
+
+
+def find_band(px, width, height, threshold=600):
+    """Return (y0, y1, x0, x1) of the lit region, or None."""
+    rows = [y for y in range(height)
+            if any(sum(px[x, y][:3]) > threshold for x in range(width))]
+    if not rows:
+        return None
+    y0, y1 = rows[0], rows[-1]
+    cols = [x for x in range(width)
+            if any(sum(px[x, y][:3]) > threshold for y in range(y0, y1 + 1))]
+    return y0, y1, cols[0], cols[-1]
+
+
+def cell_bits(px, width, x0, y0, col, row, cols=8, pitch=8):
+    """One 8x8 cell as row bytes, bit7 leftmost. Out-of-range reads as 0x00."""
+    bits = []
+    for r in range(row, row + 8):
+        value = 0
+        for c in range(cols):
+            x = x0 + col * pitch + c
+            y = y0 + r
+            on = 0 <= x < width and sum(px[x, y][:3]) > 600
+            value = (value << 1) | (1 if on else 0)
+        bits.append(value)
+    return bits
+
+
+def rom_glyph(rom, ch):
+    """The 8 ROM words the text routine walks, low byte first per word."""
+    addr = 0x1FBC + 16 * (ch - 0x2A)
+    if addr < 0 or addr + 16 > len(rom):
+        return None, addr
+    return [rom[addr + 2 * i] | (rom[addr + 2 * i + 1] << 8) for i in range(8)], addr
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    parser.add_argument("stage", type=pathlib.Path,
+                        help="tools/mame-gsp-state-snapshot output directory")
+    parser.add_argument("--frame", type=int, default=48)
+    parser.add_argument("--expect", default="",
+                        help="the string the ROM descriptor encodes, '*' for blank")
+    parser.add_argument("--output", type=pathlib.Path, default=None)
+    parser.add_argument("--roms", type=pathlib.Path,
+                        default=pathlib.Path(__file__).resolve().parents[1] / "roms/stunrun")
+    args = parser.parse_args()
+
+    try:
+        from PIL import Image
+    except ImportError:
+        sys.exit("PIL/Pillow is required: pip install pillow")
+
+    png = args.stage / "screens" / f"frame-{args.frame:06d}.png"
+    if not png.is_file():
+        sys.exit(f"no capture at {png}; run tools/mame-gsp-state-snapshot "
+                 f"--input none --targets {args.frame} first")
+
+    image = Image.open(png).convert("RGB")
+    px = image.load()
+    band = find_band(px, image.size[0], image.size[1])
+    if band is None:
+        sys.exit(f"{png} has no lit pixels; is this the text frame?")
+    y0, y1, x0, x1 = band
+    cell_h = y1 - y0 + 1
+
+    text = args.expect
+    rom = (args.roms / "stunrun_maincpu.bin").read_bytes()
+    glyphs = []
+    for i, ch in enumerate(text):
+        bits = cell_bits(px, image.size[0], x0, y0, i, 0)
+        words, addr = rom_glyph(rom, ord(ch))
+        glyphs.append({
+            "index": i,
+            "char": ch,
+            "code": ord(ch),
+            "screen_rows": bits,
+            "rom_addr": addr,
+            "rom_words": words,
+            "blank": all(b == 0 for b in bits),
+        })
+
+    result = {
+        "schema": "stunrun-screen-glyphs/v1",
+        "capture": str(png),
+        "frame": args.frame,
+        "band": {"y0": y0, "y1": y1, "x0": x0, "x1": x1,
+                 "cell_height": cell_h, "cell_pitch": 8, "cell_width": 8},
+        "expect": text,
+        "glyphs": glyphs,
+    }
+    out = args.output or (args.stage / "screen-glyphs.json")
+    out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+    lit = [g for g in glyphs if not g["blank"]]
+    print(f"wrote {out}  band y{y0}-{y1} x{x0}-{x1}  cell {cell_h}x8 pitch 8")
+    print(f"{len(glyphs)} cells, {len(lit)} non-blank")
+    for g in glyphs[:4]:
+        rows = " ".join(f"{b:02X}" for b in g["screen_rows"])
+        print(f"  {g['index']:2d} '{g['char']}'  screen[{rows}]  "
+              f"rom_words={' '.join('%04X' % w for w in g['rom_words'])}")
+    if text and len(lit) == 0:
+        print("  WARNING: every cell came back blank -- the pitch or origin is wrong")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
