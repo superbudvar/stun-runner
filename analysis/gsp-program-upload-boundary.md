@@ -56,10 +56,14 @@ frame 406  $FFF42E50      frame 411  $FFF414C0
 frame 407  $FFF40F90      frame 412+ $FFF41060 (repeat)
 ```
 
-So the program the 68010 loads and the program the GSP runs are the same
+~~So the program the 68010 loads and the program the GSP runs are the same
 block. This is the answer to "is there more than one program": there are several
 bulk upload phases, but only this one is executed, and the range is now pinned
-rather than inferred from a frame-600 dump.
+rather than inferred from a frame-600 dump.~~
+
+**REFUTED — see §"The share contains no instruction stream" below (2026-10-13).
+This range is a sparse parameter table, not a program. The address range is
+pinned; the claim that it holds code is wrong.**
 
 Other large writers in the same capture, for context and to keep them from being
 mistaken for the program:
@@ -69,7 +73,7 @@ mistaken for the program:
 | `$022416` | 262,144 | 38–81 | `$FF800000`–`$FFBFFFF0` | fills the first 512 KiB of the share |
 | `$00069A` | 224,522 | 1–31 | `$00000000` | destination latch never set; see unknown below |
 | `$0226F8` | 78,876 | 375–442 | `$FFE00000`–`$FFEEFDB0` | spans the boundary; overlaps `$02FE68` |
-| `$02FE68` / `$02FE6E` | 6,091 each | 396–405 | `$FFF40000`–`$FFFFFFE0` | **the executed program** |
+| `$02FE68` / `$02FE6E` | 6,091 each | 396–405 | `$FFF40000`–`$FFFFFFE0` | **not a program** — sparse table, see below |
 
 `$00069A` writing 224,522 words to address `$00000000` is an unresolved oddity.
 HSTADR is genuinely never set before those stores, so the derived destination is
@@ -144,3 +148,103 @@ Two more traps worth keeping:
   latter but only 12 frames were sampled.
 * What consumes the `$FFF41060` sentinel loop, and whether the first-frame fill
   window is the screen, a tile page, or a command buffer.
+---
+
+## The share contains no instruction stream (2026-10-13)
+
+The claim above that `$FFF40000`–`$FFFFFFE0` is *the executed program* is
+**refuted**. The upload is real and the boundary is real; what it carries is not
+code. Everything in this section was checked live against the pinned MAME.
+
+### The share is 16-byte-replicated
+
+Walking the whole 4 MiB share as 262,144 cells of 16 bytes each:
+
+```text
+16-byte cells in the whole 4 MiB share: 262144
+  uniform (all 8 words identical)     : 262144
+  NON-uniform                          : 0
+```
+
+**Not one cell in 4 MiB holds two different words.** A TMS34010 instruction
+stream cannot live in a memory where every 16 bytes is one repeated word, so
+the share contains no program.
+
+Reproduced directly, reading live at frame 450:
+
+```text
+read_u16 @0xFFF40000 : 0550 0550 0550 0550 0550 0550 0550 0550
+read_u16 @0xFFF40008 : 0550 0550 0550 0550 0740 0740 0740 0740
+read_u16 @0xFFF40010 : 0740 0740 0740 0740 0740 0740 0740 0740
+read_u16 @0xFFF40100 : 09E0 09E0 09E0 09E0 09E0 09E0 09E0 09E0
+```
+
+The unaligned read at `+8` returns the first cell's value for its lower four
+words and the *next* cell's value for its upper four. So the address is not
+being masked — VRAM genuinely holds each host word across 16 bytes. The true
+content of the share is 512 KiB of information, replicated 8× into the 4 MiB
+image `tools/mame-gsp-vram-dump` writes. That tool is not misreading; the
+memory is genuinely this redundant.
+
+### The upload is sparse, and each word is broadcast
+
+Per-writer destination deltas over frames 396–405, from
+`gsp-upload-events.txt`:
+
+```text
+writer $0002FE68: 6091 writes, dest span 0xfff40000..0xffffffe0
+   deltas: {32: 6088, 48: 1, 591536: 1}
+writer $0002FE6E: 6090 writes, dest span 0xfff40010..0xffffffd0
+   deltas: {32: 6087, 48: 1, 591536: 1}
+```
+
+A constant **32-byte stride**, two writers interleaved at `+0x0` and `+0x10`.
+Each writer supplies one word per 32-byte cell, and the share stores it across
+all 16 bytes of its half-cell. This is a parameter/command table laid out for
+strided fetch by the GSP, not an instruction sequence.
+
+### The image is nonetheless trustworthy
+
+Checked every in-share `HSTDAT` write against `gsp_vram.bin` at its own offset:
+
+```text
+host HSTDAT writes into the upload range, frames 390-405: 12183
+image matches written value at its own offset: 12182/12183
+```
+
+and the frame-405 and post-release images agree on 331,244 of 419,890 in-share
+host writes (the remainder are addresses the running GSP overwrote afterwards,
+since GSP-originated stores are not in the host event log).
+
+So `tools/mame-gsp-vram-dump` faithfully records VRAM. What it faithfully
+records is a memory with no code in it.
+
+### Consequences for earlier claims
+
+| Claim | Status |
+|---|---|
+| Upload boundary is HSTCTL bit 15 (HLT), release at frame 405 | **stands** — host-write validated |
+| `$02FE68`/`$02FE6E` cover `$FFF40000`–`$FFFFFFE0` | **stands** — pinned above |
+| "Every post-release GSP PC lies inside that range" | **stands**, but proves only that the GSP is fetching from the table area |
+| "That range is the executed program" | **refuted** — it holds no instruction stream |
+| "10,360 words of first GSP output in 22 ranges, each a single repeated constant" | **reinterpret** — a constant across a 16-byte cell is the *expected* shape of any host write, so this measures replication, not drawing |
+| "The reset vector at `$0FFFFFFE0` is `$0x9920`" | **withdrawn** — a 32-bit read there composes `$9920` with the *next* cell's `$0FFF5`; a vector of `0x00009920` is not a VRAM address, and both halves come from replicated table data |
+
+### Where that leaves the program
+
+`stunrun` has **no GSP ROM region** — the ROM definitions are `maincpu` (68010),
+`jsa:cpu`, `user1` (ADSP), `jsa:oki1`, `200e`, `210e`. VRAM is the only memory
+the GSP can execute from, and VRAM holds no code. Two readings remain open:
+
+1. the GSP does not actually execute in this driver, and the sampled PC values
+   come from a source that has not been identified; or
+2. its code arrives by a path this capture does not record — most plausibly the
+   display-list/FIFO write path rather than HSTDAT.
+
+Both are **UNKNOWN**. Distinguishing them needs execution evidence, which is
+exactly what is missing: the GSP execute tap is unavailable on this build
+(`gsp_execute_tap_status: unavailable`), so `tools/mame-gsp-boundary` exits
+non-zero rather than publishing an empty `execution_landmarks`.
+
+Do not call this range a program, in these or any other words, until
+execution evidence says so.
