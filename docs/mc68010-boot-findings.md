@@ -6664,3 +6664,75 @@ that OCR cannot read. Two things it would settle that are currently open:
 Rendering the PDF pages to images and reading them is the route. That is a
 one-off investigation, not a harness capability, and it belongs to the
 Investigator role.
+
+### 33.5 The GSP video chain, from SP-338 Page 10
+
+`/tmp/stunrunner_pages/page-67.png` is SP-338 Page 10 and carries the video
+block diagram legibly. (The OCR's page association is unreliable — it credits
+`34010-50` to Page 9, which is actually the ADC and shifter sheet. Read the
+images, not the OCR page markers.)
+
+```text
+34010-50 GSP --> 34012-50 PSP --> VDD-VD15  (15-bit digital video)
+             \-> Address Buffers -> MA0-MA7 -> VRAM Array (16) 64K x 4
+                                                   |
+                                                   +-> SD0-SD15 -> Pixel Scanner
+                                                        -> SPIX0-SPIX7 -> Color RAM
+                                                        -> RED0-RED7 GRN0-GRN7 BL0-BL7
+```
+
+**This settles the architecture question.** The chain is:
+
+* The **GSP (TMS34010) writes VRAM and does not scan out.** It reaches VRAM
+  through address buffers on `MA0-MA7`.
+* A **separate TMS34012 (PSP)** takes the GSP's `VDD-VD15` and serialises it.
+* The **Pixel Scanner** shifts VRAM out on `SD0-SD15`; **Color RAM** supplies
+  the final `RED0-7 / GRN0-7 / BL0-7`.
+
+So the answer to "does the GSP hold the glyphs and get sent text, or are the
+glyphs pulled by the 68k and put in for it to copy" is the second, and more
+precisely than that: **the glyphs are composed entirely in the 68k's domain and
+land in VRAM over the GSP host port.** The GSP is never asked to interpret text.
+That is why `$25E8` writes colour words rather than bitmaps, and why the text
+region is predictable from ROM descriptor plus ROM font plus the write pattern
+alone. The screen then shows whatever the Pixel Scanner reads out of that VRAM.
+
+### 33.6 Two things on this page that disagree with our model
+
+**1. VRAM size.** The BOM line (OCR 3802) reads `64K x 4, 120 nsec VRAM` and the
+schematic block reads `VRAM Array (16)`. Sixteen 64K x 4 chips is
+16 x 256 Kbit = **512 KiB**. That is the figure §12.1 originally claimed and
+§19 "measured" away at 4 MiB.
+
+The §19 measurement was a real measurement of the pinned MAME build — the
+sentinel probe found the first alias at offset 0x400000, i.e. 4 MiB of distinct
+content — and it stands as a statement about MAME. What is now open is whether
+**MAME is modelling the right amount of VRAM**, because the vendor's own BOM and
+block diagram say 512 KiB. A 4 MiB model of a 512 KiB board would alias every
+512 KiB, and the game would still look right in every case we have checked,
+because nothing so far has addressed past 512 KiB and noticed.
+
+This is a **candidate MAME driver defect** and it is the first serious one that
+is not a Lua-harness artefact. It is NOT filed yet: `multisync_nomsp()` may
+instantiate more VRAM than the bare schematic block implies, and `MA0-MA7`
+being only eight address lines means the addressing is not fully described by
+that box. **Do not act on it yet.** Settling it needs the VRAM array schematic
+sheet — which of SP-338 Pages 3-8 carries the 16 VRAM chips and their address
+lines — not this block diagram.
+
+**2. Palette.** `Color RAM` is a separate device between the Pixel Scanner and
+the RGB outputs, fed by `SPIX0-SPIX7` (8 pixel-index bits) and producing three
+8-bit channels. `docs/gsp-display-scanout-contract.md` models "two 1024-entry
+16-bit planes" with `R = lo>>8, G = lo&0xff, B = hi&0xff`. That is a plausible
+reading of two interleaved 16-bit halves and may be equivalent, but it is
+**inference, not transcription**, and it is now known that a distinct colour
+RAM exists rather than palette planes inside the GSP's own memory. Worth a
+pass; not urgent.
+
+### 33.7 Clocks and jumpers from the same page
+
+`XO-SCH 40MHZ` feeds the pixel scanner. A `15.00Y 0.11431B 12` crystal feeds an
+LS374 divider producing the `4 MHz / 16 MHz` domains; the 68010 is `16 MHz`
+clocked. Jumpers: `Speed A,B` / `BCLK QB` / `VCLK QB/2`. The 16 MHz figure is
+directly relevant to `stun-runner-bzq`, which currently derives the OKI rate
+from a hardcoded `3579545/3` rather than from a clock the manual states.
