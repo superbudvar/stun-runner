@@ -81,6 +81,7 @@ elseif(STUNRUN_SDL_RESOLVED EQUAL 3)
     set(SDL2_FOUND OFF)
 endif()
 set(STUNRUN_SDL2_BACKEND_ENABLED ${SDL2_FOUND} PARENT_SCOPE)
+set(STUNRUN_GSP_GL_SCANOUT_ENABLED OFF PARENT_SCOPE)
 
 if(STUNRUN_SDL_RESOLVED EQUAL 2)
     message(STATUS "SDL generation: SDL2 ${SDL2_VERSION} (SDL2 found: ${SDL2_FOUND}, SDL3 found: ${SDL3_FOUND} -- ignored)")
@@ -117,6 +118,10 @@ if(SDL2_FOUND)
     find_package(GLEW QUIET)
     find_package(OpenGL QUIET)
     if(GLEW_FOUND)
+        target_sources(stunrun_backends PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/gsp_scanout_gl.c
+        )
+        set(STUNRUN_GSP_GL_SCANOUT_ENABLED ON PARENT_SCOPE)
         target_include_directories(stunrun_backends PUBLIC
             ${GLEW_INCLUDE_DIRS}
         )

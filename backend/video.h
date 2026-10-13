@@ -94,6 +94,7 @@ typedef struct stunrun_video_backend {
     stunrun_video_uploadTex_fn upload_tex;
 
     void *user;   /* passed as first arg to every function above */
+    size_t user_size; /* zero keeps the registry's small default allocation */
 } stunrun_video_backend_t;
 
 /* Helper for implementations: initialise a frame descriptor for a flat

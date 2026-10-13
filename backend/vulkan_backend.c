@@ -1383,6 +1383,7 @@ static stunrun_video_backend_t the_backend = {
     .present     = vulkan_video_present,
     .on_resize   = vulkan_video_on_resize,
     .user        = NULL,
+    .user_size   = sizeof(vulkan_video_backend_t),
 };
 
 const stunrun_video_backend_t *stunrun_video_backend_vulkan(void)

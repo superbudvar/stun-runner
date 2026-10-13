@@ -340,6 +340,7 @@ static stunrun_video_backend_t the_backend = {
     .on_resize     = sdl3_gpu_on_resize,
     .upload_tex    = NULL,
     .user          = NULL,
+    .user_size     = sizeof(sdl3_gpu_backend_t),
 };
 
 const stunrun_video_backend_t *stunrun_video_backend_sdl3_gpu(void)

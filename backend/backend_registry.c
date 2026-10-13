@@ -121,7 +121,8 @@ static bool init_video_backend(stunrun_backend_pair_t *pair,
     pair->video = *templ;
 
     /* Allocate per-instance state */
-    void *state = calloc(1, 256);  /* backend opaque state; at least 256 bytes */
+    size_t state_size = templ->user_size ? templ->user_size : 256u;
+    void *state = calloc(1, state_size);
     if (!state) {
         fprintf(stderr, "backend_registry: OOM for video backend state\n");
         return false;
