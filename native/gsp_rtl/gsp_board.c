@@ -299,30 +299,56 @@ static void gsp_board_hstdat_store(gsp_board_t *b, uint16_t data)
 {
     const uint32_t addr = b->hstadr;
 
-    /* 0xFF000000-0xFFFFFFFF: the VRAM share.  A host word write does
-     * NOT store two bytes -- MAME's program space is a 32-bit view over a
-     * 16-bit share, so one 16-bit write covers a 16-byte cell with each
-     * source byte replicated eight times.
+    /* 0xFF000000-0xFFFFFFFF: the VRAM share.  A host data write stores TWO
+     * bytes, packed.
      *
-     * The offset below masks with (size - 1) = 0x7FFFF, a 512 KiB period.
+     * Transcribed from the driver rather than from the TI guide:
+     *
+     *   tms34010.cpp:1875  host_w() case TMS34010_HOST_DATA:
+     *         addr = (IOREG(REG_HSTADRH) << 16) | IOREG(REG_HSTADRL);
+     *         TMS34010_WRMEM_WORD(addr & 0xfffffff0, data);
+     *   tms34010.cpp:317   tms34010_device::TMS34010_WRMEM_WORD(A,V):
+     *         m_program.write_word(A, V);
+     *   tms34010.cpp:67    program space: datawidth 16, addrshift 3
+     *   harddriv.cpp:628   map(0xff800000,0xffbfffff).mirror(0x4000000)
+     *                         .ram().share("gsp_vram");
+     *
+     * `.ram()` is plain byte-addressable RAM and `write_word` on a 16-bit-wide
+     * space stores exactly two bytes.  The 16 that appear in this model come
+     * from the space's ALIGNMENT, not from the width of the store: addrshift 3
+     * with datawidth 16 gives alignment() == 16, which is why every write
+     * targets a 16-byte boundary (the `& 0xfffffff0` above) while storing only
+     * the first two bytes of that cell.  Reading "aligned in 16" as "written 16"
+     * is what produced the replication this replaces.
+     *
      * The share is 4 MiB: MAME's window 0xff800000-0xffbfffff is 0x400000
      * bytes, mirrored through bit 22, so the measured offset is
-     * `addr & 0x3fffff`.  The two disagree from 0xff880000 upward -- inside
-     * the primary window, not merely in the alias -- and across the capture
-     * that is 745,384 of 843,688 0xFFxxxxxx writes.  CONFIRMED DIVERGENCE,
-     * unfixed; see the note on gsp_region() above and
-     * docs/mc68010-boot-findings.md section 19. */
+     * `addr & 0x3fffff`.
+     *
+     * HISTORY.  Two defects lived here, and the second hid the first.
+     *
+     * 1. The offset mask was (size - 1) = 0x7FFFF, a 512 KiB period, which
+     *    disagreed with the real share from 0xff880000 upward -- inside the
+     *    primary window, not merely in the alias -- affecting 745,384 of
+     *    843,688 0xFFxxxxxx captured writes (88.4%).  Fixed: both
+     *    GSP_BOARD_VRAM_BYTES and MUSASHI_GSP_VRAM_BYTES are 0x400000
+     *    (docs section 19).
+     *
+     * 2. The store replicated each byte 8x across the 16-byte cell.  MAME
+     *    packs.  This stayed invisible because the native model
+     *    (native/musashi_cpu.c) replicated identically until fcf1eab
+     *    corrected IT to packed on 2026-10-12 without touching this file --
+     *    so tools/check-gsp-replay, which compares these two models against
+     *    each other, passed by shared construction rather than by being right.
+     *    Correcting the size exposed it: at 4 MiB the two models disagree on
+     *    1,157,420 of 4,194,304 bytes.  See stun-runner-2ua and docs
+     *    section 27. */
     if ((addr & 0xff000000u) == 0xff000000u) {
         uint32_t off = ((addr - 0xff800000u) &
                         (GSP_BOARD_VRAM_BYTES - 1u)) & ~0xfu;
-        uint8_t lo = (uint8_t)(data & 0xffu);
-        uint8_t hi = (uint8_t)(data >> 8);
-        unsigned k;
-        for (k = 0; k < 8u; k++) {
-            b->vram[off + k]      = lo;
-            b->vram[off + 8u + k] = hi;
-        }
-        b->vram_writes += 16u;
+        b->vram[off]     = (uint8_t)(data & 0xffu);
+        b->vram[off + 1] = (uint8_t)(data >> 8);
+        b->vram_writes += 2u;
         return;
     }
 

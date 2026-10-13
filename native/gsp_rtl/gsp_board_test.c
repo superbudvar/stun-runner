@@ -221,9 +221,23 @@ static void test_host_register_decode(void)
 /* HSTDAT expands to a 16-byte cell: eight low-byte copies then eight
  * high-byte copies.  This is the board's observed expansion, recorded in
  * docs/mc68010-boot-findings.md section 12.2. */
-static void test_hstdat_cell_expansion(void)
+/* HSTDAT to the VRAM share stores TWO BYTES, packed -- not a 16-byte cell with
+ * each source byte replicated eight times.
+ *
+ * The replication this replaces was a misreading of the driver's geometry.  The
+ * program space is declared `datawidth 16, addrshift 3` (tms34010.cpp:67), which
+ * gives alignment() == 16, and `TMS34010_WRMEM_WORD` masks the address with
+ * 0xfffffff0 (tms34010.cpp:1875).  That alignment is why every write targets a
+ * 16-byte boundary; it says nothing about how many bytes the write stores.
+ * The store itself is `m_program.write_word(A,V)` into a `.ram()` region
+ * (harddriv.cpp:628) -- exactly two bytes.
+ *
+ * Asserted as the literal 16-byte cell content rather than a byte count, so the
+ * test cannot pass for either wrong reason: replication puts 0x7f at 0x1007 and
+ * packed leaves it zero, and the two disagree on every byte of the cell. */
+static void test_hstdat_stores_two_packed_bytes(void)
 {
-    static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
+    static gsp_board_t b;   /* 4 MiB model: static, never on the stack */
     unsigned i;
     gsp_board_reset(&b);
 
@@ -237,12 +251,43 @@ static void test_hstdat_cell_expansion(void)
     gsp_board_host_write(&b, 0x0cu, 0xc37fu); /* HSTDAT                 */
 
     CHECK_EQ(b.hstadr, 0xff801000u);
-    for (i = 0; i < 8u; i++) {
-        CHECK_EQ(b.vram[0x1000u + i], 0x7fu);
-        CHECK_EQ(b.vram[0x1008u + i], 0xc3u);
+
+    /* Exactly the two bytes of the word, little-endian, at the cell base. */
+    CHECK_EQ(b.vram[0x1000u], 0x7fu);
+    CHECK_EQ(b.vram[0x1001u], 0xc3u);
+
+    /* And nothing else in the 16-byte cell was touched.  These are the
+     * assertions the replicating model fails: it wrote 0x7f at 0x1000-0x1007
+     * and 0xc3 at 0x1008-0x100f. */
+    for (i = 2u; i < 16u; i++) {
+        CHECK_EQ(b.vram[0x1000u + i], 0x00u);
     }
-    CHECK_EQ(b.vram[0x1010u], 0x00u); /* cell is exactly 16 bytes */
-    CHECK_EQ(b.vram_writes, 16u);
+
+    /* The write did not spill into the following cell either. */
+    CHECK_EQ(b.vram[0x1010u], 0x00u);
+    CHECK_EQ(b.vram_writes, 2u);
+}
+
+/* Two consecutive words at the same 16-byte cell base must both be visible,
+ * proving the store is a plain 2-byte store and not a 16-byte one that would
+ * have overwritten its own tail. */
+static void test_hstdat_two_words_share_one_cell(void)
+{
+    static gsp_board_t b;   /* 4 MiB model: static, never on the stack */
+    gsp_board_reset(&b);
+
+    gsp_board_host_write(&b, 0x00u, 0xff80u);
+    gsp_board_host_write(&b, 0x04u, 0x1000u);
+
+    gsp_board_host_write(&b, 0x0cu, 0x1111u);
+    CHECK_EQ(b.vram[0x1000u], 0x11u);
+    CHECK_EQ(b.vram[0x1001u], 0x11u);
+
+    /* HSTADRL is masked to 0x1000 either way; write a second word there. */
+    gsp_board_host_write(&b, 0x0cu, 0x2222u);
+    CHECK_EQ(b.vram[0x1000u], 0x22u);
+    CHECK_EQ(b.vram[0x1001u], 0x22u);
+    CHECK_EQ(b.vram_writes, 4u);
 }
 
 /* HSTCTL bit 0x0800 post-increments the address latches after a host data
@@ -385,7 +430,8 @@ int main(void)
     test_2bpp_window_writes_main_vram();
     test_unmapped_reads_zero_and_count();
     test_host_register_decode();
-    test_hstdat_cell_expansion();
+    test_hstdat_stores_two_packed_bytes();
+    test_hstdat_two_words_share_one_cell();
     test_hstctl_increment();
     test_hstdat_dispatches_on_address();
     test_host_readback();

@@ -53,6 +53,31 @@ executed the game display list. The RTL output path remains distinct work; the
 comparison is between two scanout implementations over the shell's available
 board state.
 
+### Parallel thread — GSP execution (`stun-runner-gsvp`)
+
+Distinct from M5. The GSP has no ROM: `mainpcb:user1` is the ADSP object ROM,
+and the 68010 programs the GSP through VRAM. Until a GSP executes, the display
+list is never rasterised and the 68010 spins at `$022766` waiting on a queue
+nothing fills.
+
+- **`gsvp.1` vendoring — done.** MIT-licensed `birdybro/TMS34010_sv` pinned at
+  `94a258e80a07ceb4303ce0b99818df832e96007f` under `third_party/tms34010_sv/`,
+  33 modules / 13,937 lines, with `PROVENANCE.md` and a SHA-256 manifest.
+- **`gsvp.2` toolchain — done.** Verilator 5.052 at
+  `$HOME/.local/share/verilator-5.052`; the core is an *optional* CMake target
+  that skips cleanly when Verilator is absent, so the ROM-free build gains no
+  simulator dependency.
+- **`gsvp.3` host harness — open.** `native/gsp_rtl/gsp_board.c` is the
+  toolkit-free C99 board model (memory map, host port, reset/clock), testable
+  without Verilator. The Verilated driver is wired into the shell frame loop.
+- **`gsvp.4` first milestone — open, and its headline number is weaker than it
+  looks.** Feeding the real 68010 upload (`gsp_bus_events.bin`, 901,354 events)
+  through the board model gives byte-identical VRAM — but read the 4 MiB caveat
+  above before quoting it. What is *not* yet shown is the TMS34010 core
+  executing the uploaded display list. Scanout deliberately stays in the native
+  rasteriser, which already reproduces the MAME frame byte-for-byte from
+  correct VRAM, palette and registers.
+
 ### M4 completion
 
 The native shell emits deterministic fixed-step timing, a generic replay input
@@ -225,16 +250,37 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
 
 ## Current blockers
 
-- **The GSP VRAM share is 4 MiB and both `native/` VRAM paths model it as
-  512 KiB.** `GSP_BOARD_VRAM_BYTES` and `MUSASHI_GSP_VRAM_BYTES` are both
-  `0x80000`, so both mask with `0x7FFFF` where MAME's share is `0x400000`.
-  Measured by `tools/mame-gsp-mirror-probe` against live MAME and confirmed
-  from the capture direction by `tools/mame-gsp-vram-dump`: 745,384 of 843,688
-  captured `0xFFxxxxxx` HSTDAT writes (88.4%) land in a different cell.
-  `tools/check-gsp-replay` cannot see this because both models carry the same
-  constant, which is also why section 15.4's byte-for-byte VRAM match is not
-  evidence about MAME. Blocked behind adopting a correct 4 MiB oracle first;
-  see `docs/mc68010-boot-findings.md` section 19 and `stun-runner-2ua`.
+- **The GSP VRAM share is 4 MiB, and the host data write PACKES. Both defects
+  are FIXED; the parity evidence is still missing.**
+  - *Size.* `GSP_BOARD_VRAM_BYTES` (`native/gsp_rtl/gsp_board.h:29`) and
+    `MUSASHI_GSP_VRAM_BYTES` (`native/musashi_cpu.h:67`) are both `0x400000`
+    since 2026-10-12 (`cf8587e`, `bd5b873`), so both paths now mask with
+    `0x3FFFFF` where they used to mask with `0x7FFFF`. Measured by
+    `tools/mame-gsp-mirror-probe` against live MAME: the old mask sent 745,384
+    of 843,688 captured `0xFFxxxxxx` HSTDAT writes (88.4%) to a different cell.
+    Section 19, `stun-runner-2ua`.
+  - *Store.* `gsp_board_hstdat_store()` stored 8 copies of the low byte then 8 of
+    the high byte; MAME's `TMS34010_WRMEM_WORD` is `m_program.write_word` into a
+    `.ram()` region and stores **2 bytes**. `fcf1eab` had corrected only
+    `native/musashi_cpu.c`, so the two models implemented different stores and
+    disagreed by 1,157,420 of 4,194,304 bytes once the size was corrected.
+    Now `0 / 4,194,304`. Section 27, `BUGS.md` SR-20.
+  - **Section 15.4's byte-identical VRAM match (`0 / 524,288`) is RETRACTED.**
+    Both models carried the same wrong constant *and* the same wrong store, so
+    they agreed by construction. It proved host-write dispatch was correct and
+    nothing else. Do not quote it as VRAM parity.
+  - **Neither model has been compared against `tools/mame-gsp-vram-dump`.** The
+    frame-600 oracle is contaminated: 87.5% of its nonzero cells are uniform and
+    hold GSP framebuffer data (0x82, 0xb8, 0xaa…), against 82,720 nonzero cells
+    from any host-port replay. Arbitrating needs a capture taken while the GSP is
+    still in reset; MAME's share is still zero at frame 60, so the window is not
+    yet located. This is the open item.
+  - `tools/check-gsp-replay` also never had a pass branch — it ended in an
+    unconditional `return 1`, so it could not report success. Fixed; it now
+    returns 0 on byte-identity. Section 27.3.
+  - Section 18.2 stands unchanged and is independent of all of the above: the
+    capture ends 560,422 68010 cycles after the final HLT release with the GSP
+    halted 99.61% of its window.
 - **`fixtures/oracle/frame_600/frame_600_gsp_vram.bin` is not VRAM.** 1048576
   bytes, first 8 bytes are the MC68010 reset SP/PC (`ffffc000 00000216`), no
   provenance metadata, and 0.2% byte agreement with a fresh pinned capture.

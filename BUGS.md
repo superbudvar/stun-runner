@@ -331,6 +331,35 @@ behaves and must be reported upstream.
 
 *(none recorded yet — this section exists so the distinction stays visible)*
 
+### SR-20 — HSTADR's low four bits are discarded on every host data write
+
+- **Kind:** hardware abuse
+- **Where:** `tms340x0_device::host_w`, case `TMS34010_HOST_DATA` —
+  `mame-ref/src/devices/cpu/tms34010/tms34010.cpp:1898`
+- **Symptom:** a programmed GSP address ending in anything other than `0x0`
+  never reaches VRAM where it was programmed. The write lands on the next lower
+  16-byte boundary, and the four bits are gone with no diagnostic and no
+  readback showing where it actually went.
+- **Evidence:** the driver masks the assembled address before the store —
+  `TMS34010_WRMEM_WORD(addr & 0xfffffff0, data)`. The post-increment path at
+  `:1902` then adds `0x10` and writes the new value back into both latches,
+  so a program that relies on the increment never observes a partial address
+  either. Net effect: HSTADR is a 20-bit cell index with the low 4 bits
+  permanently read as zero.
+- **Confidence:** confirmed by MAME (source), and confirmed by measurement that
+  STUN Runner's own boot fill relies on it: the ROM programs
+  `move.l #$FF800000,$C00002.l` (findings 13.1) — an address that is already
+  16-byte aligned, so the mask is invisible to the game but decisive to any
+  model of it.
+- **Impact on us:** this cost a full investigation cycle. Our board model read
+  `datawidth 16, addrshift 3` and concluded the space was *written* 16 bytes
+  wide, replicating each source byte 8x across the cell. The 16 is the space's
+  alignment, not the width of the store; `write_word` into a `.ram()` region
+  stores 2 bytes. See `docs/mc68010-boot-findings.md` section 27 and
+  `stun-runner-2ua`. Any future TMS34010 host-port model must take the store
+  width from `TMS34010_WRMEM_WORD`, never from the space geometry.
+
+
 ## Curiosity
 
 *(ROM quirks with no impact on the conversion — kept here so they are not

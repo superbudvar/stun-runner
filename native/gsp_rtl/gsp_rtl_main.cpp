@@ -361,9 +361,34 @@ int replay_host_writes(const std::string &path, const std::string &ref_vram)
     }
     std::printf("\n");
 
-    std::printf("RESULT FAIL: replayed VRAM differs from the native model in "
-                "%ld bytes\n", diff_bytes);
-    return 1;
+    /* Byte-identical is the pass condition, as the tool's own header says.  A
+     * percentage is not a gate: it would go green on a model that is wrong in
+     * a way nobody wrote down.
+     *
+     * This branch did not exist until 2026-10-13.  The function ended in an
+     * unconditional `RESULT FAIL` / `return 1`, so tools/check-gsp-replay could
+     * never report success -- it was a smoke test wearing the label of an
+     * acceptance gate, and its exit code said nothing about the comparison it
+     * printed.  A check that cannot pass is not a check. */
+    if (diff_bytes != 0) {
+        std::printf("RESULT FAIL: replayed VRAM differs from the native model "
+                    "in %ld bytes\n", diff_bytes);
+        return 1;
+    }
+
+    /* Both byte sums must agree too.  That is implied by diff_bytes == 0, but
+     * it is the invariant the earlier 512 KiB runs quoted (section 15.4:
+     * "byte sum ours=52878584 reference=52878584"), so printing it keeps that
+     * claim comparable across extents. */
+    if (sum_ours != sum_want) {
+        std::printf("RESULT FAIL: byte sums disagree (%llu vs %llu)\n",
+                    (unsigned long long)sum_ours, (unsigned long long)sum_want);
+        return 1;
+    }
+
+    std::printf("RESULT PASS: replayed VRAM is byte-identical to the native "
+                "model across all %u bytes\n", (unsigned)want.size());
+    return 0;
 }
 
 /* Milestone-1 self test: prove the ROM-less boot end to end.

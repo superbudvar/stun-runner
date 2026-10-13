@@ -61,9 +61,11 @@ typedef struct {
     uint8_t  ctrl_lo[GSP_BOARD_CTRL_BYTES];
     uint8_t  ctrl_hi[GSP_BOARD_CTRL_BYTES];
 
-    /* Host-port state.  Addresses are 16-byte cells, per the TI guide and
-     * the board's observed host-write expansion. */
-    uint32_t hstadr;      /* composed HSTADRH:HSTADRL, in cells */
+    /* Host-port state.  HSTADR is held masked to its 16-byte cell: MAME
+     * applies `addr & 0xfffffff0` before the store (tms34010.cpp:1875).  The
+     * store itself is 2 bytes -- alignment is not width.  See the note on
+     * gsp_board_hstdat_store's VRAM branch. */
+    uint32_t hstadr;      /* composed HSTADRH:HSTADRL, 16-byte aligned    */
     uint16_t hstdat;      /* HSTDAT write/read register          */
     uint16_t hstctl;      /* HSTCTL, including the 0x0800 increment bit */
 
