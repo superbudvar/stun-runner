@@ -54,3 +54,7 @@ tools/frame_diff
 # Specific build directories
 build-test/
 native/build_*/
+
+# Compiled helper tools built ad hoc from native/ sources
+native/road_decoder
+native/track_viewer_3d

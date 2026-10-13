@@ -5049,3 +5049,310 @@ The pre-computation phase (1000+ bytes: $039D22–$03AB6F) sets `$FFDD1E` and `$
 - 8 existing `stunrun_mc68010_speed_update` tests (unchanged)
 - 7 new `stunrun_mc68010_speed_routine` tests covering all three code paths and the accumulator write
 - Broken implementation (returns 0xBEEF) correctly fails on the first assertion
+
+## 26. Object collision test ($03B02C) and the hit award chain ($03A262)
+
+### 26.0 Correction to the section-16 heading collision
+
+The subagent slices for `$03D1A0`, `$03E3FC`, and `$039B82` each opened their
+own "## 16." in this file. Three sections now share the number 16, and two
+share 22. The duplicates are left in place rather than renumbered, because
+renumbering would break every `§N` cross-reference in this file and in the
+analysis documents. Use the heading text, not the number, to cite these.
+
+### 26.1 `$03A298` is not a routine entry
+
+The task brief named `$03A298` as a function to port. It is not. It is the
+middle of **jump-table case 5** inside the `$039B82` routine already ported
+in section 16. Case 5 is entered at `$03A262`; `$03A298` is reachable only
+as a fall-through from `$03A294`, that is, after a collision that was *not*
+deduped. The dispatch is at `$03A0E6`:
+
+```asm
+03A0E6: move.w  $10(a0),d0        ; record type field
+03A0EA: cmpi.w  #$7,d0
+03A0EE: bhi.w   $03A4FE           ; type > 7 -> shared exit
+03A0F2: add.w   d0,d0             ; index * 2
+03A0F4: move.w  $3a0fc(pc,d0.w),d0
+03A0F8: jmp     $3a0fc(pc,d0.w)
+```
+
+| type | word | target |
+|---|---|---|
+| 0 | `$0402` | `$03A4FE` (shared exit) |
+| 1 | `$0010` | `$03A10C` |
+| 2 | `$0120` | `$03A21C` |
+| 3 | `$02B8` | `$03A3B4` |
+| 4 | `$00EA` | `$03A1E6` |
+| **5** | **`$0166`** | **`$03A262`** |
+| 6 | `$0402` | `$03A4FE` |
+| 7 | `$0222` | `$03A31E` |
+
+Each case has its own "last record" latch (`$FFDD78` for cases 1/2/5,
+`$FFDD7C` for case 7) and its own per-frame hit byte at `-$12(a6)`. The C
+slice therefore covers the whole case-5 body from `$03A262`, not a callable
+unit starting at `$03A298`.
+
+### 26.2 Verbatim transcription of the collision test, `$03B02C`
+
+The decisive tail:
+
+```asm
+03B112: moveq  #$0,d3             ; d3 = 0
+03B114: tst.w  $ffdd14.l          ; sign of dx
+03B11A: blt    $03B126
+03B11C: move.w $ffdd14.l,d2
+03B122: ext.l  d2                 ; d2 = dx
+03B124: bra    $03B130
+03B126: move.w $ffdd14.l,d2
+03B12C: ext.l  d2
+03B12E: neg.l  d2                 ; d2 = -dx
+03B130: moveq  #$0,d0
+03B132: move.w  d5,d0             ; d0 = half_a
+03B134: move.l  d0,d1
+03B136: cmp.l   d2,d1
+03B138: bls    $03B156            ; |dx| >= half_a -> MISS
+03B13A: tst.w  (a1)               ; sign of dy
+03B13C: blt    $03B144
+03B13E: move.w (a1),d2
+03B140: ext.l  d2
+03B142: bra    $03B14A
+03B144: move.w (a1),d2
+03B148: ext.l  d2
+03B14A: ...  d1 = d4 ; cmp.l d2,d1
+03B152: bls    $03B156            ; |dy| >= half_b -> MISS
+03B154: moveq  #$1,d3             ; HIT
+03B156: move.l  d3,d0
+03B158: movem.l -$10(a6),d2-d5
+03B15E: unlk   a6
+03B160: rts
+```
+
+**Confirmed:** a strict two-axis AABB overlap. `bls` is unsigned-or-equal,
+so a hit requires `|dx| < half_a` **and** `|dy| < half_b`; equality is a
+miss. This matters: an implementation using `<=` would pass a "did it run"
+test and fail only on the exact boundary.
+
+Deltas are written as a side effect of the test:
+
+```asm
+03B064: move.w  $02(a0),d0
+03B068: ext.l  d0
+03B06A: move.l  $ffdbfe.l,d1
+03B06E: sub.l   d0,d1
+03B070: move.w  d1,$ffdd14.l       ; dx
+...
+03B080: move.w  $ffdc1a.l,d0
+03B084: ext.l  d0
+03B086: move.l  d0,$ffdd12.l
+03B08C: move.w  $06(a0),d0
+03B090: ext.l  d0
+03B092: sub.l   d0,$ffdd12.l       ; dy
+```
+
+### 26.3 Half-extent selection — ambiguity, not resolved silently
+
+```asm
+03B094: subi.w  #$400,d1           ; d1 = record+0x0C - $400
+03B098: subi.w  #$c0, d4           ; d4 = record+0x0E - $C0
+03B09C: tst.b   d2                 ; selector byte from caller -$f(a6)
+03B09E: beq.b   $03B0A6
+03B0A0: move.w  d4,d0
+03B0AA: move.w  d0,d4              ; selector picks which extent
+03B0A6: move.w  d1,d0
+```
+
+Two readings cannot be separated statically:
+
+1. the `-$400` / `-$C0` are centring offsets for a signed 16-bit
+   fixed-point coordinate, and the selector chooses the active axis; or
+2. the selector chooses which of two separately-authored extents is live.
+
+The slice implements the literal mechanism (subtract, then select). It does
+**not** claim an axis meaning.
+
+### 26.4 Size-class scaling — exact immediates
+
+```asm
+03B0B0: move.w  $0a(a6),d3         ; owner's record+0x0A
+03B0B4: cmpi.w  #$4b0,d3
+03B0BA: beq    $03B0C4            ; * 1.5
+03B0BE: cmpi.w  #$320,d3
+03B0C4: ...
+03B0CA: beq    $03B0CE            ; << 1
+03B0D0: cmpi.w  #$3e8,d3
+03B0D6: beq    $03B0E0            ; * 1.5
+03B0E0: cmpi.w  #$c80,d3
+03B0E6: bne    $03B0EE            ; no match -> unscaled
+```
+
+Five exact constants: `$4B0` and `$3E8` scale by 1.5, `$320` doubles, `$C80`
+halves. Anything else leaves the extent unscaled. That `owner+0x0A` selects
+a *size class* rather than being a coordinate is an **inference** — the five
+exact immediates argue for it, but nothing here proves the axis label.
+
+### 26.5 Timer widening
+
+```asm
+03B0EE: tst.w  $ffdd4e.l
+03B0F4: beq    $03B0FE
+03B0F6: cmpi.w  #$3,$0a(a1)        ; record type
+03B0FC: beq    $03B0FE
+; half_a += half_a >> 2   (* 1.25)
+; half_b += half_b >> 4   (* 1.0625)
+```
+
+Both extents widen when `$FFDD4E != 0` and the record type is not 3.
+
+### 26.6 The award chain, `$03A28E`-`$03A31A`
+
+```asm
+03A28E: cmp.l  $ffdd78.l,d0        ; current record vs latch
+03A294: beq    $03A314             ; duplicate -> no scoring
+03A298: addq.w #$1,$ffdd02.l       ; hit counter, 16-bit
+03A29E: move.w $ff9578.l,d0        ; course index
+03A2A4: ext.l  d0
+03A2A6: movea.l #$4ee4e,a0
+03A2AC: tst.b  (a0,d0.l)           ; threshold byte nonzero?
+03A2B0: beq.b  $03A2DA
+03A2C2: move.b (a0,d1.l),d0
+03A2C6: cmp.w  $ffdd02.l,d0        ; EQUALITY
+03A2CC: bne.b  $03A2DA
+03A2CE: pea.l  $16.w               ; milestone event
+03A2D2: jsr    $301ca.l
+03A2DA: tst.w  $ff9578.l
+03A2E0: beq.b  $03A2EA
+03A2E2: move.l #$1f4,d2            ; 500
+03A2EA: moveq  #$32,d2             ; 50
+03A2EC: add.l  d2,$ff9532.l        ; 32-bit add
+03A2F2: move.l -$e(a6),$ffdd78.l   ; latch
+03A2FA: tst.w  $ff9578.l
+03A300: beq.b  $03A308
+03A302: pea.l  $5f.w               ; later-course hit event
+03A308: pea.l  $6c.w               ; first-course hit event
+03A30C: jsr    $301ca.l
+03A314: moveq  #$1,d0              ; return 1
+03A316: move.b d0,-$12(a6)         ; per-frame hit flag
+03A31A: bra    $03A4FE             ; shared loop exit
+```
+
+**Confirmed:** `addq.w` at `$03A298` (16-bit, wraps at `$FFFF`), `add.l` at
+`$03A2EC` (32-bit), `cmp.w` at `$03A2C6` (equality, **not** `>=`).
+
+### 26.7 The 50/500 rule is a course tier, not a track lookup
+
+`analysis/ram-map.md:51` reads "awards `50` or `500` points based on
+`0xFF9578`". That is literally right but easy to misread as a per-track
+table. Surveying all 103 `$FF9578` references in the ROM:
+
+| writer | value |
+|---|---|
+| `$024322`, `$02B95E` | `clr.w` |
+| `$0320BC` | `addq.w #1` — course completion |
+| `$0252EC` | `addq.w #1` — cleanup/re-entry |
+| `$0291A2` | `subq.w #1` |
+| six writers | constants `$0F`/`$0D`/`$0C`/`$04`/`$0C`/`$11` |
+| `$02B63E` | `move.w d1` |
+| readers | `cmpi.w #$16` at five sites — **22 courses** |
+
+So the rule is **first course 50 per object hit, every later course 500**.
+`analysis/ram-map.md` should be sharpened to this.
+
+Checked and *not* a bug: `ext.l d0` at `$03A2A4` sign-extends the course
+index before the `$4EE4E` byte lookup, and the table is only 33 bytes, so a
+negative index would read ROM below it. Every writer produces `$00`-`$11`, so
+bit 15 is never set. Worth re-checking if a new writer ever appears.
+
+### 26.8 Threshold table `$4EE4E`, literal, 33 bytes
+
+| course | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| byte | 00 | 00 | 0B | 13 | 00 | 1C | 0F | 13 | 14 | 46 | 16 | 13 | 15 | 17 | 14 | 15 | 24 | 15 | 10 | 15 | 14 | 14 |
+
+courses 22-32: `00 00 00 00 01 00 01 00 01 00 01`.
+
+The milestone fires only on an **exact** counter match: course 2 wants hit
+11, course 5 wants hit 28, course 9 wants hit 70, course 16 wants hit 36.
+Courses 0, 1, 4, 22, 24, 25 have no threshold.
+
+### 26.9 Event queue `$00301CA`
+
+```asm
+; $8(a6) = payload byte
+lane  = byte @ $FFDBC8
+count = byte @ $FFDBC4 + lane
+03B1E6: cmpi.b #$20,(a0,d0.w)
+03B1EC: bcc    <return>            ; full -> drop silently
+queue = $FFDB64 + lane*32
+$FFDB64[lane*32 + count] = payload
+$FFDBC4[lane] = count + 1
+```
+
+A 32-lane, 32-deep byte staging buffer with **silent drop on full**: no flag,
+no counter bump, no error. Recorded as SR-19 in `BUGS.md`.
+
+### 26.10 Rejected lead, recorded so it is not re-raised
+
+`$0320A4`-`$0320C2` uses the same `add.l d2,$ff9532.l` idiom as the award
+chain, indexed by `$FF9578 * 4` into a table at `$4AF7E` containing
+`0, 1000, 1500, 2000, ..., 8000` — exactly `500 * course` with entry 0 = 0.
+This is **not claimed** as the course-finish bonus: an entry-0 bonus of 0 is
+odd, and the index may be `(course+1)` at the real call sites. Flagged as a
+lead only.
+
+### 26.11 Integration: `award_path.c` now delegates
+
+`reproduction/maincpu/award_path.c` independently re-derived the same three
+instructions (`$03A298`, `$03A2E2`, `$03A2EC`). Two models of one chain can
+drift, so it is now a thin adapter over `stunrun_mc68010_collision_award()`.
+Its narrower signature cannot express the dedupe or the milestone, so it
+passes a record distinct from the latch and a NULL threshold table. Callers
+needing those behaviours should call the physics slice directly.
+
+This resolves the three items `award_path.h` disclaimed as "deliberately NOT
+claimed": the 50-award immediate is `$03A2EA` (`74 32` = `moveq #$32,d2`);
+the `0x0` operand at `$03A2E4` is the high half of the
+`move.l #$000001F4,d2` immediate at `$03A2E2`; and hit detection is
+`$03A27A jsr $3B02C`, transcribed in §26.2.
+
+### 26.12 Test verification
+
+15 new assertions in `native/mc68010_physics_test.c`, asserting observable
+output rather than "it ran": exact score and counter deltas, the dedupe, the
+milestone equality, collision strictness on both axes, negative-delta abs
+branches, timer widening, and each size-class scaling.
+
+**Oracle vector.** `reference/experiments/stunrun/main-ram-center-object-score.metadata.json`
+records `$FFDD02` taking values "0x01 through 0x22" and `$FF9532` taking
+"50 through 1700". That is 34 counter values and 34 awards, so the counter
+starts at 0 and is incremented once per award, with distinct records
+(duplicates are deduped and would not increment). `test_award_oracle_vector`
+reproduces exactly that. If it stops reproducing, the model is wrong; the
+expectation must not be adjusted to make it pass.
+
+**Mutation testing.** Six deliberate breaks, all caught:
+
+| # | mutation | caught by |
+|---|---|---|
+| 1 | dedupe at `$03A294` removed | `test_award_duplicate_is_deduped` |
+| 2 | `cmp.w` weakened to `<=` | `test_award_milestone_requires_exact_match` |
+| 3 | strict `<` weakened to `<=` | `test_collision_strict_less_than` |
+| 4 | timer widening removed | `test_collision_timer_widens_extents` |
+| 5 | selector forced to `half_b` | `test_collision_selector_and_size_class` |
+| 6 | `add.l` narrowed to 16-bit | `test_award_score_add_is_32_bit` |
+
+Mutation 6 initially did **not** fail. The first overflow vector,
+`0xFFFFFF00 + 500`, wraps at bit 32, where a 16-bit add and a 32-bit add
+produce the same low 16 bits — so the test could not distinguish them. A
+second vector, `0xFFF0 + 500 = 0x101E4`, was added; it carries out of bit 16
+and does distinguish them. This is the fourth check in this repository that
+passed for the wrong reason; see also §15.5 and §15.6.
+
+**Suite state:** 59/59 ctest, 149/149 repository pytest.
+
+### 26.13 Not yet done
+
+`$03A298` was analysed statically only. No MAME trace was captured for this
+lane; the runtime consequences in SR-18 remain inferred. The record-walking
+loop at `$03A0A8` that selects which records are tested, and the list-head
+pointer table at `$4C712`, are the next target for subsystem 3.
