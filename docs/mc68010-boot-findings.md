@@ -5669,6 +5669,43 @@ frames `[45,46]` versus spread across
 `[31,38,87,92,93,94,97,98,100,120,121,126,130,131]`. Different execution paths,
 not just a different draw.
 
+### 29.2a What the two arms actually are — corrected after decoding them
+
+The first version of this section described arm B as "attract text only, service
+mode did not engage". That is wrong, and decoding the descriptors says so. Every
+`(frame, A0-5)` pair in each run, resolved through the selector table at
+`$10136`, grouped to the start of each draw (`A0` post-increments per character,
+so only the first character of a draw yields the descriptor — the trap
+`stun-runner-rg9` warns about):
+
+```text
+selector  descriptor  count  text                            game (none)  svc arm A  svc arm B
+$47       $06C53      1E     PRESS*START*TO*BYPASS*SELFTEST   frame  45    frame 214  frame  45
+$43       $06BE7      0E     PROGRAM*ROM*OK                   frame 165    frame 334  -
+$50       $06D41      0F     Y*X*W*V*U*T*S*R                  frame 166    frame 335  -
+$51       $06D54      03     200                              frame 167    frame 336  -
+$52       $06D5B      03     210                              frame 167    frame 336  -
+```
+
+Three things follow, and the first two are corrections.
+
+**1. `--input none` — plain game mode — executes `$25E8` 1040 times and draws all
+five blocks.** So `$25E8` is *not* a service-mode-only routine, and §21.3's
+framing of these selectors as resolved from service-mode live traffic describes
+the descriptors correctly but overstates their mode specificity: the identical
+descriptors are drawn in game mode about 150 frames earlier.
+
+**2. Arm B is not "game mode".** Game mode draws all five. Arm B draws only
+`$47`, at frame 45 — the game-mode frame — and then the other four never happen.
+So arm B is a third state, not the absence of the service press: a run in which
+four of five known text draws do not occur and nothing reports it. That is the
+failure this repository is most exposed to, an absent observation reading as a
+fact about the machine.
+
+**3. The frame numbers in `stun-runner-rg9` and §21 are mode-specific** and must
+not be carried into a mode-independent expectation. `$47` lands at 45 in game
+mode and 214 under the service schedule.
+
 ### 29.3 What this invalidates
 
 `reference/experiments/stunrun/service-f2-text-host-writes/` records 1040 events
@@ -5682,6 +5719,10 @@ same position until this is resolved.
 
 `--start-frame` is not the discriminator: `--start-frame 5` also produced 1040
 on some runs and 480 on others, and the events sit at frames well above 60.
+
+Decoding the two arms changes what is at stake, and corrects the first draft of
+this section: see 29.2a. Arm B is not "service mode failed to engage" — it draws
+only the first of five text blocks and silently omits the other four.
 
 ### 29.4 The suspect, and why it is not yet a conclusion
 
