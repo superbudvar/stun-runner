@@ -8,6 +8,21 @@ The project aims to incrementally produce both a reproduction build for the orig
 
 See `PROCESS.md` for the workflow and `PROJECT.md` / `STATUS.md` / `MILESTONES.md` for current project state.
 
+## Quick start
+
+With the local STUN Runner ROM chips in `roms/stunrun/`, build and launch the
+live native comparison windows from the project root:
+
+```sh
+./build.sh
+./run.sh
+```
+
+`run.sh` also builds on first use. Set `STUNRUN_STUNRUN_DIR` for a different
+ROM directory, or `STUNRUN_FRAMES=120 ./run.sh` for a bounded run. The default
+live SDL/OpenGL mode opens the CPU reference and OpenGL scanout in separate
+windows.
+
 ## Promo kit
 
 Watch the [sizzle reel](promo/sizzle-reel.mp4) (21 s), check the

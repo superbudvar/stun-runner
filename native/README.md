@@ -38,9 +38,18 @@ use the build-on-demand launcher:
 
 The wrapper defaults to `$ROOT/build/native`, builds `stunrun-native-shell` if
 missing, opens a resizable SDL/OpenGL window, and runs until the window closes.
+With `STUNRUN_LIVE_VIDEO=1` and the `sdl_opengl` backend, the shell opens two
+separate windows: **GSP Scanout (CPU Reference)** uses the existing CPU scanout;
+**OpenGL GSP Scanout** runs a fragment shader directly over VRAM and palette
+textures. These are independent pixel/palette paths over the same live board
+state; the shader receives a compact per-line address-state texture, not the
+CPU renderer's RGB framebuffer. Set `STUNRUN_DUAL_SCANOUT_GL=0` to disable the
+second window. The OpenGL window is placed beside the CPU reference window.
+
 Override `NATIVE_BUILD_DIR`, `STUNRUN_STUNRUN_DIR`, `STUNRUN_VIDEO_BACKEND`,
-`STUNRUN_LIVE_VIDEO_FPS`, or `STUNRUN_FRAMES` to select another build, ROM
-directory, backend, pace, or bounded run length.
+`STUNRUN_LIVE_VIDEO_FPS`, `STUNRUN_DUAL_SCANOUT_GL`, or `STUNRUN_FRAMES` to
+select another build, ROM directory, backend, pace, comparison mode, or bounded
+run length.
 
 This displays the live 68010-written GSP share, not a complete game picture:
 the TMS34010 GSP does not yet execute the uploaded display list, so the view

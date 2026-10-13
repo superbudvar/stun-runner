@@ -31,12 +31,27 @@ Native target: **deterministic replay/checkpoint scaffolding and evidence-backed
 
 Verification harness: **bounded replay/checkpoint/trace path implemented; M1 machine facts are promoted into selectors and evidence fixtures**
 
-## Immediate objective — M5 first visible output
+## Immediate objective — M5 independent scanout comparison
 
-Use the original MAME title checkpoint and the native shell boundary to identify
-and reproduce the earliest evidence-backed visible output. Keep all game
-semantics evidence-backed and leave the current five verified transport slices
-intact.
+Bring up the CPU GSP scanout reference and independent OpenGL shader scanout in
+two separate windows over the same live VRAM/palette/register state. The shader
+must consume raw board state rather than CPU-rendered RGB. Preserve bounded
+headless behavior and validate GPU readback against deterministic CPU scanout
+fixtures before treating the comparison as accepted output.
+
+### Current M5 progress
+
+The dual-window scanout slice is implemented. With `STUNRUN_LIVE_VIDEO=1` and
+the SDL/OpenGL backend, the shell creates **GSP Scanout (CPU Reference)** and
+**OpenGL GSP Scanout** windows. The GPU shader reads raw packed VRAM and palette
+textures; the CPU supplies line-address state, not rendered RGB. The GL parity
+test covers three register cases and currently reports zero differing bytes.
+The ROM-backed shell opens both windows and reaches its bounded terminal frame.
+
+This does not claim that the TMS34010 RTL emits pixels or that the GSP has
+executed the game display list. The RTL output path remains distinct work; the
+comparison is between two scanout implementations over the shell's available
+board state.
 
 ### M4 completion
 

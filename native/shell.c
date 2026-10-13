@@ -113,6 +113,9 @@ static void mkpath(const char *path, mode_t mode)
 #include "fake_ports.h"
 #include "game_loop.h"
 #include "road_strip.h"
+#ifdef STUNRUN_GSP_GL_SCANOUT
+#include "gsp_scanout_gl.h"
+#endif
 
 static int g_failures = 0;
 static unsigned frame = 0;
@@ -138,6 +141,10 @@ static unsigned g_pending = 0;
 static stunrun_backend_pair_t g_backend_pair;
 static bool g_backend_active = false;
 static SDL_Window *g_window = NULL;  /* owned by this module; destroyed on shutdown */
+#ifdef STUNRUN_GSP_GL_SCANOUT
+static SDL_Window *g_gl_scanout_window = NULL;
+static stunrun_gsp_gl_scanout_t *g_gl_scanout = NULL;
+#endif
 
 /* JSA II audio dispatcher (OKI6295 ADPCM sample playback). */
 static sound_dispatch_t g_sound_dispatch;
@@ -499,12 +506,11 @@ static int read_palette_planes(const char *low_path, const char *high_path,
  *     partially-built frame is a legitimate thing to see here.
  *
  * Returns 0 on success, -1 if there is no live CPU or no VRAM to read. */
-static int render_live_gsp_frame(void)
+static int get_live_gsp_state(musashi_gsp_memory_t *mem,
+                              stunrun_gsp_display_regs_t *dregs)
 {
-    musashi_gsp_memory_t mem;
-    stunrun_gsp_display_regs_t dregs;
-
-    if (g_cpu == NULL || musashi_cpu_gsp_memory(g_cpu, &mem) != 0)
+    if (g_cpu == NULL || mem == NULL || dregs == NULL ||
+        musashi_cpu_gsp_memory(g_cpu, mem) != 0)
         return -1;
 
     /* Read display registers from the GSP RTL.  When the GSP is halted (service
@@ -513,20 +519,20 @@ static int render_live_gsp_frame(void)
      * Only available when STUNRUN_GSP_RTL is defined (Verilator build). */
 #ifdef STUNRUN_GSP_RTL
     if (!gsp_rtl_driver_is_halted()) {
-        gsp_rtl_driver_get_display_regs(&dregs.dpystrt, &dregs.dpyadr,
-                                         &dregs.dpytap, &dregs.dpyctl);
+        gsp_rtl_driver_get_display_regs(&dregs->dpystrt, &dregs->dpyadr,
+                                       &dregs->dpytap, &dregs->dpyctl);
         /* Fill in the timing constants that the RTL does not track. */
-        dregs.heblnk   = 110;
-        dregs.hsblnk   = 622;
-        dregs.veblnk   = 19;
-        dregs.vsblnk   = 19;
-        dregs.finescroll = 7;
-        dregs.palbank    = 0;
+        dregs->heblnk   = 110;
+        dregs->hsblnk   = 622;
+        dregs->veblnk   = 19;
+        dregs->vsblnk   = 19;
+        dregs->finescroll = 7;
+        dregs->palbank    = 0;
     } else {
-        stunrun_gsp_display_frame600_regs(&dregs);
+        stunrun_gsp_display_frame600_regs(dregs);
     }
 #else
-    stunrun_gsp_display_frame600_regs(&dregs);
+    stunrun_gsp_display_frame600_regs(dregs);
 #endif
 
     /* STUNRUN_FORCE_FRAMEBUF=<hex>: override the rasterizer's frame-buffer base.
@@ -548,11 +554,21 @@ static int render_live_gsp_frame(void)
                            v, v, row, (row ^ 0xFFFCu) & 0xFFFFu);
                 }
                 s_force_row = row;
-                dregs.dpyadr = (uint16_t)((row ^ 0xFFFCu) & 0xFFFFu);
-                dregs.dpyctl &= ~STUNRUN_DPYCTL_ORG;
+                dregs->dpyadr = (uint16_t)((row ^ 0xFFFCu) & 0xFFFFu);
+                dregs->dpyctl &= ~STUNRUN_DPYCTL_ORG;
             }
         }
     }
+
+    return 0;
+}
+
+static int render_live_gsp_frame(void)
+{
+    musashi_gsp_memory_t mem;
+    stunrun_gsp_display_regs_t dregs;
+    if (get_live_gsp_state(&mem, &dregs) != 0)
+        return -1;
 
     /* stunrun_gsp_display_render returns 0 on SUCCESS and -1 on error. */
     return stunrun_gsp_display_render(&renderer, mem.vram,
@@ -1104,6 +1120,53 @@ static int run_walk(void)
                            ? g_backend_pair.audio.name : "(auto)",
                        g_window ? "created" : "headless");
 
+#ifdef STUNRUN_GSP_GL_SCANOUT
+                /* Left: CPU GSP reference scanout. Right: an independent
+                 * fragment-shader scanout reading the live board state. */
+                {
+                    const char *live_env = getenv("STUNRUN_LIVE_VIDEO");
+                    const char *dual_env = getenv("STUNRUN_DUAL_SCANOUT_GL");
+                    int dual_enabled = live_env && live_env[0] &&
+                                       strcmp(live_env, "0") != 0 &&
+                                       (!dual_env || !dual_env[0] ||
+                                        strcmp(dual_env, "0") != 0);
+                    if (dual_enabled && g_window && g_backend_pair.video.name &&
+                        strcmp(g_backend_pair.video.name, "sdl_opengl") == 0) {
+                        int x = SDL_WINDOWPOS_CENTERED, y = SDL_WINDOWPOS_CENTERED;
+                        int w = (int)STUNRUN_RENDER_WIDTH * 2;
+                        Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
+                        SDL_GL_ResetAttributes();
+                        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+                        SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
+                        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+                        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+                        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+                        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
+                                            SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+                        SDL_GetWindowPosition(g_window, &x, &y);
+                        g_gl_scanout_window = SDL_CreateWindow(
+                            "OpenGL GSP Scanout", x + w, y, w,
+                            (int)STUNRUN_RENDER_HEIGHT * 2, flags);
+                        if (g_gl_scanout_window)
+                            g_gl_scanout = stunrun_gsp_gl_scanout_create(
+                                g_gl_scanout_window);
+                        if (g_gl_scanout) {
+                            SDL_SetWindowTitle(g_window,
+                                               "GSP Scanout (CPU Reference)");
+                            printf("shell: scanout-compare=active left=cpu-gsp right=gl-shader\n");
+                        } else {
+                            fprintf(stderr,
+                                    "shell: GL scanout comparison unavailable; "
+                                    "keeping CPU reference window\n");
+                            if (g_gl_scanout_window) {
+                                SDL_DestroyWindow(g_gl_scanout_window);
+                                g_gl_scanout_window = NULL;
+                            }
+                        }
+                    }
+                }
+#endif
+
                 /* JSA II audio: load OKI6295 ROM and initialise the dispatcher.
                  * The ROM is the concatenation of all four jsa:oki1 files.
                  * STUNRUN_JSA_OKI_ROM can be a colon-separated list of up to 4
@@ -1411,6 +1474,11 @@ static int run_walk(void)
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_WINDOWEVENT &&
                     e.window.event == SDL_WINDOWEVENT_RESIZED) {
+#ifdef STUNRUN_GSP_GL_SCANOUT
+                    if (g_gl_scanout_window &&
+                        e.window.windowID == SDL_GetWindowID(g_gl_scanout_window))
+                        continue; /* GL scanout queries its drawable size per frame */
+#endif
                     if (g_backend_pair.video.on_resize &&
                         g_backend_pair.video.user) {
                         g_backend_pair.video.on_resize(
@@ -1418,6 +1486,10 @@ static int run_walk(void)
                             (uint32_t)e.window.data1,
                             (uint32_t)e.window.data2);
                     }
+                } else if (e.type == SDL_WINDOWEVENT &&
+                           e.window.event == SDL_WINDOWEVENT_CLOSE) {
+                    g_run_until_quit = false;
+                    g_terminal = frame;
                 } else if (e.type == SDL_QUIT) {
                     g_run_until_quit = false;
                     g_terminal = frame;
@@ -1517,6 +1589,22 @@ static int run_walk(void)
                 g_live_video_presented++;
                 render_mode = "live-gsp-share";
                 present_to_backend();
+#ifdef STUNRUN_GSP_GL_SCANOUT
+                if (g_gl_scanout) {
+                    musashi_gsp_memory_t mem;
+                    stunrun_gsp_display_regs_t dregs;
+                    if (get_live_gsp_state(&mem, &dregs) == 0 &&
+                        stunrun_gsp_gl_scanout_present(
+                            g_gl_scanout, mem.vram, MUSASHI_GSP_VRAM_WORDS,
+                            mem.pal_lo, mem.pal_hi,
+                            STUNRUN_GSP_PALETTE_ENTRIES, &dregs,
+                            NULL, 0u) != 0) {
+                        fprintf(stderr,
+                                "shell: GL shader scanout failed at frame %u\n",
+                                frame);
+                    }
+                }
+#endif
             } else if (frame == 0) {
                 printf("shell: live-video=unavailable\n");
                 g_live_video = false;
@@ -1978,6 +2066,16 @@ static int run_walk(void)
         sound_dispatch_shutdown(&g_sound_dispatch);
         g_sound_dispatch_active = false;
     }
+#ifdef STUNRUN_GSP_GL_SCANOUT
+    if (g_gl_scanout) {
+        stunrun_gsp_gl_scanout_destroy(g_gl_scanout);
+        g_gl_scanout = NULL;
+    }
+    if (g_gl_scanout_window) {
+        SDL_DestroyWindow(g_gl_scanout_window);
+        g_gl_scanout_window = NULL;
+    }
+#endif
     if (g_backend_active) {
         stunrun_backend_pair_shutdown(&g_backend_pair);
         g_backend_active = false;

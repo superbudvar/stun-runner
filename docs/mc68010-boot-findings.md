@@ -4888,3 +4888,164 @@ provides the additional space for arithmetic spills and the selector byte.
 **Inferred**: The semantic meaning of the geometry parameters (what the 4 args
 represent in game terms) is unknown. The selector byte (buffer[0x1B] = 0x20
 in observed traces) is confirmed from $02F470's `addi.l #$2000,D0`.
+
+### Speed-update routine at $03ABDE (2026-10-13)
+
+**ROM address range**: $03AB7A–$03ABDE (the update block; parent function starts at $039B82)
+
+**Source chip**: STUN Runner maincpu program ROM, sha256 29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c
+
+**Listing provenance**: `/tmp/opencode/stunrun-listings-current/maincpu-68010.lst`, lines 69590–69619
+
+#### Disassembly transcription
+
+```text
+03AB7A: tst.w   $ffdd4e.l      ; timer != 0?
+03AB80: beq     $3abac          ; no: branch to timer==0 path
+03AB82: subq.w  #1, $ffdd4e.l  ; decrement timer (side effect)
+03AB88: bne     $3ab98          ; timer still nonzero after decrement?
+03AB8A: clr.w   $ffdd50.l       ; yes: clear secondary timer
+03AB90: move.b  #$ff, $ffdd0a.l
+03AB98: cmpi.w  #$b00, $ffdd16.l ; speed >= 0x0B00?
+03ABA0: bcc     $3abaa          ; yes: skip ramp-up
+03ABA2: addi.w  #$40, $ffdd16.l ; speed += 0x40
+03ABAA: bra     $3abe4          ; branch to accumulator update
+
+03ABAC: move.w  $ffdd16.l, D3   ; timer == 0 path
+03ABB2: ext.l   D3
+03ABB4: move.w  (-$18,A6), D0   ; local_limit (from caller's frame)
+03ABB8: ext.l   D0
+03ABBA: moveq   #$40, D1
+03ABBC: add.l   D1, D0          ; D0 = local_limit + 0x40
+03ABBE: cmp.l   D0, D3          ; speed > (local_limit + 0x40)?
+03ABC0: bls     $3abcc          ; no: skip decay
+03ABC2: subi.w  #$20, $ffdd16.l ; speed -= 0x20
+03ABC6: bra     $3abe4          ; branch to accumulator update
+
+03ABCC: move.w  $ffdd1e.l, D2   ; base + offset path
+03ABD2: ext.l   D2
+03ABD4: move.w  $ffdd1a.l, D0
+03ABDA: ext.l   D0
+03ABDC: add.l   D0, D2          ; D2 = source_a + source_b
+03ABDE: move.w  D2, $ffdd16.l   ; write updated speed
+```
+
+After the update, $03ABE4 adds the new speed to accumulator at $FFDBFE:
+```text
+03ABE4: move.w  $ffdd16.l, D2
+03ABEA: ext.l   D2
+03ABEC: add.l   D2, $ffdbfe.l
+```
+
+#### Entry conditions
+
+The parent function at $039B82 (`link A6, #-$30`) sets up the stack frame.
+The speed-update block uses:
+- `(-$18,A6)`: local_limit, set to `0x07E0` at $039C16 before entering the update path
+- `$FFDD4E`: timer field (checked at $03AB7A)
+- `$FFDD16`: current speed value (read at $03ABAC, written at $03ABDE)
+- `$FFDD1E`: source_a (read at $03ABCC)
+- `$FFDD1A`: source_b (read at $03ABD4)
+
+#### Speed update logic
+
+```c
+if (timer != 0 && speed < 0x0B00)
+    speed += 0x40;
+else if (speed > (local_limit + 0x40))
+    speed -= 0x20;
+else
+    speed = source_a + source_b;
+```
+
+The timer decrement at $03AB82 is a side effect of the timer-check path, not part of the value computation itself.
+
+#### Three callers
+
+| Caller | Arguments at stack | Notes |
+|--------|-------------------|-------|
+| $02587C | `(0, byte from $FFDD82)` | zero longword + input byte |
+| $0280FE | `(ROM table[$04EECC][$FFDE72], $FFDD82)` | table lookup + input byte |
+| $02853A | `(byte from record, 0x38)` | record field + literal |
+
+The function at $039B82 handles all three paths; the local_limit varies by caller context.
+
+#### C implementation
+
+`native/mc68010_physics.c`: `stunrun_mc68010_speed_update()` — mechanism-level, no gameplay semantics assigned to parameters.
+
+#### Confirmed vs inferred
+
+**Confirmed**: Full disassembly transcription, branch order, arithmetic operations, three-way branch logic.
+
+**Inferred**: The semantic meaning of timer, speed, local_limit, source_a, and source_b is not assigned; the function is treated as a mechanism with observable inputs and outputs only.
+
+## 16. MC68010 speed routine at $039B82 (2026-10-13)
+
+### 16.1 Function identity
+
+- **ROM address**: $039B82–$03ADE6 (over 2000 bytes; one of the largest functions in the ROM)
+- **Ghidra name**: `s_0003982_mc68010_speed_routine`
+- **Three callers** (all `jsr $39b82.l`):
+  - `$02587C`: pushes ($FFDD82 byte zero-extended, 0)  
+  - `$0280FE`: pushes ($FFDD82 byte zero-extended, ROM[$04EECC+$FFDE72] byte)
+  - `$02853A`: pushes (record byte, $38 word sign-extended)
+- **C name**: `stunrun_mc68010_speed_routine()`
+
+### 16.2 Entry conditions
+
+The 68010 `link A6,#$30` creates a 48-byte local frame. Stack setup:
+```
+$8,A6   ← 2nd arg (byte; 0/ROM table byte/0x38)
+$A,A6   ← 1st arg (byte from $FFDD82 or record byte)
+$E,A6   ← byte from $F,A6 (zero-extended to word, low byte used)
+$12,A6  ← return address (4 bytes above saved PC)
+```
+Key instructions:
+- `move.w ($a,A6), (-$2,A6)` — copies 1st arg word to local -$2
+- `move.b ($f,A6), D4` — loads 2nd arg byte into D4
+- `move.l #$ffdd1c, (-$6,A6)` — stores $FFDD1C constant to local -$6
+- `jsr $3ae30.l` — init subroutine (counter/slot machine logic)
+
+### 16.3 local_limit setup
+
+At `$039C16`: `move.w #$7e0, (-$18,A6)` — sets local_limit = **0x07E0** in the stack frame. This value is later used by the speed update block at $03ABB4.
+
+### 16.4 Speed update block (embedded, not a JSR)
+
+The block at `$03AB7A–$03ABDE` is **inline code within $039B82**, not a separate JSR. It is reached by fall-through from the pre-computation phase. The three-branch logic:
+
+```
+timer != 0 && speed < 0x0B00 → speed += 0x40  (ramp up)
+speed > (local_limit + 0x40)  → speed -= 0x20  (decay)  
+otherwise                      → speed = source_a + source_b
+```
+
+**Confirms** the existing `stunrun_mc68010_speed_update()` correctly models this block.
+
+### 16.5 Accumulator write
+
+After the speed write, at `$03ABE4–$03ABEC`:
+```
+03ABE4: move.w  $ffdd16.l, D2    ; load updated speed
+03ABEA: ext.l   D2
+03ABEC: add.l   D2, $ffdbfe.l  ; speed += accumulator
+```
+This is modelled as: `accumulator += updated_speed`.
+
+### 16.6 Observable outputs (modelled)
+
+1. `$FFDD16` ← updated speed (via embedded block)
+2. `$FFDBFE` ← `$FFDBFE + updated speed` (accumulator update)
+
+The pre-computation phase (1000+ bytes: $039D22–$03AB6F) sets `$FFDD1E` and `$FFDD1A` (source_a/source_b) and performs complex multiplications — not modelled here as it requires full game state.
+
+### 16.7 C implementation
+
+`stunrun_mc68010_speed_routine()` takes all RAM values as parameters, calls `stunrun_mc68010_speed_update()` for the speed field computation, then models the accumulator write. Returns a struct with `speed_write` and `accumulator_write`. The caller-args (arg1, arg2) are consumed as `(void)` since they affect pre-computation but not the speed field itself.
+
+### 16.8 Test verification
+
+- 8 existing `stunrun_mc68010_speed_update` tests (unchanged)
+- 7 new `stunrun_mc68010_speed_routine` tests covering all three code paths and the accumulator write
+- Broken implementation (returns 0xBEEF) correctly fails on the first assertion

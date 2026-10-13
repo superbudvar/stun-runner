@@ -68,6 +68,24 @@ palette bank zero. With the captured MAME VRAM/palette dump, the acceptance
 test checks the 512×240 output, 47 distinct colours, and dominant RGB
 `(177,46,36)` at 21.71%.
 
+## Independent OpenGL comparison path
+
+When live video uses SDL/OpenGL, the shell can open two windows:
+
+- **GSP Scanout (CPU Reference)**: `stunrun_gsp_display_render()` reads the
+  board state on the CPU and writes RGB888 pixels.
+- **OpenGL GSP Scanout**: a separate fragment shader samples packed VRAM and
+  both palette planes directly, then performs pixel selection and palette
+  expansion on the GPU. The CPU supplies a compact per-visible-line address
+  state derived from DPYADR sequencing; it does not supply CPU-rendered RGB.
+
+`native/gsp_scanout_gl_test.c` compares GPU readback against the CPU reference
+for the frame-600 registers, a non-default DPYADR/DPYTAP/fine-scroll case, and
+display-disabled output. Current parity is exact (zero differing bytes) on
+those fixtures. This comparison does not imply that the TMS34010 RTL emits a
+pixel stream; it still exposes board state/registers, while both scanout paths
+consume that state independently.
+
 ## GSP host port registers (MC68010 → GSP)
 
 The MC68010 talks to the GSP entirely through the host port. The relevant
