@@ -5768,3 +5768,117 @@ The way this was caught is worth keeping: it took **five identical runs**. A
 single re-run of the committed command "reproducing" or "failing" would have
 produced a confident wrong answer in either direction. Any harness acceptance
 that claims determinism from one invocation has not tested determinism.
+
+## 30. What GSP memory actually contains at startup, and an unexplained early screen
+
+Measured 2026-10-13 while looking for an early screen the MC68010 draws
+directly. Everything here is `--input none` (game/attract), which §29.2a
+established is deterministic — four runs, identical frame-300 screen sha256.
+
+### 30.1 The share is bit-exactly zero until frame ~370
+
+`tools/mame-gsp-vram-dump` reads all 2,097,152 words of the GSP `program`
+space, not a sample:
+
+```text
+frame  1   nonzero        0 / 2097152    0.0%   gsp_pc=?
+frame 20   nonzero        0 / 2097152    0.0%
+frame 40   nonzero        0 / 2097152    0.0%
+frame 100  nonzero        0 / 2097152    0.0%
+frame 200  nonzero        0 / 2097152    0.0%
+frame 300  nonzero        0 / 2097152    0.0%
+frame 360  nonzero        0 / 2097152    0.0%
+frame 390  nonzero   429504 / 2097152   20.5%   gsp_pc=00000000
+frame 400  nonzero   620032 / 2097152   29.6%   gsp_pc=00000000
+frame 420  nonzero  1170008 / 2097152   55.8%   gsp_pc=FFF41070
+frame 450  nonzero  1664248 / 2097152   79.4%   gsp_pc=FFF41680
+frame 600  nonzero  1664200 / 2097152   79.4%   gsp_pc=FFF41680
+```
+
+The frame-600 row reproduces the committed fixture bit-for-bit
+(`35c92621…210ba`), so this is not a broken reader.
+
+**The zeros are active, not passive.** At frames 43 and 44 the MC68010 is
+inside a tight zero-fill loop at PC `$54AC`, writing `HSTDAT=0x0000` through
+the GSP host port with `A0=$5082`, `A1=$02E8` as loop state, for **more than
+4000 writes within a single frame**. The share is not waiting to be written; it
+is being cleared.
+
+### 30.2 There is a lot of data at frame 600, but it is nearly all flat colour
+
+```text
+4,194,304 bytes, 262,144 x 16-byte cells
+  nonzero cells                                  208,025   79.4%
+  of those, uniform (all 16 bytes identical)      182,052   87.5% of nonzero
+  non-uniform nonzero cells                        25,973    9.9% of the share
+  top uniform byte values  0x82 5023, 0xB8 4594, 0xAA 4390, 0xA3 3877,
+                          0x0B 3792, 0x98 3737, 0x99 3557, 0x81 3065
+```
+
+So 87.5% of everything in the share is one byte repeated sixteen times. That is
+the rendered attract-mode picture. **The structured, non-flat part of VRAM is
+about a tenth of the share**, and that tenth is where anything interesting —
+glyphs, road geometry, sprites — can live.
+
+### 30.3 The addressing geometry of `$25E8` is now fully measured
+
+Decoding every latched HSTADR pair in the game-mode trace, first character of
+each draw only (A0 post-increments per character):
+
+```text
+$FF896040  A0=$006C58 A1=$0221C  char 'P'
+$FF897040  (+0x1000)              row 1 of the same glyph
+... 8 rows, stride 0x1000 ...
+$FF896080  A0=$006C59 A1=$0223C  char 'R'   character advance = 0x40
+```
+
+* character advance **0x40** bytes, glyph row stride **0x1000**, **8 rows** per glyph
+* draw 1: `$FF896040`..`$FF89D780`, **240** HSTADR latches = 30 chars x 8 rows
+* draw 2: `$FF800040`..`$FF82F140`
+* `A1 = $1FBC + 16*(char - $2A)` confirmed exactly on live data, including
+  `A1=$01FBC -> char $2A` (the blank `*` glyph)
+
+**Game mode and service mode write identical address ranges** — `$FF896040`..
+`$FF89D780` and `$FF800040`..`$FF82F140` in both. Only the frames differ
+(45-47 / 165-167 versus 214-216 / 334-336). The routine is identical; the
+service schedule only delays it.
+
+### 30.4 The contradiction that blocks the blit
+
+The text IS on screen early. `--input none` frame 44 is pure black and frame 48
+reads `PRESS START TO BYPASS SELFTEST`, matching the `$25E8` draw at frames
+45-47. But at **every** frame from 44 to 52:
+
+* the entire GSP `program` space is zero (exhaustive 2,097,152-word read), and
+* main RAM `$FF8000-$FFFFFF` is **0 bytes different** between frames 44 and 47,
+  and
+* the GSP display registers are still at power-on defaults:
+  `DPYSTRT=0xFFFF`, `DPYADR=$FC7E`, `DPYTAP=0`, `DPYCTL=0xF010`
+  — the GSP program has not run at all (it starts at frame ~405-420, §8p4.2),
+  and `vram_high_sum32` first goes nonzero at frame 168.
+
+Yet `scanline_multisync()` in `harddriv_v.cpp:448-451` renders straight out of
+`m_gsp_vram` (`vram_base = &m_gsp_vram[(params->rowaddr << 10) & m_vram_mask]`),
+guarded by `if (!m_gsp_vram) return;`. A zero share under a power-on-default
+DPYSTRT cannot produce white glyphs on black.
+
+**Three explanations survive and none is yet chosen:**
+
+1. the early screen is not produced by `scanline_multisync` at all — some other
+   video path owns the bitmap until the GSP takes over;
+2. the Lua dump and the screenshot land at different points within the frame,
+   so "share zero at 48" and "text visible at 48" are not actually simultaneous;
+3. the `$25E8` HSTADR latches at frames 45-47 never reach `HSTDAT`, so the
+   routine latched addresses and drew nothing, and the early text has a
+   different author entirely.
+
+Explanation 3 is cheap to kill: PC `$2666`/`$2674` are the `HSTDAT` sites, and
+a `register_frame_done` PC histogram over frames 44-51 shows only `$54AC`. But
+that histogram **saturated at 4000 events inside frame 43 alone**, so it proves
+nothing about frames 44-51 yet. Do not treat it as settled.
+
+Until this is resolved there is no way to say how the text reaches the screen,
+and `docs/gsp-display-scanout-contract.md` §"Service mode" — which places the
+text at VRAM base `0x016040` and points the rasteriser at `rowaddr=0x3C,
+DPYSTRT=0x00F000` — is describing a region that is provably zero at the moment
+the text is on screen.
