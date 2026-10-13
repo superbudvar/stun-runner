@@ -649,6 +649,23 @@ dumps belong there. Two consequences:
 >   coroutines, and doing file I/O in a callback firing ~500,000 times a minute
 >   is a performance hazard by construction.
 >
+### MD-12 — ROM files are 64KB, MAME driver expects 128KB per bank — vector table missing
+
+- **Kind:** driver gap (our local ROM set is incomplete)
+- **Where:** `stunrun/136070-2102.200r` and `136070-2101.210r` — 65536 bytes each; MAME `harddriv.cpp` ROM_LOAD definitions expect 131072 bytes per even/odd file pair
+- **Symptom:** With `STUNRUN_MC68010=1`, the MC68010 boots and executes the first ~1000 instructions of the boot ROM correctly (boot trace shows PC=0x216 and correct execution through the GSP init sequence). After the boot trace completes and the frame loop takes over, the MC68010 PC is 0 at frame 600 — the CPU has crashed. The crash occurs because any exception (illegal instruction, bus error, etc.) fired during boot causes the CPU to read its handler address from the zeroed vector table and jump to address 0, where it takes another exception, entering an infinite crash loop.
+- **Evidence:**
+  - `xxd -l 16 stunrun/136070-2102.200r` at offset 0xFF00–0xFFFF: all bytes are `00 00 ...` — the last 2048 bytes of each 64KB file are zeros
+  - Last non-zero byte in even file: offset `0x0F7E9` (value `0x99`); in odd file: offset `0x0F7E9` (value `0x20`)
+  - ROM word at `0xFFFE` (reset PC vector): `0x0000` — should be `0xFFFF` in the reference ROM
+  - ROM word at `0xFFFC` (reset SSP vector): `0x0000`
+  - Boot trace confirms correct boot execution: `STUNRUN_MC68010=1 STUNRUN_BOOT_TRACE=30` shows PC executing `lea $0.w,A0` at 0x216, then `movea.l ($0,A0),A7`, `movec A0,VBR`, clearing ports, asserting GSP reset, and entering the GSP boot sequence (delay loop at 0x370, jsr to 0x3F8)
+  - After the bounded boot trace, the frame loop runs 600 frames, after which `maincpu pc=0` in the checkpoint JSON
+  - MAME `multisync_68k_map` comment: `/* 0x000000-0x0fffff */ rom()` — flat 1MB ROM. With 6 × 128KB banks, the vector table at `0xFFFE` falls in the **upper 64KB of bank 5** (offset `0x5FFFE` into the bank), which is **zero-padded** because our files are only 64KB
+  - MAME driver definition: `ROM_LOAD16_BYTE("136070-2102.200r", 0x20000)` — explicitly loads 131072 bytes per file, but our files are 65536 bytes
+- **Confidence:** confirmed by measurement (file sizes, ROM byte dumps, boot trace, checkpoint PC=0)
+- **Impact on us:** the native MC68010 implementation cannot run the full game loop without either (a) the correct 128KB ROM files, or (b) a runtime patch that fills in the vector table from a known-good source before `musashi_cpu_reset()`
+
 > Leaving them here would have been an active liability: this section's rule is
 > that its entries get reported upstream, and two false bug reports cost more
 > credibility than the silence they replace.
