@@ -288,8 +288,11 @@ regions:
     mame_handlers:
       - shared gsp_vram RAM
     notes:
-      - multisync_gsp_map defines 0xff800000-0xffbfffff as shared gsp_vram with a 0x0400000 mirror
-      - high addresses such as 0xfff9fc00 and 0xfffcfc00 are therefore VRAM-backed aliases/staging locations, not independently instantiated queue devices
+      - TMS34010 program addresses are bit addresses (addrshift=3), not byte offsets
+      - multisync_gsp_map declares 0xff800000-0xffbfffff with a 0x0400000 bit-address mirror
+      - direct MAME memory_share dump and SP-338 Page 10 establish 524288 physical bytes (16 x 64Kx4), not a 4 MiB share
+      - physical byte offset = ((address - 0xff800000) >> 3) & 0x7ffff; HSTADR increments by 0x10 bits per 16-bit word
+      - high addresses such as 0xfff9fc00 and 0xfffcfc00 are VRAM-backed bit-address aliases/staging locations, not independently instantiated queue devices
 
   - name: gsp_palette_low
     processor: gsp

@@ -364,12 +364,53 @@ static void run_case(const program_t *p, char *out, size_t capacity,
     musashi_cpu_destroy(cpu);
 }
 
+/* The ROM's HSTADR is a TMS34010 BIT address, not a byte address. With
+ * addrshift=3, $FF896040 maps to physical share byte offset $12C08. Assert the
+ * actual stored word there so the text-log test also guards the share decode
+ * that used to put the correct glyph data at the wrong 4 MiB-file offset. */
+static void test_text_word_in_physical_share(void)
+{
+    stunrun_fake_ports_t ports;
+    musashi_gsp_memory_t memory;
+    musashi_cpu_t *cpu;
+    program_t p;
+    const uint8_t *bytes;
+
+    memset(&p, 0, sizeof(p));
+    emit_arm(&p);
+    emit_address(&p, 0xFF896040u);
+    emit_data(&p, 0xDFu);
+    emit_stop(&p);
+    cpu = make_cpu(&ports, &p);
+    CHECK(cpu != NULL);
+    if (cpu == NULL)
+        return;
+
+    run_to_spin(cpu, STUB_BASE + (uint32_t)p.length);
+    CHECK(musashi_cpu_gsp_memory(cpu, &memory) == 0);
+    bytes = (const uint8_t *)memory.vram;
+    CHECK_EQ(MUSASHI_GSP_VRAM_BYTES, 0x80000u);
+    CHECK_EQ((0xFF896040u - 0xFF800000u) >> 3u, 0x12C08u);
+    /* The 68010 sends 0x00DF then 0xDFDF to the same cell. On the little-endian
+     * 16-bit share, the final physical word is bytes DF DF. */
+    CHECK(bytes[0x12C08u] == 0xDFu);
+    CHECK(bytes[0x12C09u] == 0xDFu);
+    /* The old byte-address interpretation targeted 0x96040, beyond this
+     * 512 KiB share. The capacity assertion above makes that invalid address
+     * visible without reading out of bounds. */
+    CHECK(0x96042u >= MUSASHI_GSP_VRAM_BYTES);
+
+    musashi_cpu_destroy(cpu);
+}
+
 int main(void)
 {
     program_t p;
     char out[MAX_CAPTURE];
     unsigned descriptors = 0;
     musashi_text_log_stats_t stats;
+
+    test_text_word_in_physical_share();
 
     /* ── Case 1: colour picks a pair out of everything at that base ───────
      * The real base 0xFF896040 carries 18 descriptors across five colours.

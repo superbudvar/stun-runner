@@ -1,4 +1,5 @@
 import json
+import hashlib
 import pathlib
 import struct
 import subprocess
@@ -564,28 +565,50 @@ class PublicToolTests(unittest.TestCase):
         lua = (ROOT / "mame" / "lua" / "gsp-vram-dump.lua").read_text(encoding="utf-8")
         # The whole point: a consecutive read, not the stride sweep that
         # gsp-state-snapshot.lua uses for its checksum.
-        self.assertIn("space:read_u16(base + index * 2)", lua)
+        self.assertIn("space:read_u16(base + index * 0x10)", lua)
         self.assertIn("local base = 0xff800000", lua)
         self.assertIn("STUNRUN_GSP_VRAM_WORDS", tool)
         self.assertIn("STUNRUN_GSP_VRAM_OUT", tool)
-        self.assertIn('"stunrun-gsp-vram-dump-result/v1"', tool)
-        # A misconfigured read yields a correctly sized all-zero file, so the
-        # nonzero count is reported and the wrapper rejects it.
+        self.assertIn('"stunrun-gsp-vram-dump-result/v2"', tool)
+        # Zero is valid content during the boot clear; nonzero is descriptive,
+        # never a success criterion for a VRAM capture.
         self.assertIn("nonzero", lua)
-        self.assertIn("entirely zero", tool)
+        self.assertIn("is reported as an observation", tool)
         self.assertIn("dump_sha256", tool)
 
-    def test_gsp_vram_dump_defaults_to_the_whole_4mib_share(self):
-        # The share is 4 MiB. A 512 KiB capture is only its first page, which
-        # is how the committed "frame 600" fixture came to be not-VRAM.
+    def test_gsp_vram_dump_defaults_to_the_physical_512kib_share(self):
+        # The TMS34010 address window is 4 Mi bit-address units, but addrshift=3
+        # makes that 512 KiB of backing bytes. The old +2 read stride sampled
+        # overlapping bit-address windows and produced a bogus 4 MiB file.
         tool = (ROOT / "tools" / "mame-gsp-vram-dump").read_text(encoding="utf-8")
         lua = (ROOT / "mame" / "lua" / "gsp-vram-dump.lua").read_text(encoding="utf-8")
-        self.assertIn('default=0x200000', tool)
-        self.assertIn("or '2097152'", lua)
-        self.assertNotIn('default=0x40000', tool)
-        self.assertNotIn("or '262144'", lua)
-        # --words must still let the retired extent be reproduced deliberately.
-        self.assertIn("retired 512 KiB fixture", tool)
+        self.assertIn('default=0x40000', tool)
+        self.assertIn("or '262144'", lua)
+        self.assertIn("args.words > 0x40000", tool)
+        self.assertIn("physical 512 KiB", tool)
+
+    def test_direct_mame_share_capture_is_physical_512kib(self):
+        capture = (ROOT / "reference" / "experiments" / "stunrun" /
+                   "gsp-direct-share-frame600-service")
+        metadata = json.loads((capture / "metadata.json").read_text(encoding="utf-8"))
+        blob = capture / "gsp_vram.bin"
+        self.assertEqual(metadata["share"]["bytes"], 524288)
+        self.assertEqual(blob.stat().st_size, 524288)
+        self.assertEqual(hashlib.sha256(blob.read_bytes()).hexdigest(),
+                         metadata["share"]["sha256"])
+        self.assertEqual(metadata["share"]["words"], 262144)
+        self.assertIn("memory_share pointer", metadata["authority"])
+
+    def test_lua_word_stride_matches_mame_direct_share_pointer(self):
+        capture = (ROOT / "reference" / "experiments" / "stunrun" /
+                   "gsp-share-reader-crosscheck-service")
+        metadata = json.loads((capture / "metadata.json").read_text(encoding="utf-8"))
+        blob = capture / "gsp_vram.bin"
+        self.assertEqual(metadata["comparison"]["direct_share_bytes"], 524288)
+        self.assertEqual(metadata["comparison"]["lua_reader_bytes"], 524288)
+        self.assertEqual(metadata["comparison"]["differing_bytes"], 0)
+        self.assertEqual(hashlib.sha256(blob.read_bytes()).hexdigest(),
+                         metadata["comparison"]["sha256_both"])
 
     def test_gsp_vram_dump_always_sets_an_nvram_directory(self):
         # -nonvram_save stops MAME writing NVRAM but not loading it, so a run
@@ -618,7 +641,7 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn("emu.register_frame_done", lua)
         self.assertIn("machine:exit()", lua)
 
-    def test_gsp_vram_dump_refuses_impossible_and_empty_captures(self):
+    def test_gsp_vram_dump_refuses_target_after_run_bound(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = pathlib.Path(temp)
             output = temp / "out"

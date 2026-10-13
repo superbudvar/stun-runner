@@ -1,4 +1,4 @@
--- Dump the STUN Runner GSP VRAM share as a full consecutive image at one frame.
+-- Dump the STUN Runner GSP VRAM backing share as consecutive 16-bit words.
 --
 -- Why this exists alongside tools/mame-gsp-state-snapshot: that tool SAMPLES
 -- the share.  Its vram_high_sum32 is a stride-0x4000 sweep (see
@@ -8,27 +8,26 @@
 -- memory-snapshot was tried for a full capture and returned 262,144 zeros over
 -- the same range where the sampler reported vram_high_sum32 = 8,490,604.
 --
--- So this reads every word consecutively instead.  The output is byte-for-byte
--- comparable against a native board-model replay: same address range, same
--- little-endian word order the native VRAM paths store.
+-- TMS34010 program addresses are BIT addresses (addrshift=3). One physical
+-- 16-bit word is therefore 0x10 address units, not 2. The old `+ index * 2`
+-- loop walked overlapping bit-address windows, wrote a 4 MiB file, and called
+-- it the physical share. The direct MAME memory_share hook (harddriv_v.cpp)
+-- shows the actual backing is 524288 bytes; the corrected loop below uses the
+-- bit-address stride. See docs/mc68010-boot-findings.md section 34.
 --
--- The share is 4 MiB, read at the start of the host window, 0xff800000.  An
--- earlier version of this script defaulted to 512 KiB words on the strength of
--- GSP_BOARD_VRAM_BYTES = 0x80000 in native/gsp_rtl/gsp_board.h.  That constant
--- was wrong: the window carries 4 MiB of distinct content.  A 512 KiB capture
--- is not a smaller view of the share, it is only its first page -- which is
--- what made the committed "frame 600" fixture not-VRAM.  See
--- docs/mc68010-boot-findings.md section 19.
+-- The physical share is 512 KiB = 262144 uint16 words. The mapped GSP bit
+-- address range is 0x400000 units; 0x400000 / 8 = 0x80000 physical bytes.
+-- The direct C++ memory_share capture is the authority; this Lua path is a
+-- reproducible cross-check now that it walks in correct word units.
 --
--- The nonzero-word count is reported because a misconfigured read is silent:
--- it yields a correctly sized file full of zeros that looks like a valid
--- capture.  A zero count here means the dump is worthless, so the wrapper
--- treats it as a failure rather than an artifact.
+-- The nonzero-word count is reported as data, not as a success check. A real
+-- early boot can leave the share all-zero after a hardware clear; zero is valid
+-- content and must not be rewritten as an observer failure.
 --
 -- Environment:
 --   STUNRUN_GSP_VRAM_OUT    output path (required)
 --   STUNRUN_GSP_VRAM_FRAME  frame to capture at (default 600)
---   STUNRUN_GSP_VRAM_WORDS  words to capture (default 2097152 = 4 MiB share)
+--   STUNRUN_GSP_VRAM_WORDS  words to capture (default 262144 = 512 KiB share)
 --   STUNRUN_GSP_VRAM_INPUT  input mode; same names and timing as
 --                           gsp-state-snapshot.lua, so a dump and a state
 --                           snapshot can be taken of the same machine state
@@ -39,7 +38,7 @@ local space = assert(gsp.spaces['program'], 'no GSP program space')
 
 local out_path = assert(os.getenv('STUNRUN_GSP_VRAM_OUT'), 'STUNRUN_GSP_VRAM_OUT is required')
 local target = tonumber(os.getenv('STUNRUN_GSP_VRAM_FRAME') or '600')
-local words = tonumber(os.getenv('STUNRUN_GSP_VRAM_WORDS') or '2097152')
+local words = tonumber(os.getenv('STUNRUN_GSP_VRAM_WORDS') or '262144')
 local base = 0xff800000
 local input_mode = os.getenv('STUNRUN_GSP_VRAM_INPUT') or 'none'
 
@@ -144,7 +143,7 @@ emu.register_frame_done(function()
     local chunk = {}
     local pending = 0
     for index = 0, words - 1 do
-        local value = space:read_u16(base + index * 2)
+        local value = space:read_u16(base + index * 0x10)
         if value ~= 0 then nonzero = nonzero + 1 end
         chunk[#chunk + 1] = string.char(value & 0xff, (value >> 8) & 0xff)
         pending = pending + 1

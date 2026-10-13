@@ -1,0 +1,41 @@
+{
+  "schema": "stunrun-gsp-direct-share/v1",
+  "experiment": "gsp-direct-share-frame600-service",
+  "authority": "MAME memory_share pointer, not CPU program-space reads",
+  "target": "stunrun rev 6",
+  "rom_manifest": "roms/stunrun.manifest.json",
+  "rom_manifest_sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "version": "0.289 (unknown)",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+    "instrumentation": "harddriv_v.cpp STUNRUN-DUMP hook; writes m_gsp_vram.begin()/bytes() directly"
+  },
+  "capture": {
+    "input": "service",
+    "frames": 700,
+    "target_frame": 600,
+    "command": "tools/mame-gsp-state-snapshot roms /tmp/opencode/mame-direct-service --mame /mnt/build/mame-ref/mame --input service --frames 700 --targets 600 --screen-dir /tmp/opencode/mame-direct-service/screens --nothrottle",
+    "share_hook": "compile-time STUNRUN-DUMP_DIR=/tmp/srshare; hook runs at screen.frame_number()==600, scanline==19",
+    "runtime_result": "state-snapshot-result.json",
+    "direct_share_summary": "gsp_share.txt"
+  },
+  "share": {
+    "bytes": 524288,
+    "words": 262144,
+    "vram_mask_words": "0x03ffff",
+    "nonzero_bytes": 5058,
+    "nonzero_words": 2881,
+    "sha256": "04cebed17bccd9c2140948f2a5e03ef32365e59a31d094c2df046b5480170d89"
+  },
+  "palette": {
+    "entries_per_plane": 1024,
+    "lo_sha256": "c8d3aae8734a933d3d77aabb504efaeb9fdc0cb883201123c88b80fa66d16813",
+    "hi_sha256": "f8acac5413e0984851964a143280849ba2e1a982e1d724f54a8e5d8b4a2e9457"
+  },
+  "limitations": [
+    "This is service-mode frame 600 and includes whatever the GSP has written by then; it is not a frame-48 snapshot.",
+    "The MAME binary is a local instrumented build; the direct-share hook is not a stock-MAME Lua capability.",
+    "The result supersedes the 4 MiB program-space dump as physical-share evidence, but not as an address-space trace."
+  ]
+}

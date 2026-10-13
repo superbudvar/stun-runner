@@ -14,7 +14,7 @@
 #include <string.h>
 
 #define GSP_GL_VRAM_WIDTH 2048
-#define GSP_GL_VRAM_HEIGHT 1024
+#define GSP_GL_VRAM_HEIGHT 128
 #define GSP_GL_VRAM_WORDS (GSP_GL_VRAM_WIDTH * GSP_GL_VRAM_HEIGHT)
 
 struct stunrun_gsp_gl_scanout {
@@ -62,9 +62,9 @@ static const char *fragment_shader_source =
     "  int enabled = int(byte_at(a,3));\n"
     "  if (enabled == 0) { gl_FragColor = vec4(0.0,0.0,0.0,1.0); return; }\n"
     "  int ci = int(mod(float(col0 + x), 2048.0));\n"
-    "  int wi = int(mod(float(base + (ci / 2)), 2097152.0));\n"
+    "  int wi = int(mod(float(base + (ci / 2)), 262144.0));\n"
     "  float vx = (mod(float(wi), 2048.0) + 0.5) / 2048.0;\n"
-    "  float vy = (floor(float(wi) / 2048.0) + 0.5) / 1024.0;\n"
+    "  float vy = (floor(float(wi) / 2048.0) + 0.5) / 128.0;\n"
     "  vec4 packed_word = texture2D(u_vram, vec2(vx,vy));\n"
     "  float ink = mod(float(ci), 2.0);\n"
     "  float colour = ink < 0.5 ? floor(packed_word.r*255.0+0.5) : floor(packed_word.a*255.0+0.5);\n"

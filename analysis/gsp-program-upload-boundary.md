@@ -1,5 +1,15 @@
 # The GSP program-upload boundary
 
+> **Correction (2026-10-13):** this document's 4 MiB physical-share and
+> 16-byte-HSTDATA-cell conclusions are superseded by
+> `docs/mc68010-boot-findings.md` §34. The physical share is 512 KiB (16 ×
+> 64K×4 chips, confirmed by a direct MAME `m_gsp_vram` share dump); the GSP map
+> is a 4 Mi **bit-address** window because TMS34010 uses `addrshift=3`. The old
+> 4 MiB Lua image is an address-space sample, not backing-share bytes. The
+> ordered host-port event attribution and upload/release boundary below remain
+> useful CPU-side evidence. Do not use the old VRAM image, share offsets or
+> 16-byte-cell arithmetic as physical-memory evidence until re-derived.
+
 ## What was captured, and how to reproduce it
 
 ```text

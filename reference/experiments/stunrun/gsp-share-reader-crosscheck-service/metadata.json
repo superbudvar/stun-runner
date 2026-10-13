@@ -1,0 +1,32 @@
+{
+  "schema": "stunrun-gsp-share-reader-crosscheck/v1",
+  "experiment": "gsp-share-reader-crosscheck-service",
+  "rom_set": "stunrun rev 6",
+  "rom_manifest": "roms/stunrun.manifest.json",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "version": "0.289 (unknown)",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "run": {
+    "input": "service",
+    "nothrottle": true,
+    "lua_capture_frame_counter": 601,
+    "screen_frame_for_direct_share_hook": 600,
+    "command": "tools/mame-gsp-vram-dump roms /tmp/opencode/mame-share-verify2 --mame /mnt/build/mame-ref/mame --frames 700 --target 601 --words 262144 --input service --nothrottle",
+    "direct_hook": "STUNRUN-DUMP in instrumented harddriv_v.cpp reads m_gsp_vram.begin()/bytes() directly at screen frame 600"
+  },
+  "comparison": {
+    "direct_share_bytes": 524288,
+    "lua_reader_bytes": 524288,
+    "differing_bytes": 0,
+    "sha256_both": "e1e3be56a371c1ed2e4313617b4774df5c600def67ded33f7ffb920986e7c4ee"
+  },
+  "artifacts": {
+    "gsp_vram.bin": "direct share pointer bytes; same hash as Lua reader output",
+    "gsp_share.txt": "MAME-reported bytes=524288 words=262144 vram_mask=0x003ffff",
+    "lua-reader-result.json": "stunrun-gsp-vram-dump-result/v2",
+    "mame.log": "includes STUNRUN-DUMP wrote 524288 bytes to /tmp/srshare"
+  },
+  "limitation": "The direct MAME hook runs at screen frame 600 and the Lua snapshot callback labels its target 601; the same-process dumps are byte-identical. Do not compare this service-mode state to a different input schedule."
+}

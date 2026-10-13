@@ -6,14 +6,16 @@ and does not define FIFO or geometry records.
 
 ## Board state
 
-- VRAM backing store: `0x200000` 16-bit words (4 MiB). This is the actual
-  GSP local-memory address range `0xFF800000–0xFFBFFFFF`. Consumers must mask
-  word indices with `0x1fffff`.  **This was 512 KiB in older documentation
-  (§12.1, now superseded by §19).** The GSP address window is 4 MiB and is
-  mirrored every 4 MiB (`mirror(0x0400000)`); the offset decode is
-  `addr & 0x003fffff`.  Measured by `tools/mame-gsp-mirror-probe`: the
-  share is 4,194,304 bytes and the first alias of offset 0 is at
-  `base+0x400000`.  See `docs/mc68010-boot-findings.md` §19.
+- VRAM backing store: `0x40000` 16-bit words (512 KiB), independently given by
+  the SP-338 Page 10 BOM (`16 x 64K x 4`) and measured from MAME's direct
+  `memory_share` dump (`bytes=524288`, `words=262144`). The GSP's **bit-address**
+  window is `0xFF800000–0xFFBFFFFF` (4 Mi address units), mirrored at
+  `0xFFC00000`; TMS34010 `addrshift=3` converts those units to physical bytes:
+  `byte_offset = ((addr - 0xFF800000) >> 3) & 0x7ffff`. Consumers mask word
+  indices with `0x3ffff`. Do not treat the 4 Mi bit-address span as 4 MiB of
+  physical storage. The older 4 MiB claim in findings §19 came from reading the
+  GSP program space with a byte-addressed Lua loop; it was not a direct
+  `memory_share` measurement and is retracted in findings §34.
 - Each word supplies two 8-bit indexed pixels: low byte first, then high byte.
 - Palette state consists of two 1024-entry 16-bit planes. For entry `i`, the
   output colour is `R = lo[i] >> 8`, `G = lo[i] & 0xff`, `B = hi[i] & 0xff`.
@@ -59,14 +61,15 @@ used by tests. It writes exactly `512 * 240` pen indices. The backend may then
 upload the indexed image or expand it through the palette; no toolkit header is
 reachable from this contract.
 
-## Frame-600 acceptance fixture
+## Frame-600 scanout reference (superseded VRAM artifact)
 
-The pinned frame-600 attract-mode register fixture is provided by
+The frame-600 register fixture is provided by
 `stunrun_gsp_display_frame600_regs()`: `DPYSTRT=0xfc3c`, `DPYCTL=0xf004`,
 `HEBLNK=110`, `HSBLNK=622`, `VEBLNK=19`, `VSBLNK=259`, `FINESCROLL=7`, and
-palette bank zero. With the captured MAME VRAM/palette dump, the acceptance
-test checks the 512×240 output, 47 distinct colours, and dominant RGB
-`(177,46,36)` at 21.71%.
+palette bank zero. The previous 4 MiB VRAM artifact and the exact-frame colour
+claim derived from it are **not physical-share evidence**: that file came from
+the GSP address space, not MAME's 512 KiB `memory_share`. The CPU/GPU GL test
+below is synthetic parity only; it does not assert oracle parity.
 
 ## Independent OpenGL comparison path
 

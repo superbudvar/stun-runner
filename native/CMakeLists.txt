@@ -731,12 +731,9 @@ target_link_libraries(stunrun-gsp-upload-callers-musashi-test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kdasm.o
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/softfloat/softfloat.o)
 set_target_properties(stunrun-gsp-upload-callers-musashi-test PROPERTIES C_STANDARD 99)
-# DISABLED: requires 128KB ROM bank files. With our 64KB files, the slot table
-# addresses (0xBFE04 etc.) fall in the upper half of bank 5 which is padded
-# 0xFF -- the slot data is garbage and the test produces wrong results.
-# Re-enable with proper 128KB ROM files.
-# add_test(NAME gsp-upload-callers-musashi-c
-#   COMMAND stunrun-gsp-upload-callers-musashi-test)
+add_test(NAME gsp-upload-callers-musashi-c
+  COMMAND stunrun-gsp-upload-callers-musashi-test)
+set_tests_properties(gsp-upload-callers-musashi-c PROPERTIES TIMEOUT 120)
 
 # Observe ordered MC68010 writes in the TMS34010 host window and the board's
 # /GSPRES control.  The fixture runs real Musashi MOVE.B/.W/.L instructions
@@ -865,11 +862,7 @@ target_link_libraries(stunrun-musashi-text-log-test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/m68kdasm.o
   ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/musashi/softfloat/softfloat.o)
 set_target_properties(stunrun-musashi-text-log-test PROPERTIES C_STANDARD 99)
-# DISABLED: requires 128KB ROM bank files. The selector table base is 0x10136,
-# which falls in the upper half of bank 0 (offset > 0x10000) with 64KB files.
-# With zero-fill it accidentally found 394 garbage selectors; with 0xFF-fill
-# it finds none. Re-enable with proper 128KB ROM files.
-# add_test(NAME musashi-text-log-c COMMAND stunrun-musashi-text-log-test)
+add_test(NAME musashi-text-log-c COMMAND stunrun-musashi-text-log-test)
 
 # GSP RTL driver (C++20, links the Verilated core).
 # Only available when Verilator was found (same check as gsp_rtl subdirectory).

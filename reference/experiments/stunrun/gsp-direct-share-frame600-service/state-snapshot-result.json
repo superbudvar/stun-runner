@@ -1,0 +1,32 @@
+{
+  "schema": "stunrun-gsp-state-snapshot-result/v1",
+  "frames": 700,
+  "targets": "600",
+  "input": "service",
+  "load_state": null,
+  "nothrottle": true,
+  "returncode": 0,
+  "snapshots": [
+    {
+      "frame": 600,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 30840,
+      "control_hi_sum32": 1841176,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 188638,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/tmp/opencode/mame-direct-service/screens/frame-000600.png"
+    }
+  ],
+  "lua_errors": [],
+  "canonical_log_sha256": "84d4040fde91370233a451cd418090f999e764f6817f0cfa9065b68a2437fec6"
+}

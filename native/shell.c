@@ -535,26 +535,66 @@ static int get_live_gsp_state(musashi_gsp_memory_t *mem,
     stunrun_gsp_display_frame600_regs(dregs);
 #endif
 
-    /* STUNRUN_FORCE_FRAMEBUF=<hex>: override the rasterizer's frame-buffer base.
-     * Value is a musashi VRAM byte offset (packed 16-bit words).
-     * rasterizer: base = rowaddr << 10,  rowaddr = base >> 10.
-     * musashi VRAM byte offset 0x016040 -> base = 0x016040 -> rowaddr = 0x58.
-     * With ORG=0: dpyadr = rowaddr ^ 0xFFFC. */
+    /* Diagnostic override for oracle-reported GSP display registers. The
+     * fallback frame-600 registers are wrong for the early 68010-only
+     * self-test screen. Supplying these values lets us test the captured VRAM
+     * through the same CPU scanout without pretending the halted GSP produced
+     * them. Values are hexadecimal, matching the MAME register dump. */
+    {
+        const struct { const char *name; uint16_t *field; } regs[] = {
+            { "STUNRUN_DPYADR", &dregs->dpyadr },
+            { "STUNRUN_DPYSTRT", &dregs->dpystrt },
+            { "STUNRUN_DPYTAP", &dregs->dpytap },
+            { "STUNRUN_DPYCTL", &dregs->dpyctl },
+            { "STUNRUN_HEBLNK", &dregs->heblnk },
+            { "STUNRUN_HSBLNK", &dregs->hsblnk },
+            { "STUNRUN_VEBLNK", &dregs->veblnk },
+            { "STUNRUN_VSBLNK", &dregs->vsblnk },
+        };
+        size_t i;
+        for (i = 0; i < sizeof(regs) / sizeof(regs[0]); ++i) {
+            const char *text = getenv(regs[i].name);
+            if (text && text[0]) {
+                char *end = NULL;
+                unsigned long value = strtoul(text, &end, 16);
+                if (end != text && *end == '\0' && value <= 0xFFFFu)
+                    *regs[i].field = (uint16_t)value;
+            }
+        }
+        {
+            const char *text = getenv("STUNRUN_FINESCROLL");
+            if (text && text[0]) {
+                char *end = NULL;
+                unsigned long value = strtoul(text, &end, 16);
+                if (end != text && *end == '\0' && value <= 0xFFu)
+                    dregs->finescroll = (uint8_t)value;
+            }
+        }
+    }
+
+    /* STUNRUN_FORCE_FRAMEBUF=<hex>: diagnostic scanout of a physical byte offset
+     * in the 512 KiB share. The rasterizer's row base is a uint16 word index:
+     * byte_base = rowaddr << 11. The low address remainder is converted into
+     * DPYTAP (8 display pixels per tap unit). For the $25E8 text target
+     * HSTADR=$FF896040 -> share byte $12C08 -> rowaddr=$25, tap=$81. */
     {
         static unsigned s_force_row = 0xFFFFu;
         const char *fb = getenv("STUNRUN_FORCE_FRAMEBUF");
         if (fb && fb[0]) {
             char *end = NULL;
             unsigned long v = strtoul(fb, &end, 16);
-            /* v is a musashi byte offset.  rasterizer base = v.  rowaddr = v >> 10 */
+            /* v is a physical byte offset; display base is in 16-bit words. */
             if (end != fb && *end == '\0' && v < MUSASHI_GSP_VRAM_WORDS * 2u) {
-                unsigned row = (unsigned)(v >> 10);  /* base = row << 10 */
+                unsigned row = (unsigned)(v >> 11);
+                unsigned row_byte_base = row << 11;
                 if (s_force_row == 0xFFFFu) {
-                    printf("shell: force-framebuf=0x%lX base=0x%lX row=0x%X dpyadr=0x%04X\n",
-                           v, v, row, (row ^ 0xFFFCu) & 0xFFFFu);
+                    printf("shell: force-framebuf=0x%lX byte-base=0x%lX row=0x%X dpyadr=0x%04X\n",
+                           v, (unsigned long)row_byte_base,
+                           row, (row ^ 0xFFFCu) & 0xFFFFu);
                 }
                 s_force_row = row;
                 dregs->dpyadr = (uint16_t)((row ^ 0xFFFCu) & 0xFFFFu);
+                dregs->dpytap = (uint16_t)((v - row_byte_base) / 8u);
                 dregs->dpyctl &= ~STUNRUN_DPYCTL_ORG;
             }
         }

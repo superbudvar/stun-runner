@@ -69,19 +69,25 @@ nothing fills.
   simulator dependency.
 - **`gsvp.3` host harness — open.** `native/gsp_rtl/gsp_board.c` is the
   toolkit-free C99 board model (memory map, host port, reset/clock), testable
-  without Verilator. The Verilated driver is wired into the shell frame loop.
-- **`gsvp.4` first milestone — open, and its headline number is weaker than it
-  looks.** Feeding the real 68010 upload (`gsp_bus_events.bin`, 901,354 events)
-  through the board model gives byte-identical VRAM — but read the 4 MiB caveat
-  above before quoting it. What is *not* yet shown is the TMS34010 core
-  executing the uploaded display list. Scanout deliberately stays in the native
-  rasteriser, which already reproduces the MAME frame byte-for-byte from
-  correct VRAM, palette and registers.
-- **`gsvp.5` upload boundary — done (`stun-runner-8p4.2`).** The GSP program is
+  without Verilator. It is **not yet the physical board model**: it still uses
+  4 MiB byte-addressed VRAM, while SP-338 and the direct MAME `memory_share`
+  dump establish 512 KiB with TMS34010 bit-address conversion. See
+  `docs/mc68010-boot-findings.md` §34.
+- **`gsvp.4` first milestone — open.** The prior byte-identical replay compared
+  two software models that shared the same wrong address/size assumptions; it
+  is not oracle evidence. The direct 512 KiB share capture is now at
+  `reference/experiments/stunrun/gsp-direct-share-frame600-service/`. What is
+  *not* yet shown is the TMS34010 core executing the uploaded display list.
+  Scanout still needs a fresh comparison against the direct share and correct
+  early-frame display registers.
+- **`gsvp.5` upload boundary — bus boundary done (`stun-runner-8p4.2`); old VRAM
+  images superseded.** The GSP program is
   now pinned to an upload and a release rather than inferred from a frame-600
   dump. `tools/capture-gsp-program-upload` records the ordered 68010 host-port
-  stream and images the share either side of the boundary. Two independent runs
-  agree on everything, including byte-identical VRAM images.
+  stream and images the GSP program-space address window either side of the
+  boundary. The old 4 MiB images were not physical-share captures; do not use
+  them as VRAM oracle data. The 512 KiB direct share capture is a separate
+  frame-600 observation, not a replacement boundary capture.
   - The halt that holds the GSP during the upload is **HSTCTL bit 15**, not
     `/GSPRES`. `/GSPRES` goes released once at power-on *before any host write*
     and is toggled again at frames 362 and 396 while the GSP stays halted.
@@ -286,56 +292,34 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
 
 ## Current blockers
 
-- **The GSP VRAM share is 4 MiB and a host data write FILLS the 16-byte cell.
-  Both FIXED; host-write parity is now MEASURED against MAME.**
-  - *Size.* `GSP_BOARD_VRAM_BYTES` (`native/gsp_rtl/gsp_board.h:29`) and
-    `MUSASHI_GSP_VRAM_BYTES` (`native/musashi_cpu.h:67`) are both `0x400000`
-    since 2026-10-12 (`cf8587e`, `bd5b873`), masking with `0x3FFFFF`.
-    `tools/mame-gsp-mirror-probe`: the old mask sent 745,384 of 843,688
-    captured `0xFFxxxxxx` HSTDAT writes (88.4%) to a different cell. Section 19.
-  - *Store.* A host `HSTDAT` stores **16 bytes**, the low byte eight times then
-    the high byte eight times -- not a packed word. Measured at frame 390 with
-    the GSP in reset (`gsp PC=0`), through the real host port:
-    `HSTADRL=0xFF801000, HSTDAT=0x1234` reads back
-    `34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12`. `fcf1eab` had
-    "corrected" `native/musashi_cpu.c` to packed on a misreading of
-    `m_program.write_word`; commit `d91ae6a` propagated that misreading into the
-    board model and has been **reverted**. Section 27, `BUGS.md` SR-20.
-  - **Section 15.4's byte-identical VRAM match (`0 / 524,288`) is RETRACTED.**
-    Both models carried the same wrong constant *and* the same wrong store, so
-    they agreed by construction. It proved host-write dispatch, nothing else.
-  - **Host-write parity IS now measured**, on the frame-390 window (GSP in
-    reset, so the share holds only host writes): replaying the captured stream
-    gives 70,960 of 4,194,304 bytes differing (98.31%), against 748,098
-    (82.16%) for a packed model. The residual is `0xff` fill in the ranges the
-    2bpp expander writes, which the arbitration harness does not model.
-  - **Not yet established:** neither model is compared against MAME at a frame
-    where the GSP has *run*. The frame-600 oracle is 87.5% uniform GSP
-    framebuffer data (0x82, 0xb8, 0xaa...) that no host-port replay can produce,
-    and the 2bpp path is still unmodelled in the arbitration harness. Section
-    18.2 stands and is independent: the capture ends with the GSP halted 99.61%
-    of its window.
-  - `tools/check-gsp-replay` also never had a pass branch -- it ended in an
-    unconditional `return 1`, so it could not report success. Fixed; it returns
-    0 on byte-identity. Section 27.5.
-  - **Reproducing the arbitration needs a specific window.** MAME's share is
-    entirely zero at frame 360 and the GSP is running by frame 420, so "an
-    early frame" is not early enough; the window has to be found by checking
-    `gsp PC` at the capture point. Frame 390 works.
-
-- **The frame-600 VRAM fixture is REPLACED and now has a checker.** The old file
-  was 1048576 bytes, began with the MC68010 reset SP/PC (`ffffc000 00000216`),
-  had no provenance, and agreed with a fresh pinned capture on 0.18% of bytes —
-  it was main RAM under a VRAM name, and nothing failed because nothing read it.
-  It is superseded by the 4194304-byte capture from
-  `tools/mame-gsp-vram-dump` (sha256 `35c9262190d8ec85...`), with provenance in
-  `fixtures/oracle/frame_600/metadata.json`.
-  `tools/verify-oracle-fixture` checks size, the reset-vector tell, sha256
-  against the recorded provenance, and the all-zero capture case; five public
-  tests pin it, three of them negative controls. Sections 19.5 and 27.
-  - The replacement is **not** yet usable as a parity gate. It contains GSP-core
-    writes as well as host-port writes, so a whole-array diff against a
-    host-port-only model cannot decide anything. See the open item above.
+- **Physical GSP VRAM is now established as 512 KiB.** SP-338 Page 10 says
+  `VRAM Array (16) 64K x 4`; MAME's direct `m_gsp_vram` pointer dump reports
+  524,288 bytes / 262,144 words. TMS34010 addresses are bit addresses
+  (`addrshift=3`): HSTADR `$FF896040` maps to physical share offset `$12C08`.
+  The corrected `tools/mame-gsp-vram-dump` reads one word per `0x10` address
+  units and was compared byte-for-byte with the direct MAME share hook. See
+  findings §34 and `reference/experiments/stunrun/gsp-share-reader-crosscheck-service/`.
+- **The native Musashi host-write model now uses the physical 512 KiB share** and
+  packed 16-bit HSTDAT stores. The 128 KiB ROM-bank interleave was also fixed;
+  frame 48 now loads 394 text descriptors, matches selector `$47`, and stores
+  its first text cell byte-for-byte at physical `$12C08`. The old 4 MiB/16-byte
+  claims, Lua zero-read conclusion, and disabled text/upload tests were our
+  mistakes and are retracted in findings §34.
+- **Native screen scanout is still incomplete.** With diagnostic
+  `STUNRUN_FORCE_FRAMEBUF=12C08`, the native rasteriser shows text from the
+  physical share, but the image is only a 148×8 approximation at the top versus
+  MAME's 237×7 prompt at y=150. The shell currently falls back to frame-600
+  display registers when the GSP RTL is halted; frame-48 scanout origin/stride
+  remains the next focused task.
+- **The optional Verilated `native/gsp_rtl/gsp_board.c` model is not yet corrected
+  to the 512 KiB bit-addressed backing.** Its 4 MiB byte-addressed array and
+  replay comparisons are not physical-board parity evidence. Keep gsvp.3/.4
+  open until that model consumes the corrected units and is checked against the
+  direct-share artifact.
+- **The old `fixtures/oracle/frame_600/frame_600_gsp_vram.bin` and related 4 MiB
+  captures are TMS program-address-space samples, not physical VRAM.** They stay
+  as historical artifacts but must not be used as VRAM goldens. The direct
+  512 KiB service-mode capture is in `reference/experiments/stunrun/`.
 - M0 is complete; the installed package's unavailable upstream source commit remains documented in `analysis/m0-audit.md`.
 - Installed MAME reports `0.289 (mame0289-dirty)` and exposes no source commit; its binary hash is recorded in `mame/system-baseline.json`.
 - Static-listing generation recipe works for all four active programmable processors; generated listings remain local and are hash-recorded in `reference/listings/stunrun.metadata.json`.

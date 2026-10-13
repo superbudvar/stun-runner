@@ -90,6 +90,7 @@ struct musashi_cpu {
     uint8_t *gsp_pal_hi;     /* 0xF5800000-0xF58007FF */
     uint8_t *gsp_ctrl_lo;    /* 0xF4000000-0xF40000FF */
     uint8_t *gsp_ctrl_hi;    /* 0xF4800000-0xF48000FF */
+    uint8_t gsp_palette_bank;
 
     /* Ordered log of every HSTDAT write.  This is the display list, in the
      * order the 68010 produced it — the single most valuable artifact for
@@ -585,20 +586,16 @@ int musashi_cpu_load_rom_bank(musashi_cpu_t *cpu, unsigned bank,
     if (bank >= MUSASHI_NUM_ROM_BANKS) return -1;
     if (!even_bytes || !odd_bytes) return -1;
 
-    /* MAME's ROM_LOAD16_BYTE loads 128KB from each file at a 128KB-aligned
-     * offset (e.g. ROM_LOAD16_BYTE("136070-2102.200r", 0x20000)).  Our files
-     * are only 64KB, so the upper 64KB of each 128KB bank is implicitly
-     * 0xFF in MAME (unmapped region reads as 0xFF).  Initialise the full bank
-     * to 0xFF before loading the 64KB file data. */
+    /* Each 64 KiB ROM_LOAD16_BYTE file occupies every other byte in a
+     * 128 KiB address span. A pair therefore fills the entire 128 KiB bank:
+     * even_bytes[i] -> address 2*i, odd_bytes[i] -> address 2*i+1.
+     * Bytes beyond the loaded pair (if any) retain the MAME unmapped value. */
     memset(cpu->rom_banks[bank], 0xFF, MUSASHI_ROM_BANK_SIZE);
 
-    /* De-interleave: even_bytes[i] = MSB of word i, odd_bytes[i] = LSB of word i.
-     * MC68010 big-endian bus: even byte address = MSB, odd byte address = LSB.
-     * We store as linear byte array where byte[N] = byte at address N.
-     * Only the first 64KB of each 128KB bank is populated from the file;
-     * the upper 64KB remains 0xFF as MAME expects. */
+    /* De-interleave ROM_LOAD16_BYTE into the flat 68010-visible bank. */
     for (unsigned i = 0; i < MUSASHI_ROM_FILE_SIZE; i++) {
-        cpu->rom_banks[bank][i] = (i & 1) ? odd_bytes[i >> 1] : even_bytes[i >> 1];
+        cpu->rom_banks[bank][2u * i] = even_bytes[i];
+        cpu->rom_banks[bank][2u * i + 1u] = odd_bytes[i];
     }
     return 0;
 }
@@ -892,17 +889,12 @@ static uint32_t gsp_2bpp_mask_word(uint16_t data, unsigned half)
     return mask;
 }
 
-/* hdgsp_control_hi_w (harddriv_v.cpp:211-256): offsets 0x02/0x03/0x04 each set
- * one bit of the palette bank from bit 3 of the offset, and 0x01 sets the
- * fine scroll (low 4 bits on the multisync board).  Keeping the bank here is
- * what makes the palette handlers' `offset & 0xff` aliasing meaningful. */
+/* hdgsp_control_hi_w (harddriv_v.cpp:211-256): register offsets 0x02/0x03/0x04
+ * set one bit of the palette bank from bit 3 of the register offset; offset
+ * 0x01 sets fine scroll. */
 static unsigned gsp_palette_bank(const musashi_cpu_t *cpu)
 {
-    unsigned bank = 0;
-    if (cpu->gsp_ctrl_hi[0x03] & 0x08u) bank |= 2;
-    if (cpu->gsp_ctrl_hi[0x04] & 0x08u) bank |= 4;
-    if (cpu->gsp_ctrl_hi[0x02] & 0x08u) bank |= 1;
-    return bank;
+    return cpu->gsp_palette_bank;
 }
 
 /* hdgsp_paletteram_{lo,hi}_w: only the first 256 entries are addressable;
@@ -910,7 +902,8 @@ static unsigned gsp_palette_bank(const musashi_cpu_t *cpu)
  * (harddriv.cpp:399-400, :1508). */
 static unsigned gsp_palette_index(const musashi_cpu_t *cpu, uint32_t off)
 {
-    return gsp_palette_bank(cpu) * 0x100u + (off & 0xFFu);
+    /* Callback offsets are 16-bit words; each is 0x10 TMS bit-address units. */
+    return gsp_palette_bank(cpu) * 0x100u + ((off >> 4u) & 0xFFu);
 }
 
 /* Write a 16-bit word into GSP memory space.  Mirrors the multisync GSP map at
@@ -928,129 +921,98 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
         cpu->gsp_wlog_len++;
     }
 
-    /* 0xFF000000-0xFFFFFFFF: the VRAM share.
+    /* TMS34010 program addresses are bit addresses: address shift 3 means
+     * one address unit is one bit. The Main Board Memory Map plus SP-338
+     * Page 10 BOM give 16 x 64Kx4 chips = 512 KiB; the pinned MAME's
+     * memory_share dump independently reports 524288 bytes / 262144 words.
      *
-     * Measured, by tools/mame-gsp-mirror-probe:
+     * The MAME map spans 0x400000 bit-address units and mirrors at the next
+     * 0x400000 units. Convert to the physical byte offset before touching the
+     * share:
      *
-     *     share   = 4194304 bytes, first offset aliasing 0 is 0x400000
-     *     mapped  iff (addr & 0x7f800000) == 0x7f800000
-     *     offset  =  addr & 0x003fffff
+     *     off = ((addr - 0xFF800000) >> 3) & 0x7FFFF
      *
-     * The MAME mirror formula is: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF
-     * (4 MiB share, mirroring every 4 MiB).  The old & 0x7FFFF was 512 KiB
-     * aliasing (88.4% of writes landed in wrong cells).
-     *
-     * PACKED STORAGE (not byte-replicated): the rasterizer reads packed
-     * 16-bit pixels from this region via the frame buffer base address.  The
-     * display list blit also writes PACKED 16-bit words here (via the GSP's
-     * local bus, not the host port).  The host port's byte-replication was
-     * an interpretation of MAME's TMS34010 program-space memory model that
-     * does not apply to the VRAM share the rasterizer reads -- the share was
-     * always packed, and the rasterizer was reading garbage as a result.
-     *
-     * The 2bpp window (0x02000000) reads packed words from the same backing
-     * store via gsp_board_read16(), so making host writes packed here makes
-     * the 2bpp window consistent too. */
-    if ((addr & 0xFF000000u) == 0xFF000000u) {
-        /* MAME mirror formula: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF */
-        uint32_t off = ((addr - 0xFF800000u) % 0x400000u) & 0x3FFFFFu;
-        /* A host data write FILLS a 16-byte cell, each source byte replicated
-         * eight times -- it is not a packed 2-byte store.
-         *
-         * This corrects fcf1eab (2026-10-12, "native: fix MC68010 VRAM writes to
-         * packed storage"), which changed this path to packed on the reading
-         * that TMS34010_WRMEM_WORD is `m_program.write_word` and that a 16-bit
-         * `write_word` stores two bytes.  Measured against the pinned MAME at
-         * frame 390 with the GSP still in reset (gsp PC=0), driven through the
-         * real host port:
-         *
-         *   HSTADRL=0xFF801000, HSTDAT=0x1234, read 16 bytes from 0xff801000:
-         *       34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12
-         *
-         * The program space is declared `datawidth 16, addrshift 3`
-         * (tms34010.cpp:67), so its 16-byte unit is real; `write_word` against
-         * that unit expands rather than storing two bytes.  See
-         * docs/mc68010-boot-findings.md section 27 and BUGS.md SR-20.
-         *
-         * Why it was never caught: native/gsp_rtl/gsp_board.c replicated
-         * identically until 2026-10-13, and tools/check-gsp-replay compares
-         * these two models against each other rather than against MAME.  Both
-         * sides carried the same error, so the check passed by construction. */
-        off = off & ~0xfu;
-        {
-            uint8_t lo = (uint8_t)(value & 0xFFu);
-            uint8_t hi = (uint8_t)(value >> 8);
-            unsigned k;
-            for (k = 0; k < 8u; k++) {
-                cpu->gsp_vram[off + k]      = lo;
-                cpu->gsp_vram[off + 8u + k] = hi;
-            }
-        }
+     * HSTADR's INCW advances 0x10 bit-address units, i.e. 2 physical bytes.
+     * A host write is one packed 16-bit word, little-endian in the share; it
+     * does not replicate across a 16-byte cell. The old model treated the
+     * bit-address delta as bytes, allocated 4 MiB, and replicated each word
+     * across 16 bytes. That made the native renderer scan the wrong region and
+     * produced the random patterning in the build. See findings sections 27,
+     * 30, 31 and 33 for the superseded measurements and their refutations. */
+    if ((addr & 0xFF800000u) == 0xFF800000u) {
+        uint32_t off = ((addr - 0xFF800000u) >> 3u) & 0x7FFFFu;
+        off &= ~1u;
+        cpu->gsp_vram[off] = (uint8_t)(value & 0xFFu);
+        cpu->gsp_vram[off + 1u] = (uint8_t)(value >> 8);
         cpu->gsp_counts.vram++;
         return;
     }
-    /* 0x02000000-0x020FFFFF: masked 32-byte expander over main VRAM. */
+    /* 0x02000000-0x020FFFFF: TMS bit-addressed 2bpp expander over the same
+     * physical 512 KiB share. MAME's address-map offset is one 16-bit access
+     * per 0x10 address bits; hdgsp_vram_2bpp_w advances four uint16 words
+     * (8 bytes) per source word and emits two uint32 writes. */
     if ((addr & 0xFFF00000u) == 0x02000000u) {
-        uint32_t offset = ((addr & 0x000FFFFFu) >> 1);
-        uint32_t color = cpu->gsp_ctrl_lo[0];
+        uint32_t offset = ((addr - 0x02000000u) >> 4u);
+        uint32_t color = cpu->gsp_ctrl_lo[1];
         color |= color << 16;
-        for (unsigned w = 0; w < 8; w++) {
-            uint32_t mask = gsp_2bpp_mask_word(value, w & 1u);
+        for (unsigned half = 0; half < 2u; half++) {
+            uint32_t mask = gsp_2bpp_mask_word(value, half);
             if (mask == 0u)
                 continue;
-            /* m_gsp_vram is a uint16_t share (harddriv.h:353), so the cast in
-             * harddriv_v.cpp:302 advances offset * 4 ELEMENTS = 8 bytes. */
-            uint32_t o = (offset * 8u + w * 4u);
-            /* MAME indexes m_gsp_vram unchecked, so an offset past the share
-             * would corrupt the heap there.  Our fill tops out at byte
-             * 0x17FFC0 (word offsets 0..0x2FFF8 step 8, data 0xFFFF), well
-             * inside 4 MiB -- the counter is here so that stops being
-             * true without the diff silently going wrong. */
+            uint32_t o = offset * 8u + half * 4u;
             if (o + 4u > MUSASHI_GSP_VRAM_BYTES)
                 cpu->gsp_counts.vram_2bpp_oob++;
             o &= (MUSASHI_GSP_VRAM_BYTES - 1u) & ~3u;
-            uint32_t cur = ((uint32_t)cpu->gsp_vram[o] << 24) |
-                           ((uint32_t)cpu->gsp_vram[o + 1] << 16) |
-                           ((uint32_t)cpu->gsp_vram[o + 2] << 8) |
-                           (uint32_t)cpu->gsp_vram[o + 3];
+            uint32_t cur = (uint32_t)cpu->gsp_vram[o] |
+                           ((uint32_t)cpu->gsp_vram[o + 1u] << 8) |
+                           ((uint32_t)cpu->gsp_vram[o + 2u] << 16) |
+                           ((uint32_t)cpu->gsp_vram[o + 3u] << 24);
             cur = (cur & ~mask) | (color & mask);
-            cpu->gsp_vram[o]     = (uint8_t)(cur >> 24);
-            cpu->gsp_vram[o + 1] = (uint8_t)(cur >> 16);
-            cpu->gsp_vram[o + 2] = (uint8_t)(cur >> 8);
-            cpu->gsp_vram[o + 3] = (uint8_t)cur;
+            cpu->gsp_vram[o]       = (uint8_t)cur;
+            cpu->gsp_vram[o + 1u]  = (uint8_t)(cur >> 8);
+            cpu->gsp_vram[o + 2u]  = (uint8_t)(cur >> 16);
+            cpu->gsp_vram[o + 3u]  = (uint8_t)(cur >> 24);
         }
         cpu->gsp_counts.vram_2bpp++;
         return;
     }
     /* 0xF5000000 palette low / 0xF5800000 palette high */
     if ((addr & 0xFFFFF000u) == 0xF5000000u) {
-        uint32_t i = gsp_palette_index(cpu, addr) * 2u;
-        cpu->gsp_pal_lo[i]     = (uint8_t)(value >> 8);
-        cpu->gsp_pal_lo[i + 1] = (uint8_t)(value & 0xFF);
+        uint32_t i = gsp_palette_index(cpu, addr - 0xF5000000u) * 2u;
+        cpu->gsp_pal_lo[i]     = (uint8_t)(value & 0xFFu);
+        cpu->gsp_pal_lo[i + 1] = (uint8_t)(value >> 8);
         cpu->gsp_counts.pal_lo++;
         return;
     }
     if ((addr & 0xFFFFF000u) == 0xF5800000u) {
-        uint32_t i = gsp_palette_index(cpu, addr) * 2u;
-        cpu->gsp_pal_hi[i]     = (uint8_t)(value >> 8);
-        cpu->gsp_pal_hi[i + 1] = (uint8_t)(value & 0xFF);
+        uint32_t i = gsp_palette_index(cpu, addr - 0xF5800000u) * 2u;
+        cpu->gsp_pal_hi[i]     = (uint8_t)(value & 0xFFu);
+        cpu->gsp_pal_hi[i + 1] = (uint8_t)(value >> 8);
         cpu->gsp_counts.pal_hi++;
         return;
     }
     /* 0xF4000000 / 0xF4800000 control registers */
     if ((addr & 0xFFFFFF00u) == 0xF4000000u) {
-        uint32_t off = addr & 0xFFu;
-        off &= ~1u;
+        uint32_t reg = (addr - 0xF4000000u) >> 4u;
+        uint32_t off = reg * 2u;
         cpu->gsp_ctrl_lo[off]     = (uint8_t)(value >> 8);
         cpu->gsp_ctrl_lo[off + 1] = (uint8_t)(value & 0xFF);
         cpu->gsp_counts.control++;
         return;
     }
     if ((addr & 0xFFFFFF00u) == 0xF4800000u) {
-        uint32_t off = addr & 0xFFu;
-        off &= ~1u;
+        uint32_t reg = (addr - 0xF4800000u) >> 4u;
+        uint32_t off = reg * 2u;
         cpu->gsp_ctrl_hi[off]     = (uint8_t)(value >> 8);
         cpu->gsp_ctrl_hi[off + 1] = (uint8_t)(value & 0xFF);
+        /* harddriv_v.cpp:211-256: register 1 sets fine scroll; registers
+         * 2/3/4 select palette-bank bits using bit 3 of the callback offset. */
+        switch (reg & 7u) {
+        case 2u: cpu->gsp_palette_bank = (uint8_t)((cpu->gsp_palette_bank & ~1u) | ((reg >> 3u) & 1u)); break;
+        case 3u: cpu->gsp_palette_bank = (uint8_t)((cpu->gsp_palette_bank & ~2u) | (((reg >> 3u) & 1u) << 1u)); break;
+        case 4u: cpu->gsp_palette_bank = (uint8_t)((cpu->gsp_palette_bank & ~4u) | (((reg >> 3u) & 1u) << 2u)); break;
+        default: break;
+        }
         cpu->gsp_counts.control++;
         return;
     }
@@ -1064,13 +1026,12 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
  * address latches as a side effect, exactly as the hardware does. */
 static uint16_t gsp_mem_read_word(musashi_cpu_t *cpu, uint32_t addr)
 {
-    if ((addr & 0xFF000000u) == 0xFF000000u) {
-        /* MAME mirror formula: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF */
-        uint32_t off = ((addr - 0xFF800000u) % 0x400000u) & 0x3FFFFFu;
-        off = (off & ~1u);  /* word-aligned */
-        /* PACKED storage: reads return the 16-bit word at the offset.
-         * The auto-increment side effect of bumping the address latch is
-         * handled by the caller (gsp_host_read_word). */
+    if ((addr & 0xFF800000u) == 0xFF800000u) {
+        /* TMS34010 bit-addressed memory: convert address units to physical
+         * bytes, then read one packed little-endian 16-bit share word. */
+        uint32_t off = ((addr - 0xFF800000u) >> 3u) & 0x7FFFFu;
+        off &= ~1u;
+        /* The auto-increment side effect is handled by the caller. */
         return (uint16_t)(((uint16_t)cpu->gsp_vram[off + 1u] << 8) |
                           cpu->gsp_vram[off]);
     }
@@ -1079,20 +1040,24 @@ static uint16_t gsp_mem_read_word(musashi_cpu_t *cpu, uint32_t addr)
         return 0;
     }
     if ((addr & 0xFFFFF000u) == 0xF5000000u) {
-        uint32_t i = gsp_palette_index(cpu, addr) * 2u;
-        return (uint16_t)((cpu->gsp_pal_lo[i] << 8) | cpu->gsp_pal_lo[i + 1]);
+        uint32_t i = gsp_palette_index(cpu, addr - 0xF5000000u) * 2u;
+        return (uint16_t)(cpu->gsp_pal_lo[i] |
+                          ((uint16_t)cpu->gsp_pal_lo[i + 1u] << 8));
     }
     if ((addr & 0xFFFFF000u) == 0xF5800000u) {
-        uint32_t i = gsp_palette_index(cpu, addr) * 2u;
-        return (uint16_t)((cpu->gsp_pal_hi[i] << 8) | cpu->gsp_pal_hi[i + 1]);
+        uint32_t i = gsp_palette_index(cpu, addr - 0xF5800000u) * 2u;
+        return (uint16_t)(cpu->gsp_pal_hi[i] |
+                          ((uint16_t)cpu->gsp_pal_hi[i + 1u] << 8));
     }
     if ((addr & 0xFFFFFF00u) == 0xF4000000u) {
-        uint32_t off = (addr & 0xFFu) & ~1u;
-        return (uint16_t)((cpu->gsp_ctrl_lo[off] << 8) | cpu->gsp_ctrl_lo[off + 1]);
+        uint32_t off = ((addr - 0xF4000000u) >> 4u) * 2u;
+        return (uint16_t)(((uint16_t)cpu->gsp_ctrl_lo[off] << 8) |
+                          cpu->gsp_ctrl_lo[off + 1u]);
     }
     if ((addr & 0xFFFFFF00u) == 0xF4800000u) {
-        uint32_t off = (addr & 0xFFu) & ~1u;
-        return (uint16_t)((cpu->gsp_ctrl_hi[off] << 8) | cpu->gsp_ctrl_hi[off + 1]);
+        uint32_t off = ((addr - 0xF4800000u) >> 4u) * 2u;
+        return (uint16_t)(((uint16_t)cpu->gsp_ctrl_hi[off] << 8) |
+                          cpu->gsp_ctrl_hi[off + 1u]);
     }
     return 0xFFFF;
 }
@@ -1102,7 +1067,7 @@ static uint32_t gsp_host_address(const musashi_cpu_t *cpu)
     return (((uint32_t)cpu->hstadrh << 16) | cpu->hstadrl) & 0xFFFFFFF0u;
 }
 
-/* Advance the host address latches by one 16-byte GSP word. */
+/* Advance the bit-address latch by one 16-bit host word (0x10 bits, 2 bytes). */
 static void gsp_host_bump_address(musashi_cpu_t *cpu)
 {
     uint32_t next = (gsp_host_address(cpu) + 0x10u) & 0xFFFFFFFFu;

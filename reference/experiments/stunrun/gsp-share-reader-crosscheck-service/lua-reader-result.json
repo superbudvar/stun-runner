@@ -1,0 +1,20 @@
+{
+  "schema": "stunrun-gsp-vram-dump-result/v2",
+  "frames": 700,
+  "target": 601,
+  "words": 262144,
+  "input": "service",
+  "nothrottle": true,
+  "returncode": 0,
+  "lua_errors": [],
+  "capture": {
+    "frame": 601,
+    "base": 4286578688,
+    "words": 262144,
+    "nonzero_words": 1717,
+    "pc": 4294285600
+  },
+  "dump": "/tmp/opencode/mame-share-verify2/gsp_vram.bin",
+  "canonical_log_sha256": "37d7f765afa663ecaea085fbebe7fabc6fac2a2abdd23b4600ca18989f75b913",
+  "dump_sha256": "e1e3be56a371c1ed2e4313617b4774df5c600def67ded33f7ffb920986e7c4ee"
+}

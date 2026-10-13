@@ -130,8 +130,9 @@ int stunrun_gsp_display_rasterise(uint16_t *dest, size_t dest_count,
         return -1;
     }
 
-    /* The mask comes from the share size, so a dump of the 4 MiB address
-     * window (the share mirrored eight times) masks correctly too. */
+    /* The mask comes from the backing share size. The TMS34010 address window
+     * is bit-addressed; its 4 Mi address units are only 512 KiB of physical
+     * VRAM (addrshift=3). */
     mask = (vram_words > 0u) ? (vram_words - 1u) : (size_t)STUNRUN_GSP_VRAM_MASK;
 
     dpyadr = regs->dpyadr != 0u ? regs->dpyadr : regs->dpystrt;

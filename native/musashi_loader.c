@@ -81,6 +81,8 @@ int musashi_loader_load(musashi_cpu_t *cpu, const char *roms_dir)
     uint8_t even[BANK_SIZE];
     uint8_t odd[BANK_SIZE];
     unsigned bank;
+    uint32_t reset_sp = 0u;
+    uint32_t reset_pc = 0u;
 
     if (!cpu || !roms_dir) return -1;
 
@@ -94,16 +96,22 @@ int musashi_loader_load(musashi_cpu_t *cpu, const char *roms_dir)
         }
         printf("musashi_loader: bank %u loaded from offset 0x%05X\n",
                bank, BANKS[bank].offset);
+        if (bank == 0u) {
+            /* Preserve vectors before `even`/`odd` are reused for bank 1. */
+            reset_sp = ((uint32_t)even[0] << 24) |
+                       ((uint32_t)odd[0] << 16) |
+                       ((uint32_t)even[1] << 8) | odd[1];
+            reset_pc = ((uint32_t)even[2] << 24) |
+                       ((uint32_t)odd[2] << 16) |
+                       ((uint32_t)even[3] << 8) | odd[3];
+        }
     }
 
-    /* Reset vector: word at 68010 address 0x000000 (even[0]=MSB, odd[0]=LSB).
-     * Initial PC = 0xFFFF (execution starts near top of bank 0, after vector table).
-     * This is a valid 24-bit address in the ROM region 0x000000–0x0FFFFF. */
-    {
-        uint16_t reset_vec = (uint16_t)((even[0] << 8) | odd[0]);
-        printf("musashi_loader: reset vector = 0x%04X (initial PC will be 0x%04X)\n",
-               reset_vec, reset_vec);
-    }
+    /* The first two longwords are the 68010 initial SSP and PC.  Each longword
+     * is assembled from alternating even/odd ROM chips; reading only even[0]
+     * and odd[0] reports the first word (0xFF00), not the reset PC. */
+    printf("musashi_loader: reset vectors SP=0x%08X PC=0x%08X\n",
+           reset_sp, reset_pc);
 
     return 0;
 }

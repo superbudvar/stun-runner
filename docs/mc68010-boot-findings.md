@@ -6963,3 +6963,175 @@ readings at frames 44–52 came from the bulk reader, and this section now shows
 the bulk reader and the tap can both be blind to writes that matter. Both of our
 "the share is all zeros" claims need re-testing against a reader that goes
 share-direct, which is what MAME itself uses.
+
+## 34. RESOLVED: physical GSP VRAM is 512 KiB; TMS34010 addresses are bit addresses
+
+This section supersedes the 4 MiB claim in §19, the 16-byte-cell claim in §27,
+and the tap/bulk-reader conclusions in §§30–33. Those were not three independent
+observations. They shared the same wrong unit conversion: **we treated a TMS34010
+bit address as a byte address.** The Atari manual, the actual MAME `memory_share`,
+and the fixed native 68010 all now agree.
+
+### 34.1 The source of truth for backing size
+
+SP-338 Page 10 labels the silicon `VRAM Array (16) 64K x 4`. Sixteen 64K×4
+chips are 16 × 256 Kbit = **4 Mbit = 512 KiB**. More decisively, the pinned
+MAME's own direct-share hook writes from
+`(const uint8_t *)m_gsp_vram.begin()` for exactly `m_gsp_vram.bytes()`:
+
+```text
+share bytes=524288 words=262144 vram_mask=0x003ffff
+```
+
+Raw capture, service mode, frame 600:
+`reference/experiments/stunrun/gsp-direct-share-frame600-service/`.
+The share, both palette planes, MAME log, wrapper result and SHA-256 values are
+recorded there. This is a `memory_share` pointer, not a read through the TMS
+program-space API. The Lua program-space reader that produced the old 4 MiB
+image is an **address-space view**, and its 4 MiB file size was the range of GSP
+bit addresses it sampled — not the number of physical bytes behind them.
+
+The Lua reader has since been corrected to read one word every `0x10` bit
+address units. In a single instrumented-MAME service run, its 512 KiB output at
+Lua frame 601 is byte-identical to the C++ direct-share dump taken at screen
+frame 600: `e1e3be56…86e7c4ee`, **0 differing bytes**. The one-frame label offset
+is recorded in `reference/experiments/stunrun/gsp-share-reader-crosscheck-service/`.
+So MD-05 (“Lua cannot read the share at all”) was our stride error, not a MAME
+driver gap, and is removed from `BUGS.md`.
+
+### 34.2 The conversion, with units shown
+
+The TMS34010 program space is configured `datawidth 16, addrshift 3`
+(`tms34010.cpp`). The GSP addresses are in bits; one program-space address unit
+is one bit. The host writes `TMS34010_WRMEM_WORD(addr & 0xfffffff0, data)`.
+The `& ~0xF` aligns to a 16-bit word, and each HSTADR INCW adds `0x10` — the
+next 16-bit word, **two physical bytes**.
+
+```text
+GSP bit address delta      -> physical byte offset
+0x00000000                 -> 0x00000
+0x00000010  (one word)     -> 0x00002
+0x00001000                 -> 0x00200
+0x00096040                 -> 0x12C08
+0x00400000  (mirror)       -> 0x80000 -> aliases to 0x00000
+
+byte_offset = ((addr - 0xFF800000) >> 3) & 0x7FFFF
+word_index  = byte_offset >> 1
+```
+
+For the 68010's first text line, HSTADR `$FF896040` therefore lands at physical
+share byte `$12C08`, **not** `$96040`. For the `$548E` fill, 230,400 writes at
+INCW stride `0x10` cover 230,400 × 2 = **460,800 bytes**, not 3.5 MiB. It clears
+about 87.9% of the 512 KiB share; it does not address 88% of a 4 MiB share.
+
+The old `HSTADR=$FF801000, HSTDAT=$1234 -> 16 repeated bytes` result from §27 is
+withdrawn as a physical-share measurement. It read a program-space address as
+if each address increment were one byte; stepping through a bit-addressed,
+addrshift-3 space at `+2` does not read successive physical bytes. The direct
+share layout is the authoritative one.
+
+### 34.3 Native frame-48 proof — the 68010 writes real text into the share
+
+The prior native run had a second, independent ROM loader defect. Each pair of
+64 KiB chips is `ROM_LOAD16_BYTE`: the even file fills destination bytes
+`2*i`, the odd file fills `2*i+1`, across the **full 128 KiB bank**. The loader
+had instead written 64 KiB of interleaved output and padded the remaining half
+with `0xFF`. That put the selector table at `$10136` outside the correctly
+loaded bytes, made `text-log descriptors=0`, and produced random ROM execution.
+The old fix in commit `b5d2a4e` corrected the fill value but kept the wrong loop.
+The current loader interleaves `even[i] -> bank[2*i]`, `odd[i] -> bank[2*i+1]`;
+the upper half is **not padding**. The two CTests disabled by that mistaken
+analysis are re-enabled.
+
+With the fixed loader, `STUNRUN_IN0=0xC7`, terminal frame 48, native capture:
+
+```text
+reset vectors: SP=0xFFFFC000 PC=0x00000216
+text-log descriptors=394
+text frame=48 sel=$047 x=01 y=0F colour=DF base=FF896040 chars=30
+  "PRESS START TO BYPASS SELFTEST"
+text-log arms=1 matched=1 fired=1 colour_miss=0 ambiguous=1
+```
+
+The native direct-share dump is **524,288 bytes**. Its first text cell at
+physical `$12C08`:
+
+```text
+df df df df df df 00 00 df df df df df df 00 00
+```
+
+The MAME direct-share capture at frame 600 has the exact same 16 bytes at the
+same offset. Comparing the 16 KiB window `$12C00-$16BFF`, **16,141 of 16,384
+bytes (98.52%) agree** across the two runs. The remaining differences are
+expected from different frames (MAME has continued through later test/menu
+draws). The one-cell, frame-48 oracle is byte-exact.
+
+Native palette entries also now match MAME's direct palette-share capture:
+
+| index | native lo/hi | MAME lo/hi | RGB |
+|---|---|---|---|
+| `00` | `0000 / 0000` | `0000 / 0000` | black |
+| `DF` | `DFDF / 00DF` | `DFDF / 00DF` | `(223,223,223)` |
+| `FF` | `FFFF / 00FF` | `FFFF / 00FF` | `(255,255,255)` |
+
+The old native palette mapping used the GSP bit-address low byte as a palette
+index and stored `uint16_t` values in the wrong byte order. It now converts the
+word offset (`delta >> 4`), banks 256 entries at a time, and stores the palette
+words in the share's little-endian layout.
+
+### 34.4 What this says about the screen, and what is still wrong
+
+This resolves §30.4 and §33.9. The text's nonzero HSTDAT writes **do** land in
+physical VRAM; the MAME direct share has the same data; the Lua address-space
+tap and 4 MiB dump were the wrong observers. The `$548E` zero fill is followed
+by the text draws, exactly as the ROM continuation chain says. There is no
+separate, unseen renderer author for `PRESS START TO BYPASS SELFTEST`.
+
+The normal native live scanout still uses the frame-600 fallback registers when
+the GSP RTL is halted. At frame 48 those are not the self-test screen's
+scanout-origin registers, so the screenshot remains a flat background. With
+diagnostic override `STUNRUN_FORCE_FRAMEBUF=12C08`, the text becomes visible in
+the native screenshot, proving the stored pattern is readable. **It is not yet
+pixel-equivalent:** the forced test currently places a 148×8 approximation at
+the top of the frame, while MAME's frame-48 prompt is 237×7 at y=150. The
+remaining issue is the early-frame scanout origin/stride and the exact pixel
+expansion, not the 68010 text source or its VRAM storage.
+
+### 34.5 Retractions and remaining scope
+
+* **§19:** `gsp_vram` is not a 4 MiB share. The 4 MiB result measured the GSP
+  address-space sample range; it did not measure backing storage. Vendor BOM and
+  the MAME direct pointer both say 512 KiB.
+* **§27 / BUGS.md SR-20:** the 16-byte-replication claim is withdrawn. A host
+  HSTDAT word stores one packed 16-bit word at a physical 2-byte offset. SR-20
+  was removed from BUGS.md; it was our misinterpretation, not surprising
+  behavior in the game or emulator.
+* **§30.1 / §33.8:** the all-zero 4 MiB address-space/tap conclusions are not
+  physical-share measurements. The old `frame_600_gsp_vram.bin` is an
+  address-space dump, not VRAM. The direct 512 KiB capture above supersedes it.
+* **§33.10:** the claim that text writes never land is retracted. Its tap saw
+  writes on the 68010 bus but was not an observer of the physical share write
+  path. The native direct-share test and MAME direct dump now establish where
+  they land.
+* **§33.11:** counts from the 4 MiB address-space tap are not physical write
+  counts and should not be used to estimate share fill coverage.
+
+The native Musashi path now uses the 512 KiB share and `addrshift=3` conversion.
+The independent Verilated `native/gsp_rtl/gsp_board.c` model still has a 4 MiB
+array and byte-addressed semantics; it has **not** been corrected or validated by
+this change and must not be cited as the physical board model yet.
+
+### 34.6 Validation
+
+```text
+cmake --build native/build -j$(nproc)                  PASS
+ctest --test-dir native/build -j$(nproc)               61/61 PASS
+/usr/bin/python3 -m pytest tests/ -q                    222 PASS
+```
+
+The MC68010 frame-48 capture has `bus_dropped=0`, `descriptors=394`, one `$47`
+text-log match and 524,288-byte VRAM dump. The run is reproducible from the repo
+root with `NATIVE_BUILD_DIR=$PWD/native/build`,
+`STUNRUN_STUNRUN_DIR=$PWD/roms/stunrun`, `STUNRUN_IN0=0xC7`,
+`STUNRUN_FRAMES=48`, `STUNRUN_DUMP_DIR=<dir>`, `STUNRUN_CAPTURE_FRAME=48`,
+`STUNRUN_CAPTURE_DIR=<dir>` and `STUNRUN_TEXT_LOG=1`.

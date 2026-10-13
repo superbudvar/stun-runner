@@ -65,10 +65,10 @@ struct stunrun_jsa_latches;
  * address latches and the target memory so those writes are observable; the
  * GSP instruction decoder is a separate, later milestone.
  */
-#define MUSASHI_GSP_VRAM_BYTES      0x400000u /* 4 MiB share: 0x200000 words, m_vram_mask = 0x1FFFFF */
+#define MUSASHI_GSP_VRAM_BYTES      0x080000u /* 512 KiB: 16 x 64Kx4 VRAM chips */
 #define MUSASHI_GSP_VRAM2BPP_BYTES  0x100000u /* 0x02000000-0x020FFFFF (1 MiB, no mirroring) */
 #define MUSASHI_GSP_PAL_BYTES       0x800u    /* 1024 entries * 2 bytes */
-#define MUSASHI_GSP_VRAM_WORDS      0x200000u /* VRAM_BYTES / 2 */
+#define MUSASHI_GSP_VRAM_WORDS      0x040000u /* VRAM_BYTES / 2 */
 #define MUSASHI_GSP_PAL_ENTRIES     0x400u    /* PAL_BYTES / 2 */
 /* PC execution histogram, indexed by PC for PCs below 1 MiB. */
 #define MUSASHI_PC_HIST_SIZE 0x100000u
@@ -329,8 +329,8 @@ void musashi_cpu_text_log_stats(musashi_text_log_stats_t *out);
  * destroyed or `musashi_cpu_reset` reallocates them, read-only, and NOT
  * synchronised — the caller decides when a frame boundary is.
  *
- * `vram` holds `MUSASHI_GSP_VRAM_WORDS` 16-bit pixels (the 4 MiB board share,
- * which mame's `scanline_multisync()` reads as words with mask 0x1FFFFF).
+ * `vram` holds `MUSASHI_GSP_VRAM_WORDS` 16-bit pixels (the 512 KiB board share,
+ * which MAME's `scanline_multisync()` reads as words with mask 0x03FFFF).
  * `pal_lo`/`pal_hi` are the two 1024-entry colour planes at 0xF5000000 and
  * 0xF5800000, matching mame's `gsp_palette_change()`. */
 typedef struct musashi_gsp_memory {

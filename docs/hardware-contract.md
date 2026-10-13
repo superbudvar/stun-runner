@@ -170,17 +170,21 @@ probably correct, but it is worth knowing it exists.
 ## 7. Still unresolved after reading the manual
 
 **The `$C00000` GSP host port is not in the legible Main Board Memory Map.** That
-map stops at `$60C000` → `A00000` → `A80000` → `B00000` → `FF0000`. The port
-lives on the video section, and SP-338 Page 10 gives its block diagram but no
-address rows. So the word-offset host-port decode in
-`docs/mc68010-boot-findings.md` §31.4 still rests on measurement alone, and the
-manual neither confirms nor contradicts it. See §33.8 for the reach measurement
-and §33.9 for the inconsistency that measurement created.
+map stops at `$60C000` → `A00000` → `A80000` → `FF0000`. The port lives on the
+video section, and SP-338 Page 10 gives its block diagram but no address rows.
+The host register decode is supported by MAME's measured handler and the native
+frame-48 text run; vendor pin-level confirmation remains open. See findings
+§31.4 and §34.
 
-**VRAM size.** [MANUAL] SP-338 Page 10 reads `VRAM Array (16)` and the BOM reads
-`64K x 4`, which is 512 KiB of silicon; [MAME] installs 4 MiB. Deferred by
-explicit decision — see §33.8. The live question the user wants answered is
-*what is in the share and how it is stored*, not how big the chip is.
+**VRAM size is 512 KiB physical backing.** [MANUAL] Page 10 lists `VRAM Array
+(16)` and the BOM `64K x 4`; [MAME]'s direct `memory_share` dump reports exactly
+524,288 bytes / 262,144 words. The GSP program map spans 4 Mi
+**bit-address units**, not 4 MiB: with TMS34010 `addrshift=3`,
+`byte_offset=((addr-base)>>3) & 0x7ffff`. HSTADR `$FF896040` therefore targets
+physical byte offset `$12C08`. The old 4 MiB interpretation treated TMS bit
+addresses as byte offsets. Findings §34 records the correction and the direct
+share evidence. The remaining question is **what the share contains and how the
+native scanout presents it**, not the chip capacity.
 
 **The video chain**, now transcribed from the Page 10 block diagram:
 

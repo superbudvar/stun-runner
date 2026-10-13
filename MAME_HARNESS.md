@@ -221,36 +221,34 @@ Steal Playwright's fixture concept directly.
 ### Full GSP VRAM image, not a checksum
 
 `tools/mame-gsp-state-snapshot` reports `vram_high_sum32`, which is a
-stride-`0x4000` sweep of the share. That is the right shape for a checksum and
-the wrong shape for an image -- it cannot answer "are these 512 KiB identical",
-which is the question `tools/check-gsp-replay` asks when it compares a native
-board-model replay against the original machine. For that, capture the image:
+stride-`0x4000` sweep of the GSP program-address window. That is the right shape
+for a checksum and the wrong shape for an image. The TMS34010 program addresses
+are bit addresses (`addrshift=3`); the physical share is **512 KiB**, not 4 MiB.
+Capture one 16-bit word per `0x10` GSP address units:
 
 ```text
 tools/mame-gsp-vram-dump roms /tmp/stunrun-oracle \
-  --frames 600 --target 600 --input none --nothrottle
+  --frames 700 --target 601 --input service --nothrottle
 ```
 
 Writes `gsp_vram.bin` (little-endian, the byte order the native VRAM paths
 store), `result.json` with the capture's frame, PC, nonzero-word count and the
-image's sha256, and `mame.log`. The default extent is the whole **4 MiB** share;
-`--words 262144` reproduces the retired 512 KiB fixture, which is not a smaller
-view of the share but only its first page (see `docs/mc68010-boot-findings.md`
-section 19).
+image's sha256, and `mame.log`. The default extent is the whole **512 KiB
+physical share** (`262144` words). The Lua reader steps `0x10` bit-address units
+per word. It was compared byte-for-byte with the pinned instrumented MAME's
+direct `memory_share` hook in the same run (target 601 for Lua, screen frame 600
+for the source hook); see `reference/experiments/stunrun/gsp-direct-share-frame600-service/`.
 
 `-nvram_directory` is **required for a usable capture** and this tool always
 passes one. The tools carry `-nonvram_save`, which stops MAME *writing* NVRAM
 but not *loading* it, so a run without an explicit directory silently inherits
-`~/.mame/nvram/stunrun/` from a previous run. Measured here at frame 600,
-headless: without the flag, 0 of 262144 words are nonzero; with it, 262128.
-That difference is invisible in the artifact's size, so the tool treats an
-all-zero capture as a failure rather than a result.
+`~/.mame/nvram/stunrun/` from a previous run. The tool always supplies an
+isolated per-run directory. A zero share is valid during the ROM's startup
+clear; the dump reports the nonzero count but does not reject an all-zero image.
 
-The host window mirrors with period 4 MiB (mask bit 22): over a full 8 MiB
-capture every 512 KiB page is byte-identical to its twin 4 MiB away, and the
-pages inside one period differ from each other. Page 0 is additionally identical
-to page 4, a 2 MiB delta; that is a content period in what the ROM wrote, not a
-mirror period, so it is recorded rather than treated as decode evidence.
+The map covers a 4 Mi **bit-address** span and mirrors at another `0x400000`
+address units. That is not 4 MiB of physical backing: converting with `addrshift=3`
+gives 512 KiB. See `docs/mc68010-boot-findings.md` §34.
 
 Input modes are the same names, and the same frame timings, as
 `tools/mame-gsp-state-snapshot`, so a dump and a state snapshot can describe the

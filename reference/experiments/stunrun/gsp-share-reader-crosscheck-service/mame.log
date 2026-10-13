@@ -1,0 +1,26 @@
+ALSA lib /tmp/portage/media-libs/alsa-lib-1.2.14/work/alsa-lib-1.2.14/src/seq/seq_hw.c:540:(snd_seq_hw_open) open /dev/snd/seq failed: No such file or directory
+GSPREG call=1 DPYADR=fe4d DPYSTRT=ffff DPYTAP=0000 DPYCTL=f010 HEBLNK=0037 HSBLNK=0137 VCOUNT=0080 HSTCTL=0000 pc=00000000
+GSPREG call=2 DPYADR=fe4d DPYSTRT=ffff DPYTAP=0000 DPYCTL=f010 HEBLNK=0037 HSBLNK=0137 VCOUNT=0080 HSTCTL=0000 pc=fff59a20
+GSPREG call=3 DPYADR=fe4c DPYSTRT=ffff DPYTAP=0000 DPYCTL=f010 HEBLNK=0037 HSBLNK=0137 VCOUNT=0081 HSTCTL=0000 pc=fff59a70
+GSPREG call=601 DPYADR=fddc DPYSTRT=fffc DPYTAP=0000 DPYCTL=f004 HEBLNK=0037 HSBLNK=0137 VCOUNT=009a HSTCTL=0000 pc=fff46590
+GSPREG call=1201 DPYADR=fc3c DPYSTRT=fc3c DPYTAP=0000 DPYCTL=f004 HEBLNK=0037 HSBLNK=0137 VCOUNT=0002 HSTCTL=0000 pc=fff41060
+GSPLINE frame=600 line=19 rowaddr=0000 coladdr=0000 yoffset=0 dpyadr=ffff dpystrt=ffff dpytap=0000 dpyctl=f010 he=110 hs=622 v=19 ve=19 vs=248 pixperclock=2 base=000000 []
+STUNRUN-DUMP palette 1024 pens (2048 bytes per bank)
+STUNRUN-DUMP wrote 524288 bytes to /tmp/srshare
+STUNRUN-DPY call=1 f=600 rowaddr=0000 coladdr=0000 yoffset=0 heblnk=110 hsblnk=622 vcount=0013 vsblnk=00f8 veblnk=0013 palbank=0 finescroll=7
+  BASE off=0 (0x000000) byte=0x000000 vram_words=262144 mask=0x003ffff first10=0000^00000000^00000000^00000000^00000000^0000
+GSPLINE frame=600 line=20 rowaddr=0000 coladdr=0000 yoffset=1 dpyadr=fffe dpystrt=ffff dpytap=0000 dpyctl=f010 he=110 hs=622 v=20 ve=19 vs=248 pixperclock=2 base=000000 []
+STUNRUN-DPY call=2 f=600 rowaddr=0000 coladdr=0000 yoffset=1 heblnk=110 hsblnk=622 vcount=0014 vsblnk=00f8 veblnk=0013 palbank=0 finescroll=7
+  BASE off=0 (0x000000) byte=0x000000 vram_words=262144 mask=0x003ffff first10=0000^00000000^00000000^00000000^00000000^0000
+GSPLINE frame=600 line=21 rowaddr=0000 coladdr=0000 yoffset=2 dpyadr=fffd dpystrt=ffff dpytap=0000 dpyctl=f010 he=110 hs=622 v=21 ve=19 vs=248 pixperclock=2 base=000000 []
+STUNRUN-DPY call=3 f=600 rowaddr=0000 coladdr=0000 yoffset=2 heblnk=110 hsblnk=622 vcount=0015 vsblnk=00f8 veblnk=0013 palbank=0 finescroll=7
+  BASE off=0 (0x000000) byte=0x000000 vram_words=262144 mask=0x003ffff first10=0000^00000000^00000000^00000000^00000000^0000
+GSPLINE frame=600 line=22 rowaddr=0000 coladdr=0000 yoffset=3 dpyadr=fffc dpystrt=ffff dpytap=0000 dpyctl=f010 he=110 hs=622 v=22 ve=19 vs=248 pixperclock=2 base=000000 []
+STUNRUN-DPY call=4 f=600 rowaddr=0000 coladdr=0000 yoffset=3 heblnk=110 hsblnk=622 vcount=0016 vsblnk=00f8 veblnk=0013 palbank=0 finescroll=7
+  BASE off=0 (0x000000) byte=0x000000 vram_words=262144 mask=0x003ffff first10=0000^00000000^00000000^00000000^00000000^0000
+GSPLINE frame=600 line=23 rowaddr=0001 coladdr=0100 yoffset=0 dpyadr=ffef dpystrt=ffff dpytap=0000 dpyctl=f010 he=110 hs=622 v=23 ve=19 vs=248 pixperclock=2 base=000400 []
+GSPLINE frame=600 line=245 rowaddr=0038 coladdr=0000 yoffset=2 dpyadr=fc7d dpystrt=ffff dpytap=0000 dpyctl=f010 he=110 hs=622 v=245 ve=19 vs=248 pixperclock=2 base=00e000 []
+GSPLINE frame=600 line=246 rowaddr=0038 coladdr=0000 yoffset=3 dpyadr=fc7c dpystrt=ffff dpytap=0000 dpyctl=f010 he=110 hs=622 v=246 ve=19 vs=248 pixperclock=2 base=00e000 []
+GSPLINE frame=600 line=247 rowaddr=0039 coladdr=0100 yoffset=0 dpyadr=fc6f dpystrt=ffff dpytap=0000 dpyctl=f010 he=110 hs=622 v=247 ve=19 vs=248 pixperclock=2 base=00e400 []
+M1_GSP_VRAM frame=601 base=FF800000 words=262144 nonzero=1717 out=/tmp/opencode/mame-share-verify2/gsp_vram.bin pc=FFF59920
+Average speed: 1100.23% (9 seconds)

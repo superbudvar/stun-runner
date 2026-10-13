@@ -331,40 +331,6 @@ behaves and must be reported upstream.
 
 *(none recorded yet — this section exists so the distinction stays visible)*
 
-### SR-20 — A host data write fills the whole 16-byte cell, and HSTADR's low four bits are discarded
-
-- **Kind:** hardware abuse
-- **Where:** `tms340x0_device::host_w`, case `TMS34010_HOST_DATA` —
-  `mame-ref/src/devices/cpu/tms34010/tms34010.cpp:1898`; the map at
-  `harddriv.cpp:628`
-- **Symptom:** two things at once, and they are the same instruction. A single
-  16-bit HSTDAT does not store two bytes: it **overwrites sixteen**, the low
-  byte eight times then the high byte eight times. And because the address is
-  masked to `0xfffffff0` first, the four low bits a program writes into HSTADR
-  are discarded, so an address ending in `0x8` lands on the `0x0` boundary of
-  its cell. Nothing reports either; the data simply appears somewhere else.
-- **Evidence:** measured against the pinned driver at frame 390 with the GSP
-  still in reset (`gsp PC=0`), through the real host port:
-  `HSTADRL=0xFF801000, HSTDAT=0x1234` reads back as
-  `34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12`.
-  `HSTADRL=0xFF802008, HSTDAT=0x5678` lands at `0xff802000`, not `0xff802008`.
-  The post-increment stride under `HSTCTL=0x0800` is one 16-byte cell.
-- **Confidence:** confirmed by MAME (direct measurement, not inference from
-  source). Note that this is *not* what the source reads like:
-  `TMS34010_WRMEM_WORD` is `m_program.write_word` (tms34010.cpp:317) into a
-  plain `.ram()` region, and the program space is `datawidth 16, addrshift 3`
-  (tms34010.cpp:67). Taking `write_word` for a two-byte store is the mistake
-  this entry exists to prevent — see `docs/mc68010-boot-findings.md` section 27,
-  where that mistake was made, committed as `d91ae6a`, and reverted after
-  measurement.
-- **Impact on us:** this one cost a week and a revert. `fcf1eab` "corrected"
-  `native/musashi_cpu.c` to packed storage on that reading, and
-  `tools/check-gsp-replay` could not see it because the board model replicated
-  identically — the two agreed by shared error, which is the failure mode this
-  file's differential checks are most prone to. Any TMS34010 host-port model
-  must take the store width from a measurement, not from the width of
-  `write_word`.
-
 ### SR-08 — The IRQ5 handler's entire net effect is a tick counter
 
 - **Kind:** ROM code
@@ -516,26 +482,6 @@ record the compensation.
   (we own the scan-out) but it makes pixel-perfect oracle comparison expensive.
 ## MAME driver (continued)
 
-### MD-05 — Lua cannot read the board's `gsp_vram` share at all
-
-`gsp.spaces["program"]:read_u8(0xff800000 + i)` returns **zero for every byte**
-of the Atari board's 512 KiB `gsp_vram` share, at every frame sampled (600,
-1450). Reads of the palette windows at `0xf5000000`/`0xf5800000` from the same
-space *do* return data, so the space is live — the share is simply not mapped
-into it. `m_gsp_vram` is a `shared_ptr_finder` (`src/emu/devfind.h:1183`) that
-resolves against the *board*, not the chip.
-
-Consequence: an oracle that dumps the frame via Lua silently produces an empty
-picture while everything else looks healthy. Evidence: the Lua dump of the share
-was uniformly `0x00`, while MAME's own dump of the same frame has 256 distinct
-byte values and byte `0x01e000` = `27 27 … 26 26 …`, matching the `first10`
-words printed by the rasteriser probe.
-
-Workaround in use: MAME writes the share itself from `scanline_multisync()`,
-which does hold both `m_gsp_vram` and the screen. `vram_base - m_gsp_vram.begin()`
-gives the resolved word offset, and `m_gsp_vram.length()` gives the true size —
-both should be preferred over re-deriving the shift by hand.
-
 ### MD-06 — Lua tables filled from index 0 silently truncate and shift a dump
 
 `for i = 0, 0x7ff do t[i] = v end` produces a table whose `#t` is **2047**, not
@@ -649,17 +595,6 @@ dumps belong there. Two consequences:
 >   coroutines, and doing file I/O in a callback firing ~500,000 times a minute
 >   is a performance hazard by construction.
 >
-### MD-12 — ROM bank size mismatch: upper bank half reads as zeros not 0xFF
-
-- **Kind:** our ROM loader bug (not a missing ROM)
-- **Where:** `native/musashi_loader.c` and `native/musashi_cpu.c`
-- **Clarification:** the ROM files are **NOT incomplete or corrupted** — all 6 MC68010 program ROM files have correct CRC32 values matching the MAME 0.289 manifest (`e0ed54d8`, `3008bcf8`, `f469f91c`, `096aad68`, `b445bae5`, `42736c52`). The files are correctly 65536 bytes each. The vector table at `0xFFFE` is in the **lower** 64KB of bank 0 (offset `0xFFFE < 0x10000`), so the actual ROM data there is correctly loaded regardless of bank padding.
-- **Symptom (pre-fix):** With `STUNRUN_MC68010=1`, upper-half bank reads returned zeros (calloc), causing the text log selector scanner to find 394 "valid" selectors from garbage pointers. The MC68010 crashed on exceptions that read vectors from the upper bank half.
-- **Root cause (pre-fix):** MAME's `ROM_LOAD16_BYTE` loads 65536 bytes at a 128KB-aligned address in the emulated address space. The upper half of each 128KB bank is implicit `0xFF` (MAME unmapped region). Our `musashi_cpu_load_rom_bank` stored only the file's 65536 bytes in a `calloc`'d (zero-filled) 128KB bank, so the upper half was zeros instead of `0xFF`. Any ROM address in the upper half of a bank returned `0x00` instead of `0xFF`.
-- **Fix applied:** `musashi_cpu_load_rom_bank` now calls `memset(..., 0xFF)` before loading the 64KB file, so the upper 64KB of each 128KB bank is `0xFF`. The loop was also corrected to only copy `MUSASHI_ROM_FILE_SIZE` (64KB) instead of `MUSASHI_ROM_BANK_SIZE` (128KB), preventing out-of-bounds reads from the 64KB file arrays.
-- **Remaining issue:** The MC68010 still crashes in service mode (IN0 bit 5 = 1) because the service boot path sets A7 = SSP = 0xFFFF0000 (from RAM) and returns from the GSP init jsr via `rts` using an uninitialised stack — the return address popped from RAM[0xFFFF0000] is garbage, causing a jump to address 0 and an illegal-instruction crash loop. With `STUNRUN_MC68010=0` (stubs), `ticks=2400` at frame 600 — the game runs fine without the MC68010.
-- **Fix:** Either clear IN0 bit 5 before the MC68010 boot to enter attract/game path, or implement proper RAM/ROM separation so that address 0xFFFF0000 is not readable as zeros.
-
 > Leaving them here would have been an active liability: this section's rule is
 > that its entries get reported upstream, and two false bug reports cost more
 > credibility than the silence they replace.
