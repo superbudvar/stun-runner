@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Capture the 68010 -> GSP program-upload boundary from a power-on MAME run.
+
+What this question is, and the trap it exists to avoid
+-----------------------------------------------------
+S.T.U.N. Runner's TMS34010 has no program ROM. The MC68010 uploads the GSP
+program into shared VRAM through the host port while the GSP is held halted by
+HSTCTL bit 15, then releases it. The trap is that any VRAM image taken at a
+convenient frame -- 600, say -- contains the uploaded program PLUS whatever the
+GSP and the host have written since, so a diff against such an image cannot tell
+you what was uploaded from what was produced afterwards.
+
+So the capture is pinned to the event, not the frame, and it runs in two phases:
+
+1. ``mame/lua/gsp-program-upload.lua`` records the ordered host-port transaction
+   stream (HSTADRH/HSTADRL/HSTCTL/HSTDAT) plus every /GSPRES transition and
+   reports the frame of the halt release that follows the upload.
+2. ``tools/mame-gsp-vram-dump`` then images shared VRAM at ``release - 1`` and
+   at ``release``. The diff between them is the GSP's own first output, separated
+   from the upload. Do not read a frame-600 dump as "the GSP program".
+
+The two phases are separate runs because reading the shared VRAM through the GSP
+program space inside the tap script SILENTLY STOPS the MC68010 write taps -- the
+identical script records 1000 events without a read and 0 with one, no Lua error,
+clean exit either way. Phase 1 therefore reads no VRAM at all.
+
+It also does not pretend to know more than it observed:
+
+* the ``destination`` column is DERIVED: HSTADRH:HSTADRL composed the way the
+  driver composes them, including the ``addr & 0xfffffff0`` store mask and the
+  HSTCTL ``0x0800`` post-increment (BUGS.md SR-20). Reading the raw latch instead
+  reports one repeated address for a whole contiguous upload;
+* the ``a0``/``a1``/``a2`` columns are CANDIDATE source pointers. No 68010 read
+  tap is installed, so which register the copy loop actually reads is not
+  established here;
+* whether the uploaded image is executable code is NOT decided by this tool.
+
+The event ring keeps the FIRST ``--cap`` events (default 800000, which covers a
+600-frame run's 701877 events at 11 numbers each). If the halt release falls past
+that window the tool fails rather than handing back a log that stops before the
+boundary.
+
+Usage:
+
+    tools/capture-gsp-program-upload roms OUTDIR \\
+        [--frames 600] [--cap 800000] [--skip-images] [--mame mame]
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import run_mame
+
+SCHEMA = "stunrun-gsp-program-upload-result/v1"
+
+# A memory-tap callback in this MAME build may only assign into preallocated
+# slots. Retaining Lua tables or writing files from inside one segfaults; see the
+# header of mame/lua/gsp-program-upload.lua for the measured failures.
+RELEASE = re.compile(
+    r"M1_GSP_UPLOAD_RELEASE frame=(\d+) seq=(\d+) pc=([0-9A-Fa-f]+) "
+    r"hstctl=([0-9A-Fa-f]+) hstdat=(\d+)"
+)
+TAPS = re.compile(r"M1_GSP_UPLOAD_TAPS frame=(\d+) seq=(\d+)")
+RESETLINE = re.compile(
+    r"M1_GSP_UPLOAD_RESETLINE frame=(\d+) seq=(\d+) pc=([0-9A-Fa-f]+) "
+    r"line=(assert|release) hstdat=(\d+)"
+)
+SAMPLE = re.compile(
+    r"M1_GSP_UPLOAD_SAMPLE frame=(\d+) pc=([0-9A-Fa-f]+) st=([0-9A-Fa-f]+)")
+PCSTAT = re.compile(
+    r"M1_GSP_UPLOAD_PC kind=(\S+) pc=([0-9A-Fa-f]+) count=(\d+) "
+    r"first_frame=(\d+) last_frame=(\d+) data_first=([0-9A-Fa-f]+) "
+    r"dest_first=([0-9A-Fa-f]+) data_last=([0-9A-Fa-f]+) dest_last=([0-9A-Fa-f]+)"
+)
+DONE = re.compile(
+    r"M1_GSP_UPLOAD_DONE frames=(\d+) seq=(\d+) stored=(\d+) dropped=(\d+) "
+    r"release_seq=(\d+) release_frame=(-?\d+) hstdat_writes=(\d+) "
+    r"dest_lo=([0-9A-Fa-f]+) dest_hi=([0-9A-Fa-f]+) tap_installs=(\d+)"
+)
+TRUNCATED = re.compile(
+    r"M1_GSP_UPLOAD_TRUNCATED release_seq=(\d+) stored=(\d+)")
+LUA_ERROR = re.compile(r"^.*\[LUA ERROR\].*$", re.MULTILINE)
+
+
+def find_lua_errors(text):
+    """Return MAME Lua errors that invalidate otherwise plausible captures."""
+    return LUA_ERROR.findall(text)
+
+
+def parse_log(text):
+    return {
+        "release": None if not RELEASE.search(text) else {
+            "frame": int(RELEASE.search(text).group(1)),
+            "seq": int(RELEASE.search(text).group(2)),
+            "pc": int(RELEASE.search(text).group(3), 16),
+            "hstctl_at_release": int(RELEASE.search(text).group(4), 16),
+            "hstdat_writes_before_release": int(RELEASE.search(text).group(5)),
+        },
+        "taps_installed": None if not TAPS.search(text) else {
+            "frame": int(TAPS.search(text).group(1)),
+            "seq_at_install": int(TAPS.search(text).group(2)),
+        },
+        "reset_line_transitions": [
+            {"frame": int(m.group(1)), "seq": int(m.group(2)),
+             "pc": int(m.group(3), 16), "line": m.group(4),
+             "hstdat_at_transition": int(m.group(5))}
+            for m in RESETLINE.finditer(text)],
+        "post_release_samples": [
+            {"frame": int(m.group(1)), "pc": int(m.group(2), 16),
+             "st": int(m.group(3), 16)} for m in SAMPLE.finditer(text)],
+        "writer_pc_stats": [
+            {"kind": m.group(1), "pc": int(m.group(2), 16),
+             "count": int(m.group(3)), "first_frame": int(m.group(4)),
+             "last_frame": int(m.group(5)),
+             "data_first": int(m.group(6), 16),
+             "destination_first": int(m.group(7), 16),
+             "data_last": int(m.group(8), 16),
+             "destination_last": int(m.group(9), 16)}
+            for m in PCSTAT.finditer(text)],
+        "boundary_beyond_ring": None if not TRUNCATED.search(text) else {
+            "release_seq": int(TRUNCATED.search(text).group(1)),
+            "stored": int(TRUNCATED.search(text).group(2)),
+        },
+        "done": None if not DONE.search(text) else {
+            "frames": int(DONE.search(text).group(1)),
+            "seq": int(DONE.search(text).group(2)),
+            "stored": int(DONE.search(text).group(3)),
+            "dropped": int(DONE.search(text).group(4)),
+            "release_seq": int(DONE.search(text).group(5)),
+            "release_frame": int(DONE.search(text).group(6)),
+            "hstdat_writes": int(DONE.search(text).group(7)),
+            "destination_low": int(DONE.search(text).group(8), 16),
+            "destination_high": int(DONE.search(text).group(9), 16),
+            "tap_installs": int(DONE.search(text).group(10)),
+        },
+    }
+
+
+def sha256_of(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def run_event_capture(args, output, log):
+    cfg_directory = output / "mame-config"
+    nvram_directory = output / "mame-nvram"
+    cfg_directory.mkdir(parents=True, exist_ok=True)
+    nvram_directory.mkdir(parents=True, exist_ok=True)
+    command = [
+        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
+        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
+        "-cfg_directory", str(cfg_directory), "-nvram_directory", str(nvram_directory),
+        "-nonvram_save", "-nothrottle", "-seconds_to_run",
+        str(max(2, (args.frames + 59) // 60 + 1)), "-autoboot_script",
+        str(pathlib.Path(__file__).resolve().parents[1] /
+            "mame/lua/gsp-program-upload.lua"),
+    ]
+    environment = {
+        **os.environ,
+        "STUNRUN_GSP_UPLOAD_OUT": str(output),
+        "STUNRUN_GSP_UPLOAD_FRAMES": str(args.frames),
+        "STUNRUN_GSP_UPLOAD_CAP": str(args.cap),
+        "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
+    }
+    with log.open("w", encoding="utf-8") as handle:
+        return run_mame(command, stdout=handle, stderr=subprocess.STDOUT,
+                        env=environment, timeout=max(120, args.frames / 5 + 120))
+
+
+def run_vram_image(args, output, frame, name):
+    """One shared-VRAM image at an exact frame, via the proven dumper."""
+    dumper = pathlib.Path(__file__).with_name("mame-gsp-vram-dump")
+    target_dir = output / name
+    command = [str(dumper), str(args.rompath), str(target_dir),
+               "--frames", str(max(frame, 2)), "--target", str(frame),
+               "--mame", args.mame]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    image = target_dir / "gsp_vram.bin"
+    result = {
+        "frame": frame,
+        "path": str(image),
+        "returncode": completed.returncode,
+        "sha256": sha256_of(image),
+        "bytes": image.stat().st_size if image.is_file() else None,
+    }
+    dump_result = target_dir / "result.json"
+    if dump_result.is_file():
+        payload = json.loads(dump_result.read_text(encoding="utf-8"))
+        result["capture"] = payload.get("capture")
+        result["canonical_log_sha256"] = payload.get("canonical_log_sha256")
+    if completed.returncode:
+        result["stderr"] = completed.stderr.strip()[-800:]
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("rompath", type=pathlib.Path)
+    parser.add_argument("output", type=pathlib.Path)
+    parser.add_argument("--frames", type=int, default=600)
+    parser.add_argument("--cap", type=int, default=800000)
+    parser.add_argument("--skip-images", action="store_true",
+                        help="record the event stream and boundary only")
+    parser.add_argument("--mame", default="mame")
+    args = parser.parse_args()
+    if args.frames <= 0:
+        parser.error("--frames must be positive")
+    if args.cap <= 0:
+        parser.error("--cap must be positive")
+    if not (args.rompath / "stunrun").is_dir():
+        raise SystemExit(f"missing ROM set directory: {args.rompath / 'stunrun'}")
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    log = args.output / "mame.log"
+    events_path = args.output / "gsp-upload-events.txt"
+
+    completed = run_event_capture(args, args.output, log)
+    text = log.read_text(encoding="utf-8")
+    lua_errors = find_lua_errors(text)
+    parsed = parse_log(text)
+
+    result = {
+        "schema": SCHEMA,
+        "frames": args.frames, "cap": args.cap, "mame_path": args.mame,
+        "returncode": completed.returncode, "lua_errors": lua_errors,
+        "release": parsed["release"],
+        "taps_installed": parsed["taps_installed"],
+        "reset_line_transitions": parsed["reset_line_transitions"],
+        "post_release_samples": parsed["post_release_samples"],
+        "writer_pc_stats": parsed["writer_pc_stats"],
+        "summary": parsed["done"],
+        "boundary_beyond_ring": parsed["boundary_beyond_ring"],
+        "vram_images": [],
+        "artifacts": {
+            "events": {"path": str(events_path), "sha256": sha256_of(events_path)},
+            "log": {"path": str(log),
+                    "sha256": sha256_of(log),
+                    "canonical_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()},
+        },
+        "interpretation_limits": {
+            "destination": "derived from HSTADRH:HSTADRL with MAME's 0xFFFFFFF0 store mask and HSTCTL 0x0800 post-increment",
+            "source_pointers": "A0/A1/A2 sampled at the store; no 68010 read tap installed",
+            "executable_code": "not established by this capture",
+            "vram_images": "taken at frame edges in separate runs, not inside the release write tap",
+        },
+    }
+    (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n",
+                                             encoding="utf-8")
+
+    if completed.returncode or lua_errors or parsed["done"] is None:
+        raise SystemExit(f"GSP program-upload capture failed; see {log}")
+    # Zero host-port events across a whole run is this tool's own failure mode,
+    # not a finding about the board: reading the GSP share silently kills these
+    # taps. Refuse to publish a "the 68010 never wrote to the host port" result.
+    if parsed["done"]["stored"] == 0:
+        raise SystemExit(
+            "no host-port events were captured. The taps install cleanly but stay "
+            "silent if anything reads the GSP program space from a frame-done "
+            f"callback; see {log}")
+    if result["release"] is None:
+        raise SystemExit(
+            f"no HSTCTL halt release following host data writes was observed "
+            f"within {args.frames} frames; see {log}")
+    # The ring keeps the first `cap` events. If the boundary sits past that, the
+    # event log ends before the interesting part and would look like a complete
+    # capture of a shorter stream. Refuse rather than publish it.
+    if result["boundary_beyond_ring"] is not None:
+        raise SystemExit(
+            f"the halt release is event {result['boundary_beyond_ring']['release_seq']} "
+            f"but only {result['boundary_beyond_ring']['stored']} events fit the "
+            f"ring; the event log stops before the boundary. Re-run with a larger "
+            f"--cap (each event costs 11 numbers of Lua memory). See {log}")
+
+    if not args.skip_images:
+        release_frame = result["release"]["frame"]
+        # release-1 is the last frame edge with the GSP still halted; release is
+        # the first edge after the release write. The dumper needs frame >= 2.
+        for name, frame in (("gsp-vram-upload-last", max(release_frame - 1, 2)),
+                            ("gsp-vram-post-release", release_frame)):
+            result["vram_images"].append(run_vram_image(args, args.output, frame, name))
+        (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n",
+                                                 encoding="utf-8")
+
+    print(json.dumps({key: value for key, value in result.items()
+                      if key not in ("post_release_samples", "writer_pc_stats")},
+                     separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

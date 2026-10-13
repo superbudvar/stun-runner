@@ -1,0 +1,116 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "gsp-program-upload-boundary-frame600",
+  "command": "./tools/capture-gsp-program-upload roms /tmp/opencode/gsp-upload-v3 --frames 600 --mame /mnt/build/mame-ref/mame",
+  "diff_command": "./tools/diff-gsp-upload-images /tmp/opencode/gsp-upload-v3/gsp-vram-upload-last/gsp_vram.bin /tmp/opencode/gsp-upload-v3/gsp-vram-post-release/gsp_vram.bin --json /tmp/opencode/gsp-upload-v3/diff.json",
+  "mame": {
+    "version": "0.289 (mame0289-dirty)",
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "rom_manifest_sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d",
+  "machine_map": {
+    "path": "analysis/driver-mining/stunrun.machine-map.yaml",
+    "sha256": "c98df0024002a7f33ea10aa914285b912ecbd7b244b365557a7d35520079d73b"
+  },
+  "start_condition": "power_on, no input, isolated per-run MAME config and NVRAM directories",
+  "harness": {
+    "tap_script": "mame/lua/gsp-program-upload.lua",
+    "event_tool": "tools/capture-gsp-program-upload",
+    "image_tool": "tools/mame-gsp-vram-dump",
+    "diff_tool": "tools/diff-gsp-upload-images",
+    "tests": "tests/test_gsp_program_upload.py"
+  },
+  "capture": {
+    "frames": 600,
+    "cap": 800000,
+    "events_total": 701877,
+    "events_stored": 701877,
+    "events_dropped": 0,
+    "boundary_beyond_ring": null,
+    "taps_installed_frame": 1,
+    "events_at_tap_install": 0,
+    "host_data_writes_total": 697202,
+    "host_data_writes_before_release": 627943,
+    "tap_installs": 1
+  },
+  "boundary": {
+    "kind": "HSTCTL bit 15 (HLT) release following host data writes",
+    "frame": 405,
+    "event_index": 631205,
+    "writer_pc": "0x0002C1C4",
+    "hstctl_value": "0x7800",
+    "why_not_gsp_res": "GSPRES is released once at power-on (event 2) before any host data write, and its later transitions at frames 362 and 396 leave the GSP halted",
+    "post_release_gsp_pcs": [
+      "0xFFF42E50",
+      "0xFFF40F90",
+      "0xFFF41060",
+      "0xFFF414C0"
+    ],
+    "executed_upload_writers": [
+      {
+        "pc": "0x0002FE68",
+        "words": 6091,
+        "frames": [396, 405],
+        "destination_range": ["0xFFF40000", "0xFFFFFFE0"]
+      },
+      {
+        "pc": "0x0002FE6E",
+        "words": 6091,
+        "frames": [396, 405],
+        "destination_range": ["0xFFF40010", "0xFFFFFFF0"]
+      }
+    ],
+    "union_destination_range": ["0xFFF40000", "0xFFFFFFE0"]
+  },
+  "vram_images": [
+    {
+      "role": "last frame edge with the GSP halted",
+      "frame": 404,
+      "sha256": "3d615e58d81e49a089b3ac9c21bfb930fbaf5ed463a5a7437282e49b9633af8a",
+      "nonzero_words": 655192
+    },
+    {
+      "role": "first frame edge after the halt release",
+      "frame": 405,
+      "sha256": "32c870762da2b650985daec824fcc65b9ba3bb63051d871826a9c3612e298c9a",
+      "nonzero_words": 665552
+    }
+  ],
+  "first_output_diff": {
+    "diff_sha256": "317c74558bfce6d7fdfdb49bc07bf957b3d2745ecb6fc093ef4da337a8142931",
+    "changed_words": 10360,
+    "changed_ranges": 22,
+    "words_newly_nonzero": 10360,
+    "words_newly_zero": 0,
+    "words_modified": 0,
+    "vram_window": ["0xFFB67530", "0xFFB6CC80"],
+    "shape": "every range was zero before and is one repeated constant word after"
+  },
+  "repeatability": {
+    "runs": 2,
+    "event_stream_sha256_equal": true,
+    "boundary_equal": true,
+    "vram_images_equal": true,
+    "repeat_directory": "/tmp/opencode/gsp-upload-v3-repeat"
+  },
+  "artifacts": {
+    "events": {
+      "path": "/tmp/opencode/gsp-upload-v3/gsp-upload-events.txt",
+      "sha256": "5640860abca7c79b8ea6f4fe17129636f4ac4c2758e53fc957b1a4fd52e542be",
+      "note": "~40 MiB text log; regenerable from the command above, so it stays local"
+    },
+    "log": {
+      "path": "/tmp/opencode/gsp-upload-v3/mame.log",
+      "sha256": "f3b8d9cfa3d6326ea3eb0c4e8e96c071b269d1dc87c5d2050931e414ba1d084a"
+    }
+  },
+  "interpretation_limits": {
+    "destination": "derived from HSTADRH:HSTADRL with the 0xFFFFFFF0 store mask and HSTCTL 0x0800 post-increment",
+    "source_pointers": "A0/A1/A2 sampled at the store; no 68010 read tap installed, so the true source is not established",
+    "executable_code": "the executed range is pinned by post-release PC samples inside the uploaded range; the image itself is not disassembled",
+    "vram_images": "taken at frame edges in separate runs, not inside the release write tap",
+    "first_output": "the difference is up to one frame of GSP execution, not the upload"
+  },
+  "conclusion": "The GSP program is uploaded by $02FE68/$02FE6E into $FFF40000-$FFFFFFE0 across frames 396-405 and released by an HSTCTL halt clear at $0002C1C4 in frame 405; every post-release GSP PC sample lies inside that range. The GSP's first output is a separate 10360-word uniform fill in $FFB67530-$FFB6CC80. $00069A's 224522 writes to a zero destination remain UNKNOWN."
+}

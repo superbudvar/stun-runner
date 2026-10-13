@@ -111,6 +111,12 @@ class DisplayListTraceTests(unittest.TestCase):
         self.assertEqual(parsed["calls"][0]["consumer_evidence"]["status"],
                          "not-observed-same-frame")
 
+    def test_mame_lua_error_invalidates_capture(self):
+        self.assertEqual(self.tool.find_lua_errors(
+            "[LUA ERROR] missing install_execute_tap\n"),
+            ["[LUA ERROR] missing install_execute_tap"])
+        self.assertEqual(self.tool.find_lua_errors("M1_GSP_DL_DONE frames=10\n"), [])
+
     def test_maps_unavailable_consumer_selector_to_unknown(self):
         parsed = self.tool.parse_log(
             "M1_GSP_DL_CONSUMER_STATUS status=unavailable\n")
@@ -144,6 +150,8 @@ class DisplayListTraceTests(unittest.TestCase):
 local taps = {}
 local pc = {value = 0x225e4}
 local space = {}
+local gsp_space = {}
+function gsp_space:install_write_tap(lo, hi, name, callback) end
 function space:install_read_tap(lo, hi, name, callback) taps.entry = callback end
 function space:install_write_tap(lo, hi, name, callback)
     if lo == 0x608000 then taps.execution = callback else taps.fifo = callback end
@@ -160,7 +168,8 @@ function space:read_u8(addr) return 0 end
 local callback
 emu = {register_frame_done = function(fn) callback = fn end}
 manager = {machine = {devices = {[':mainpcb:maincpu'] = {
-    spaces = {program = space}, state = {CURPC = pc, A7 = {value = 0x1000}}}},
+    spaces = {program = space}, state = {CURPC = pc, A7 = {value = 0x1000}}},
+    [':mainpcb:gsp'] = {spaces = {program = gsp_space}, state = {PC = pc}}},
     exit = function() end}}
 dofile(arg[1])
 for i = 1, 10 do callback() end
@@ -189,6 +198,12 @@ callback() -- frame 12 emits records
                                   capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         calls = self.tool.parse_log(proc.stdout)["calls"]
+        self.assertEqual(self.tool.parse_log(proc.stdout)["consumer_capture_status"],
+                         "unknown")
+        self.assertEqual(self.tool.parse_log(proc.stdout)["gsp_write_capture_status"],
+                         "not-captured")
+        self.assertIn("M1_GSP_WRITE_STATUS status=not-captured", proc.stdout)
+        self.assertIn("M1_GSP_DL_CONSUMER_STATUS status=unavailable", proc.stdout)
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["host_address"], 0xFFF3FB20)
         self.assertEqual(calls[0]["host_control"], 0xB800)

@@ -77,6 +77,34 @@ nothing fills.
   executing the uploaded display list. Scanout deliberately stays in the native
   rasteriser, which already reproduces the MAME frame byte-for-byte from
   correct VRAM, palette and registers.
+- **`gsvp.5` upload boundary — done (`stun-runner-8p4.2`).** The GSP program is
+  now pinned to an upload and a release rather than inferred from a frame-600
+  dump. `tools/capture-gsp-program-upload` records the ordered 68010 host-port
+  stream and images the share either side of the boundary. Two independent runs
+  agree on everything, including byte-identical VRAM images.
+  - The halt that holds the GSP during the upload is **HSTCTL bit 15**, not
+    `/GSPRES`. `/GSPRES` goes released once at power-on *before any host write*
+    and is toggled again at frames 362 and 396 while the GSP stays halted.
+  - `$0002FE68`/`$0002FE6E` write 6,091 words each across frames 396–405 into
+    `$FFF40000`–`$FFFFFFE0`, after which `$0002C1C4` clears HLT in frame 405 at
+    HSTCTL `$7800`. **Every** sampled post-release GSP PC
+    (`$FFF42E50`, `$FFF40F90`, `$FFF41060`, `$FFF414C0`) lies inside that
+    uploaded range.
+  - Diffing the two boundary images isolates the GSP's **first output**:
+    10,360 words in 22 contiguous ranges inside `$FFB67530`–`$FFB6CC80`, every
+    range previously zero and filled with one repeated constant word, nothing
+    overwritten. That is uniform-fill behaviour, not the upload.
+  - The `--boot` native replay remains weaker evidence than this: it replays a
+    stream that mixes upload and runtime submissions, whereas this capture
+    separates them by construction.
+  - Open: `$00069A` issues 224,522 host writes to a composed destination of
+    `$00000000`, which is not a mapped cell of the share; and it is not yet
+    established whether the two program writers interleave as halves of one
+    32-bit fill. See `analysis/gsp-program-upload-boundary.md`.
+- **New MAME bridge defects, upstreamable:** `BUGS.md` MD-10 (reading the GSP
+  share from a frame-done callback silently stops MC68010 write taps — the
+  dangerous one, because it reports "no host traffic" instead of failing) and
+  MD-11 (a memory-tap callback cannot allocate, grow a table, or do file I/O).
 
 ### M4 completion
 

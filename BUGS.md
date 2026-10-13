@@ -630,3 +630,50 @@ dumps belong there. Two consequences:
   Also blocked by verification of the actual bytes at `$004F96` in the ROM and
   a confirmatory live trace of the MC68010 writing to `$FF945E` during the
   diagnostic call from `$009B80`.
+
+### MD-10 — Reading the GSP share from a frame-done callback silently kills MC68010 memory taps
+
+- **Kind:** driver defect
+- **Where:** MAME Lua `address_space` tap lifetime across a
+  `register_frame_done` callback body
+- **Symptom:** after a frame-done callback reads the GSP shared VRAM through
+  `gsp.spaces['program']`, every previously installed **MC68010** write tap stops
+  firing. No Lua error is raised, MAME exits cleanly, and the script reports its
+  own counters as if the board had done nothing.
+- **Evidence:** the identical script installs the same tap at `$C00000-$C0000F`
+  and records **1000 events without a VRAM read and 0 events with one**, over the
+  same 20 frames, same MAME binary, same ROM set. Re-installing the tap
+  immediately after the read restores it (1000 events again). The full
+  reproduction is `tools/capture-gsp-program-upload`,
+  `mame/lua/gsp-program-upload.lua`, and `tests/test_gsp_program_upload.py`.
+- **Confidence:** confirmed by measurement
+- **Impact on us:** this is the dangerous kind of failure. A capture that both
+  dumps VRAM and counts host-port traffic would publish "the 68010 never wrote
+  to the GSP host port" as a hardware finding. Our tool now refuses to emit a
+  result with zero captured events, and takes its VRAM images in separate runs.
+  This also explains MD-01 and MD-06 from the other direction: they are all
+  "the bridge did not fail where it should have".
+
+### MD-11 — A memory-tap callback cannot allocate, grow a table, or do file I/O
+
+- **Kind:** driver defect
+- **Where:** MAME Lua memory-tap callback re-entry, `address_space:install_write_tap`
+- **Symptom:** work done inside a memory-tap callback corrupts MAME depending on
+  what the work is. Assigning numbers into preallocated slots is safe; everything
+  else fails in a different, individually misleading way.
+- **Evidence**, all on MAME `0.289 (mame0289-dirty)`, sha256
+  `75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06`, ROM set
+  `stunrun`, ~500,000 host-window writes per 60 frames:
+
+  | Work inside the callback | Result |
+  |---|---|
+  | one Lua table retained per event | `returncode -11` (segfault), no Lua error |
+  | `file:write` per event | `returncode -11`, log truncated mid-line at event 339 |
+  | growing a flat table | callback silently stops after 1493 events |
+  | assigning into a preallocated ring | 65,536 events captured, 449,508 counted dropped, clean exit |
+
+- **Confidence:** confirmed by measurement
+- **Impact on us:** every hot-path tap in this project must preallocate its
+  storage and format its output after the run. `tools/analyze-gsp-hstctl`
+  already refuses a wrong-stride stream for the same class of reason: a capture
+  that quietly degrades looks identical to a machine that quietly did nothing.

@@ -25,6 +25,7 @@ FIFO = re.compile(
     r"addr=([0-9A-Fa-f]+) data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+)"
     r"(?: destination=([0-9A-Fa-f]+))?"
 )
+LUA_ERROR = re.compile(r"^.*\[LUA ERROR\].*$", re.MULTILINE)
 HOST = re.compile(r"M1_GSP_DL_HOST id=(\d+) hi=([0-9A-Fa-f]+) "
                   r"lo=([0-9A-Fa-f]+) control=([0-9A-Fa-f]+)")
 DONE = re.compile(
@@ -33,6 +34,7 @@ DONE = re.compile(
 )
 CONSUMER = re.compile(r"M1_GSP_DL_CONSUMER frame=(\d+) pc=([0-9A-Fa-f]+)")
 CONSUMER_STATUS = re.compile(r"M1_GSP_DL_CONSUMER_STATUS status=([a-z]+)")
+GSP_WRITE_STATUS = re.compile(r"M1_GSP_WRITE_STATUS status=([a-z-]+)")
 GSP_EXEC = re.compile(r"M1_GSP_EXEC frame=(\d+) pc=([0-9A-Fa-f]+)")
 GSP_STATE = re.compile(
     r"M1_GSP_STATE frame=(\d+) pc=([0-9A-Fa-f]+) st=([0-9A-Fa-f]+)")
@@ -216,6 +218,7 @@ def parse_log(text: str) -> dict:
             "meaning": "GSP execution evidence only; FIFO-to-call ownership is unknown",
         }
     status = CONSUMER_STATUS.findall(text)
+    gsp_write_status = GSP_WRITE_STATUS.findall(text)
     # An absent GSP selector is an instrumentation limitation, not evidence
     # that the consumer did not run. Keep the semantic result UNKNOWN.
     consumer_status = "observed" if status and status[-1] == "observed" else "unknown"
@@ -224,7 +227,13 @@ def parse_log(text: str) -> dict:
             "gsp_exec_events": gsp_exec_events,
             "gsp_state_samples": gsp_state_samples,
             "gsp_writes": gsp_writes,
+            "gsp_write_capture_status": gsp_write_status[-1] if gsp_write_status else "unknown",
             "consumer_capture_status": consumer_status}
+
+
+def find_lua_errors(text: str) -> list[str]:
+    """Return MAME Lua errors that invalidate otherwise plausible captures."""
+    return LUA_ERROR.findall(text)
 
 
 def export_small_upload(calls: list, output: pathlib.Path) -> dict:
@@ -268,10 +277,15 @@ def main() -> int:
 
     args.output.mkdir(parents=True, exist_ok=True)
     log = args.output / "mame.log"
+    cfg_directory = args.output / "mame-config"
+    nvram_directory = args.output / "mame-nvram"
+    cfg_directory.mkdir(parents=True, exist_ok=True)
+    nvram_directory.mkdir(parents=True, exist_ok=True)
     command = [
         args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
         "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save", "-debug",
+        "-cfg_directory", str(cfg_directory), "-nvram_directory", str(nvram_directory),
+        "-nonvram_save", "-debug",
         "-debugger", "none", "-seconds_to_run",
         str(max(2, (args.frames + 59) // 60 + 1)), "-autoboot_script",
         str(pathlib.Path(__file__).resolve().parents[1] /
@@ -294,6 +308,7 @@ def main() -> int:
                              env=environment,
                              timeout=max(30, args.frames / 10 + 30))
     text = log.read_text(encoding="utf-8")
+    lua_errors = find_lua_errors(text)
     parsed = parse_log(text)
     calls = parsed["calls"]
     family_counts = collections.Counter(
@@ -308,6 +323,7 @@ def main() -> int:
         "frames": args.frames, "capture_start_frame": args.start_frame,
         "capture_end_frame": args.end_frame, "input": args.input,
         "raw_bytes_per_call": args.raw_bytes, "returncode": completed.returncode,
+        "lua_errors": lua_errors,
         "max_calls": args.max_calls, "max_fifo_words": args.max_fifo_words,
         "max_consumer_events": int(os.environ.get("STUNRUN_GSP_DL_TRACE_MAX_CONSUMER", "256")),
         "max_gsp_exec_events": int(os.environ.get("STUNRUN_GSP_DL_TRACE_MAX_GSP_EXEC", "512")),
@@ -320,6 +336,7 @@ def main() -> int:
         "gsp_exec_events": parsed["gsp_exec_events"],
         "gsp_state_samples": parsed["gsp_state_samples"],
         "gsp_writes": parsed["gsp_writes"],
+        "gsp_write_capture_status": parsed["gsp_write_capture_status"],
         "consumer_capture_status": parsed["consumer_capture_status"],
         "artifacts": artifacts,
         "small_upload": small_upload,
@@ -331,7 +348,7 @@ def main() -> int:
         result["fifo_truncated"] = done[4] == "true"
     (args.output / "result.json").write_text(
         json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    if completed.returncode or not parsed["done"]:
+    if completed.returncode or not parsed["done"] or lua_errors:
         raise SystemExit(f"display-list trace failed; see {log}")
     summary = {key: value for key, value in result.items() if key != "calls"}
     print(json.dumps(summary, separators=(",", ":")))

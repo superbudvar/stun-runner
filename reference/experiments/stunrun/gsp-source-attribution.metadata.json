@@ -1,0 +1,67 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "gsp-source-attribution-frame600",
+  "command": "./tools/mame-display-list-trace roms /tmp/opencode/gsp-src-correlation-600-final --mame /mnt/build/mame-ref/mame --frames 600 --start-frame 1 --end-frame 600 --max-calls 64 --raw-bytes 1024 --max-fifo-words 100000 --input drive",
+  "mame": {
+    "version": "0.289 (mame0289-dirty)",
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"
+  },
+  "rom_manifest_sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d",
+  "machine_map": {
+    "path": "analysis/driver-mining/stunrun.machine-map.yaml",
+    "sha256": "c98df0024002a7f33ea10aa914285b912ecbd7b244b365557a7d35520079d73b"
+  },
+  "start_condition": "power_on with isolated per-run MAME config and NVRAM directories",
+  "input": "display-list-trace.lua drive mode; SW1 off; Coin 1 at frame 120; Start at frame 300",
+  "capture": {
+    "frames": 600,
+    "start_frame": 1,
+    "end_frame": 600,
+    "max_calls": 64,
+    "raw_bytes_per_call": 1024,
+    "max_fifo_words": 100000,
+    "calls": 7,
+    "fifo_truncated": true,
+    "calls_truncated": false,
+    "consumer_capture_status": "unknown",
+    "gsp_write_capture_status": "not-captured"
+  },
+  "attributed_calls": [
+    {
+      "call_id": 4,
+      "frame": 376,
+      "caller_pc": "0x02D7A4",
+      "source_address": "0x0009841C",
+      "source_bytes_consumed_by_decoder": 59,
+      "source_sha256": "d6672c76e8bdf18fd94a1b38f1e9c89c363f07310f4f895e6391e06710131f06",
+      "gsp_destination": "0xFFF3FD80",
+      "fifo_words": 40,
+      "expected_fifo_words": 40,
+      "fifo_sha256": "dbda34e6d18145dea7b6808d1c1bb78b0f1c3f5e41c4f8534d4b7d2cd30f2171"
+    },
+    {
+      "call_id": 5,
+      "frame": 376,
+      "caller_pc": "0x02D7B6",
+      "source_address": "0x00098457",
+      "source_bytes_consumed_by_decoder": 55,
+      "source_sha256": "1f62e5a48561bf281bb58da157e7422f5e89cfe97aa9ac0d4efc562a08cceed8",
+      "gsp_destination": "0xFFF3FB20",
+      "fifo_words": 38,
+      "expected_fifo_words": 38,
+      "fifo_sha256": "7c17657f1cad72a259b2b4563db6f20e5f9e218e7b0302e84270635a27eba4c8"
+    }
+  ],
+  "local_artifacts": [
+    {
+      "path": "/tmp/opencode/gsp-src-correlation-600-final/result.json",
+      "sha256": "6e7cc11597a09ec8787209cb126be458f0bcc92c37f8d5c0453dfd940fca5a94"
+    },
+    {
+      "path": "/tmp/opencode/gsp-src-correlation-600-final/mame.log",
+      "sha256": "6bdd5b2996f654ba823e18f4a38d3db578657646257188e694b002e586ec4f68"
+    }
+  ],
+  "conclusion": "Two complete display-list streams are attributed from 68010 ROM source pointers through the compiler to distinct GSP destinations. Payload semantics and executable status remain UNKNOWN."
+}

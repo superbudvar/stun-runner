@@ -26,6 +26,7 @@ local consumer_capture_status = 'unavailable'
 local gsp_exec_events = {}
 local gsp_state_samples = {}
 local gsp_writes = {}
+local gsp_write_capture_status = 'not-captured'
 
 local sw_off_prefix = {
     {port = ':mainpcb:SW1', field = 'SW1:1', value = 1},
@@ -200,47 +201,36 @@ local function install_taps()
     local gsp = machine.devices[':mainpcb:gsp']
     local gsp_space = gsp and gsp.spaces['program']
     if gsp_space ~= nil then
-        consumer_capture_status = 'observed'
-        gsp_space:install_execute_tap(0xfff48c20, 0xfff48c20,
-            'stunrun_gsp_fifo_consumer', function()
-                if #consumer_events < max_consumer_events and
-                    frame >= capture_start and frame <= capture_end then
-                    consumer_events[#consumer_events + 1] = {
-                        frame = frame, pc = 0xfff48c20
-                    }
-                end
-        end)
-        -- TMS34010 debugger PC values are reported in the `$FFFxxxxx`
-        -- address view, while some MAME builds expose execute-tap addresses
-        -- through the logical space's full range. Use a bounded callback over
-        -- the whole space and retain only the first configured landmarks.
-        gsp_space:install_execute_tap(0x00000000, 0xffffffff,
-            'stunrun_gsp_execution_landmarks', function()
-                if #gsp_exec_events < max_gsp_exec_events and
-                    frame >= capture_start and frame <= capture_end then
-                    local state = gsp.state
-                    local pc_state = state['CURPC'] or state['PC']
-                    gsp_exec_events[#gsp_exec_events + 1] = {
-                        frame = frame,
-                        pc = pc_state and pc_state.value or 0
-                    }
-                end
+        -- Execute taps are not available in every stock MAME Lua API. Their
+        -- absence must not abort producer/FIFO tap setup or deterministic input.
+        if type(gsp_space.install_execute_tap) == 'function' then
+            consumer_capture_status = 'observed'
+            gsp_space:install_execute_tap(0xfff48c20, 0xfff48c20,
+                'stunrun_gsp_fifo_consumer', function()
+                    if #consumer_events < max_consumer_events and
+                        frame >= capture_start and frame <= capture_end then
+                        consumer_events[#consumer_events + 1] = {
+                            frame = frame, pc = 0xfff48c20
+                        }
+                    end
             end)
-        gsp_space:install_write_tap(0xff000000, 0xffffffff,
-            'stunrun_gsp_shared_write_landmarks', function(offset, data, mask)
-                if #gsp_writes < max_gsp_writes and
-                    frame >= capture_start and frame <= capture_end then
-                    local state = gsp.state
-                    local pc_state = state['CURPC'] or state['PC']
-                    gsp_writes[#gsp_writes + 1] = {
-                        frame = frame,
-                        pc = pc_state and pc_state.value or 0,
-                        address = offset,
-                        data = data,
-                        mask = mask
-                    }
-                end
-            end)
+            -- TMS34010 debugger PC values are reported in the `$FFFxxxxx`
+            -- address view, while some MAME builds expose execute-tap addresses
+            -- through the logical space's full range. Use a bounded callback over
+            -- the whole space and retain only the first configured landmarks.
+            gsp_space:install_execute_tap(0x00000000, 0xffffffff,
+                'stunrun_gsp_execution_landmarks', function()
+                    if #gsp_exec_events < max_gsp_exec_events and
+                        frame >= capture_start and frame <= capture_end then
+                        local state = gsp.state
+                        local pc_state = state['CURPC'] or state['PC']
+                        gsp_exec_events[#gsp_exec_events + 1] = {
+                            frame = frame,
+                            pc = pc_state and pc_state.value or 0
+                        }
+                    end
+                end)
+        end
     end
 end
 
@@ -299,6 +289,7 @@ emu.register_frame_done(function()
                 'M1_GSP_WRITE frame=%d pc=%08X addr=%08X data=%08X mask=%08X',
                 write.frame, write.pc, write.address, write.data, write.mask))
         end
+        print('M1_GSP_WRITE_STATUS status=' .. gsp_write_capture_status)
         print('M1_GSP_DL_CONSUMER_STATUS status=' .. consumer_capture_status)
         print(string.format(
             'M1_GSP_DL_DONE frames=%d calls=%d fifo_words=%d calls_truncated=%s fifo_truncated=%s output=%s',
