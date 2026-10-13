@@ -56,21 +56,30 @@ static const uint16_t expected_words[] = {
     0x0099u, 0x0099u
 };
 
-/* PACKED storage check (post fcf1eab): the display list writes one PACKED
- * 16-bit word per 16-byte cell (with bump=16 host auto-increment).  Each cell
- * gets exactly 2 bytes of valid data: the low byte of `word` at offset 0 and
- * the high byte at offset 1.  The rest of the cell is zero. */
-static void check_packed_cell(const uint8_t *vram, size_t cell,
-                               uint16_t word)
+/* CELL-FILL check.  A display-list store fills its whole 16-byte cell: 8 copies
+ * of the low byte then 8 of the high byte, with the bump=16 host
+ * auto-increment advancing one cell per word.
+ *
+ * This function previously asserted a PACKED store -- two bytes per cell, the
+ * rest zero -- and was written specifically to match fcf1eab ("post fcf1eab" in
+ * its comment).  That expectation has been refuted by measurement against the
+ * pinned MAME, so it is changed here because the evidence moved it, not because
+ * the implementation needed to pass:
+ *
+ *   frame 390, GSP still in reset (gsp PC=0), driven through the real host port
+ *   -- HSTADRL=0xFF801000, HSTDAT=0x1234, read 16 bytes from 0xff801000:
+ *       34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12
+ *
+ * See docs/mc68010-boot-findings.md section 27. */
+static void check_filled_cell(const uint8_t *vram, size_t cell,
+                              uint16_t word)
 {
     size_t base = cell * 16u;
     unsigned i;
-    /* The first two bytes are the packed word. */
-    CHECK(vram[base + 0u] == (uint8_t)(word & 0xFFu));
-    CHECK(vram[base + 1u] == (uint8_t)(word >> 8));
-    /* The rest of the cell is zero (unwritten). */
-    for (i = 2u; i < 16u; i++) {
-        CHECK(vram[base + i] == 0u);
+    /* Eight copies of the low byte, then eight of the high byte. */
+    for (i = 0u; i < 8u; i++) {
+        CHECK(vram[base + i] == (uint8_t)(word & 0xFFu));
+        CHECK(vram[base + 8u + i] == (uint8_t)(word >> 8));
     }
 }
 
@@ -214,8 +223,8 @@ int main(void)
 
     CHECK(musashi_cpu_gsp_memory(cpu, &memory) == 0);
     for (i = 0; i < sizeof(expected_words) / sizeof(expected_words[0]); i++)
-        check_packed_cell((const uint8_t *)memory.vram, i,
-                          expected_words[i]);
+        check_filled_cell((const uint8_t *)memory.vram, i,
+                           expected_words[i]);
 
     CHECK(stunrun_mem_read8(&ports, STUNRUN_GSP_DL_TABLE_LO, &byte));
     CHECK(byte == 0xA0u);

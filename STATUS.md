@@ -250,37 +250,43 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
 
 ## Current blockers
 
-- **The GSP VRAM share is 4 MiB, and the host data write PACKES. Both defects
-  are FIXED; the parity evidence is still missing.**
+- **The GSP VRAM share is 4 MiB and a host data write FILLS the 16-byte cell.
+  Both FIXED; host-write parity is now MEASURED against MAME.**
   - *Size.* `GSP_BOARD_VRAM_BYTES` (`native/gsp_rtl/gsp_board.h:29`) and
     `MUSASHI_GSP_VRAM_BYTES` (`native/musashi_cpu.h:67`) are both `0x400000`
-    since 2026-10-12 (`cf8587e`, `bd5b873`), so both paths now mask with
-    `0x3FFFFF` where they used to mask with `0x7FFFF`. Measured by
-    `tools/mame-gsp-mirror-probe` against live MAME: the old mask sent 745,384
-    of 843,688 captured `0xFFxxxxxx` HSTDAT writes (88.4%) to a different cell.
-    Section 19, `stun-runner-2ua`.
-  - *Store.* `gsp_board_hstdat_store()` stored 8 copies of the low byte then 8 of
-    the high byte; MAME's `TMS34010_WRMEM_WORD` is `m_program.write_word` into a
-    `.ram()` region and stores **2 bytes**. `fcf1eab` had corrected only
-    `native/musashi_cpu.c`, so the two models implemented different stores and
-    disagreed by 1,157,420 of 4,194,304 bytes once the size was corrected.
-    Now `0 / 4,194,304`. Section 27, `BUGS.md` SR-20.
+    since 2026-10-12 (`cf8587e`, `bd5b873`), masking with `0x3FFFFF`.
+    `tools/mame-gsp-mirror-probe`: the old mask sent 745,384 of 843,688
+    captured `0xFFxxxxxx` HSTDAT writes (88.4%) to a different cell. Section 19.
+  - *Store.* A host `HSTDAT` stores **16 bytes**, the low byte eight times then
+    the high byte eight times -- not a packed word. Measured at frame 390 with
+    the GSP in reset (`gsp PC=0`), through the real host port:
+    `HSTADRL=0xFF801000, HSTDAT=0x1234` reads back
+    `34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12`. `fcf1eab` had
+    "corrected" `native/musashi_cpu.c` to packed on a misreading of
+    `m_program.write_word`; commit `d91ae6a` propagated that misreading into the
+    board model and has been **reverted**. Section 27, `BUGS.md` SR-20.
   - **Section 15.4's byte-identical VRAM match (`0 / 524,288`) is RETRACTED.**
     Both models carried the same wrong constant *and* the same wrong store, so
-    they agreed by construction. It proved host-write dispatch was correct and
-    nothing else. Do not quote it as VRAM parity.
-  - **Neither model has been compared against `tools/mame-gsp-vram-dump`.** The
-    frame-600 oracle is contaminated: 87.5% of its nonzero cells are uniform and
-    hold GSP framebuffer data (0x82, 0xb8, 0xaa…), against 82,720 nonzero cells
-    from any host-port replay. Arbitrating needs a capture taken while the GSP is
-    still in reset; MAME's share is still zero at frame 60, so the window is not
-    yet located. This is the open item.
-  - `tools/check-gsp-replay` also never had a pass branch — it ended in an
-    unconditional `return 1`, so it could not report success. Fixed; it now
-    returns 0 on byte-identity. Section 27.3.
-  - Section 18.2 stands unchanged and is independent of all of the above: the
-    capture ends 560,422 68010 cycles after the final HLT release with the GSP
-    halted 99.61% of its window.
+    they agreed by construction. It proved host-write dispatch, nothing else.
+  - **Host-write parity IS now measured**, on the frame-390 window (GSP in
+    reset, so the share holds only host writes): replaying the captured stream
+    gives 70,960 of 4,194,304 bytes differing (98.31%), against 748,098
+    (82.16%) for a packed model. The residual is `0xff` fill in the ranges the
+    2bpp expander writes, which the arbitration harness does not model.
+  - **Not yet established:** neither model is compared against MAME at a frame
+    where the GSP has *run*. The frame-600 oracle is 87.5% uniform GSP
+    framebuffer data (0x82, 0xb8, 0xaa...) that no host-port replay can produce,
+    and the 2bpp path is still unmodelled in the arbitration harness. Section
+    18.2 stands and is independent: the capture ends with the GSP halted 99.61%
+    of its window.
+  - `tools/check-gsp-replay` also never had a pass branch -- it ended in an
+    unconditional `return 1`, so it could not report success. Fixed; it returns
+    0 on byte-identity. Section 27.5.
+  - **Reproducing the arbitration needs a specific window.** MAME's share is
+    entirely zero at frame 360 and the GSP is running by frame 420, so "an
+    early frame" is not early enough; the window has to be found by checking
+    `gsp PC` at the capture point. Frame 390 works.
+
 - **The frame-600 VRAM fixture is REPLACED and now has a checker.** The old file
   was 1048576 bytes, began with the MC68010 reset SP/PC (`ffffc000 00000216`),
   had no provenance, and agreed with a fresh pinned capture on 0.18% of bytes —

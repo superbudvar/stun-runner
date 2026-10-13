@@ -221,21 +221,22 @@ static void test_host_register_decode(void)
 /* HSTDAT expands to a 16-byte cell: eight low-byte copies then eight
  * high-byte copies.  This is the board's observed expansion, recorded in
  * docs/mc68010-boot-findings.md section 12.2. */
-/* HSTDAT to the VRAM share stores TWO BYTES, packed -- not a 16-byte cell with
- * each source byte replicated eight times.
+/* HSTDAT to the VRAM share FILLS a 16-byte cell: 8 copies of the low byte then
+ * 8 of the high byte.  Not a packed 2-byte store.
  *
- * The replication this replaces was a misreading of the driver's geometry.  The
- * program space is declared `datawidth 16, addrshift 3` (tms34010.cpp:67), which
- * gives alignment() == 16, and `TMS34010_WRMEM_WORD` masks the address with
- * 0xfffffff0 (tms34010.cpp:1875).  That alignment is why every write targets a
- * 16-byte boundary; it says nothing about how many bytes the write stores.
- * The store itself is `m_program.write_word(A,V)` into a `.ram()` region
- * (harddriv.cpp:628) -- exactly two bytes.
+ * Measured against the pinned MAME at frame 390 with the GSP still in reset
+ * (gsp PC=0, so nothing else can touch the cell), driven through the real host
+ * port rather than a direct space write:
  *
- * Asserted as the literal 16-byte cell content rather than a byte count, so the
- * test cannot pass for either wrong reason: replication puts 0x7f at 0x1007 and
- * packed leaves it zero, and the two disagree on every byte of the cell. */
-static void test_hstdat_stores_two_packed_bytes(void)
+ *   HSTADRL=0xFF801000, HSTDAT=0x1234, read 16 bytes back from 0xff801000:
+ *       34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12
+ *
+ * An intermediate version of this test asserted a packed store instead, on the
+ * reading that TMS34010_WRMEM_WORD is `m_program.write_word`.  That is the
+ * mistake, and it was committed as d91ae6a before being measured.  The
+ * assertions below are per-byte across the whole cell precisely so a packed
+ * store cannot satisfy them. */
+static void test_hstdat_fills_the_16_byte_cell(void)
 {
     static gsp_board_t b;   /* 4 MiB model: static, never on the stack */
     unsigned i;
@@ -252,42 +253,41 @@ static void test_hstdat_stores_two_packed_bytes(void)
 
     CHECK_EQ(b.hstadr, 0xff801000u);
 
-    /* Exactly the two bytes of the word, little-endian, at the cell base. */
-    CHECK_EQ(b.vram[0x1000u], 0x7fu);
-    CHECK_EQ(b.vram[0x1001u], 0xc3u);
-
-    /* And nothing else in the 16-byte cell was touched.  These are the
-     * assertions the replicating model fails: it wrote 0x7f at 0x1000-0x1007
-     * and 0xc3 at 0x1008-0x100f. */
-    for (i = 2u; i < 16u; i++) {
-        CHECK_EQ(b.vram[0x1000u + i], 0x00u);
+    /* All 16 bytes of the cell, and the boundary of it: the cell must not
+     * spill into its neighbour. */
+    for (i = 0; i < 8u; i++) {
+        CHECK_EQ(b.vram[0x1000u + i], 0x7fu);
+        CHECK_EQ(b.vram[0x1008u + i], 0xc3u);
     }
-
-    /* The write did not spill into the following cell either. */
+    CHECK_EQ(b.vram[0x0ff0u], 0x00u); /* cell is exactly 16 bytes */
     CHECK_EQ(b.vram[0x1010u], 0x00u);
-    CHECK_EQ(b.vram_writes, 2u);
+    CHECK_EQ(b.vram_writes, 16u);
 }
 
-/* Two consecutive words at the same 16-byte cell base must both be visible,
- * proving the store is a plain 2-byte store and not a 16-byte one that would
- * have overwritten its own tail. */
-static void test_hstdat_two_words_share_one_cell(void)
+/* HSTADR's low four bits are DISCARDED.  MAME masks the assembled address with
+ * 0xfffffff0 before the store (tms34010.cpp:1898), so a programmed address
+ * ending in 0x8 lands on the 0x0 boundary of its cell.  Measured: HSTADRL =
+ * 0xFF802008 with HSTDAT=0x5678 puts the data at 0xff802000, not 0xff802008.
+ *
+ * This is the trap in the store test above: without the mask, a test using
+ * 0xFF802008 as HSTADRL would pass against the wrong model. */
+static void test_hstdat_discards_low_address_bits(void)
 {
     static gsp_board_t b;   /* 4 MiB model: static, never on the stack */
+    unsigned i;
     gsp_board_reset(&b);
 
     gsp_board_host_write(&b, 0x00u, 0xff80u);
-    gsp_board_host_write(&b, 0x04u, 0x1000u);
+    gsp_board_host_write(&b, 0x04u, 0x2008u); /* -> 0xFF802008 */
+    gsp_board_host_write(&b, 0x0cu, 0x5678u);
 
-    gsp_board_host_write(&b, 0x0cu, 0x1111u);
-    CHECK_EQ(b.vram[0x1000u], 0x11u);
-    CHECK_EQ(b.vram[0x1001u], 0x11u);
-
-    /* HSTADRL is masked to 0x1000 either way; write a second word there. */
-    gsp_board_host_write(&b, 0x0cu, 0x2222u);
-    CHECK_EQ(b.vram[0x1000u], 0x22u);
-    CHECK_EQ(b.vram[0x1001u], 0x22u);
-    CHECK_EQ(b.vram_writes, 4u);
+    /* On the masked boundary, not where it was programmed. */
+    for (i = 0; i < 8u; i++) {
+        CHECK_EQ(b.vram[0x2000u + i], 0x78u);
+        CHECK_EQ(b.vram[0x2008u + i], 0x56u);
+    }
+    /* Nothing at the unmasked address -- the mask did not merely round up. */
+    CHECK_EQ(b.vram[0x2000u + 16u], 0x00u);
 }
 
 /* HSTCTL bit 0x0800 post-increments the address latches after a host data
@@ -430,8 +430,8 @@ int main(void)
     test_2bpp_window_writes_main_vram();
     test_unmapped_reads_zero_and_count();
     test_host_register_decode();
-    test_hstdat_stores_two_packed_bytes();
-    test_hstdat_two_words_share_one_cell();
+    test_hstdat_fills_the_16_byte_cell();
+    test_hstdat_discards_low_address_bits();
     test_hstctl_increment();
     test_hstdat_dispatches_on_address();
     test_host_readback();

@@ -945,9 +945,38 @@ static void gsp_mem_write_word(musashi_cpu_t *cpu, uint32_t addr, uint16_t value
     if ((addr & 0xFF000000u) == 0xFF000000u) {
         /* MAME mirror formula: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF */
         uint32_t off = ((addr - 0xFF800000u) % 0x400000u) & 0x3FFFFFu;
-        off = (off & ~1u);
-        cpu->gsp_vram[off + 0u] = (uint8_t)(value & 0xFFu);
-        cpu->gsp_vram[off + 1u] = (uint8_t)(value >> 8);
+        /* A host data write FILLS a 16-byte cell, each source byte replicated
+         * eight times -- it is not a packed 2-byte store.
+         *
+         * This corrects fcf1eab (2026-10-12, "native: fix MC68010 VRAM writes to
+         * packed storage"), which changed this path to packed on the reading
+         * that TMS34010_WRMEM_WORD is `m_program.write_word` and that a 16-bit
+         * `write_word` stores two bytes.  Measured against the pinned MAME at
+         * frame 390 with the GSP still in reset (gsp PC=0), driven through the
+         * real host port:
+         *
+         *   HSTADRL=0xFF801000, HSTDAT=0x1234, read 16 bytes from 0xff801000:
+         *       34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12
+         *
+         * The program space is declared `datawidth 16, addrshift 3`
+         * (tms34010.cpp:67), so its 16-byte unit is real; `write_word` against
+         * that unit expands rather than storing two bytes.  See
+         * docs/mc68010-boot-findings.md section 27 and BUGS.md SR-20.
+         *
+         * Why it was never caught: native/gsp_rtl/gsp_board.c replicated
+         * identically until 2026-10-13, and tools/check-gsp-replay compares
+         * these two models against each other rather than against MAME.  Both
+         * sides carried the same error, so the check passed by construction. */
+        off = off & ~0xfu;
+        {
+            uint8_t lo = (uint8_t)(value & 0xFFu);
+            uint8_t hi = (uint8_t)(value >> 8);
+            unsigned k;
+            for (k = 0; k < 8u; k++) {
+                cpu->gsp_vram[off + k]      = lo;
+                cpu->gsp_vram[off + 8u + k] = hi;
+            }
+        }
         cpu->gsp_counts.vram++;
         return;
     }

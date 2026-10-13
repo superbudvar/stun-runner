@@ -5365,127 +5365,161 @@ lane; the runtime consequences in SR-18 remain inferred. The record-walking
 loop at `$03A0A8` that selects which records are tested, and the list-head
 pointer table at `$4C712`, are the next target for subsystem 3.
 
-## 27. The host data write packs; it does not fill a 16-byte cell (CONFIRMED, fixed)
+## 27. The host data write FILLS the 16-byte cell (measured; a wrong fix landed and was reverted)
 
-Re-measuring section 15.4 at the corrected 4 MiB extent -- the outstanding item
-on `stun-runner-2ua` -- turned up a second defect that the size fix had been
-hiding. This section records it; section 15.4's result is retracted.
+This section exists because the first version of it was wrong. Commit `d91ae6a`
+changed both models to a packed 2-byte store on the strength of a reading of
+MAME's source; a direct measurement against the pinned driver refuted it, and
+that commit was reverted. Both the wrong turn and the measurement that killed it
+are recorded, because the wrong turn is the expensive part and because the
+misreading is an obvious one to make again.
 
-### 27.0 The re-measurement, and why the size fix exposed something
+### 27.0 What the re-measurement was for
 
-Re-captured the native run with both constants at 0x400000 and replayed it:
+Section 19 fixed the share size and left item 1 of `stun-runner-2ua` open:
+re-measure section 15.4's VRAM match at the corrected 4 MiB extent. Re-captured
+with both constants at 0x400000:
 
 ```text
 902,647 bus events; host-window events=902,641; unmapped_writes=39
 vs native model reference VRAM:
   differing bytes : 1,157,420 / 4,194,304   (27.6%)
-RESULT FAIL
 ```
 
-Section 15.4 had reported `0 / 524,288 bytes differ (byte-identical)`. That was
-not stale, and it was not arithmetic drift: it was **two models agreeing with
-each other by shared construction**. Both carried the same 0x80000 constant
-*and* the same 16-byte replicating store, so the comparison could not fail. It
-was evidence that the board model's dispatch reached the right region. It was
-never evidence about MAME's VRAM, and the byte-identical figure should not be
-quoted as parity.
+So the models had genuinely diverged. That much was real.
 
-### 27.1 What MAME actually does
+### 27.1 The wrong inference
 
-Transcribed from the driver, not from the TI guide:
+The divergence was read as: `gsp_board.c` replicated 8x across a 16-byte cell,
+`musashi_cpu.c` stored a packed word, and since `TMS34010_WRMEM_WORD` is
+`m_program.write_word` (tms34010.cpp:317) into a `.ram()` region
+(harddriv.cpp:628), **packed** must be right and the board model wrong.
+
+Every step of that inference is quotable and none of it survives contact with
+the machine:
 
 ```text
-tms34010.cpp:1875  host_w(), case TMS34010_HOST_DATA:
-                       addr = (IOREG(REG_HSTADRH) << 16) | IOREG(REG_HSTADRL);
-                       TMS34010_WRMEM_WORD(addr & 0xfffffff0, data);
-tms34010.cpp:317   tms34010_device::TMS34010_WRMEM_WORD(A, V):
-                       m_program.write_word(A, V);
-tms34010.cpp:67    m_program_config("program", ENDIANNESS_LITTLE, 16, 32, 3, ...)
-                       -- datawidth 16, addrwidth 32, addrshift 3
-harddriv.cpp:628   map(0xff800000, 0xffbfffff).mirror(0x0400000)
-                       .ram().share("gsp_vram");
+tms34010.cpp:1875  TMS34010_WRMEM_WORD(addr & 0xfffffff0, data)
+tms34010.cpp:317   -> m_program.write_word(A, V)
+tms34010.cpp:67    program space: datawidth 16, addrshift 3, addrwidth 32
+harddriv.cpp:628   map(0xff800000,0xffbfffff).mirror(0x4000000).ram().share("gsp_vram")
 ```
 
-`.ram()` is plain byte-addressable RAM and `write_word` on a 16-bit-wide space
-stores **two bytes**. That is the whole of it.
+The step that failed was treating `write_word` on a 16-bit-wide space as a plain
+two-byte store. The space is not simply "16-bit"; it is **16-bit data against a
+16-byte unit** (`addrshift 3` with `datawidth 16` gives
+`alignment() == 16`, emumem.h:2075), and a write into that unit expands across
+it. The `addrshift` was read as if it only affected addressing.
 
-The 16 comes from somewhere real, which is why the mistake was so durable. The
-program space is declared `addrshift 3` with `datawidth 16`, and
-`address_space_config::alignment()` (emumem.h:2075) returns
-`(16/8) << 3 == 16`. So the space really is aligned in 16, and `addr &
-0xfffffff0` really does park every write on a 16-byte boundary. Reading
-*aligned in 16* as *written 16* is the entire error: the boundary is where the
-word lands, not how many bytes it covers.
+### 27.2 The measurement that refuted it
 
-### 27.2 The fix, and why it stayed invisible for so long
+Frame 390 of the pinned driver, while the GSP is still in reset (`gsp PC=0`), so
+nothing else can touch a cell between the write and the read-back. Driven
+through the **real host port** -- the 68010 writing `$C00000`/`$C00004`/`$C0000C`,
+so `hd68k_gsp_io_w` -> `host_w` -> `TMS34010_WRMEM_WORD` -- not a direct space
+write:
 
-`native/gsp_board.c`'s `gsp_board_hstdat_store` stored 8 copies of the low byte
-then 8 of the high byte. `fcf1eab` (2026-10-12, "native: fix MC68010 VRAM writes
-to packed storage") corrected **only** `native/musashi_cpu.c` to pack; its diff
-touches `musashi_cpu.c` and `shell.c` and never opened `gsp_board.c`. From that
-moment the two models implemented different stores.
+```text
+PROBE frame=390 gsp_pc=00000000
+PROBE base+1000   : 34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12
+```
 
-`tools/check-gsp-replay` compares the board model against the *native model's own
-dump*. It does not compare either against MAME. So a disagreement between them
-was the one thing it could see, and it had nothing to measure until one model
-moved. That is the general lesson, and it is the same one section 15.6 reaches
-from the other direction: this check could not see the size defect because both
-models carried it, and it could not see the store defect for the mirror image of
-the same reason. A differential check is only as strong as the assumption that
-its two sides are independently wrong.
+`HSTADRL=0xFF801000, HSTDAT=0x1234` produces **eight copies of 0x34 then eight of
+0x12**. The store fills the cell; it does not pack. The board model was right
+and `fcf1eab`'s "packed storage" change to `native/musashi_cpu.c` was the actual
+defect.
 
-After the fix, on the same capture:
+The same probe confirmed the two adjacent facts both models already relied on,
+which is worth recording because they were carried on inference until now:
+
+```text
+PROBE base+2008   : 56 56 56 56 56 56 56 56 00 00 00 00 00 00 00 00
+PROBE base+2000   : 78 78 78 78 78 78 78 78 56 56 56 56 56 56 56 56
+PROBE incr cell0  : BC BC BC BC BC BC BC BC 9A 9A 9A 9A 9A 9A 9A 9A
+PROBE incr cell1  : F0 F0 F0 F0 F0 F0 F0 F0 DE DE DE DE DE DE DE DE
+```
+
+`HSTADRL=0xFF802008` lands at `0xff802000`: the `& 0xfffffff0` mask discards the
+low four bits. With `HSTCTL=0x0800`, consecutive writes land one 16-byte cell
+apart. Both as modelled.
+
+Frame 390 is also the capture window section 27.4 needed: `gsp PC=0`, 429,504
+nonzero words. The share is still entirely zero at frame 360 and the GSP is
+running by frame 420, so the usable window is narrow -- it has to be found by
+checking `gsp PC`, not by assuming "early" is early enough.
+
+### 27.3 Corroboration by replay
+
+Replaying the captured host stream against that frame-390 oracle, sweeping the
+truncation point because the native and MAME captures are not frame-aligned:
+
+```text
+packed       : 748,098 / 4,194,304 bytes differ  (82.16% agreement)
+replicated   :  70,960 / 4,194,304 bytes differ  (98.31% agreement)
+```
+
+The residual is `0xff` fill in the ranges the 2bpp expander writes
+(`0x020000-0x03ffff`, `0x1e0000-0x1f3fff`), which this arbitration harness does
+not model. An attempt to add the 2bpp expander (`hdgsp_vram_2bpp_w`,
+harddriv_v.cpp:304, with the `MASK(n)` byte-lane table at :28) made the figure
+*worse* -- 145,603 differing -- so that transcription is wrong and is **not**
+claimed as a result. The residual is therefore attributed to the 2bpp path on
+the strength of *where* it falls, not on a working model of it.
+
+The direct probe in 27.2 is what settles the question; the replay corroborates
+the direction and the size of the effect.
+
+### 27.4 State after the correction
+
+Both models replicate. Re-captured and replayed:
 
 ```text
   differing bytes : 0 / 4,194,304
-  differing words : 0 / 2,097,152
-  byte sum ours=21179546 reference=21179546
+  byte sum ours=152593108 reference=152593108
 RESULT PASS
 ```
 
-`test_hstdat_cell_expansion` asserted the replication and was **wrong**, so it
-was replaced by `test_hstdat_stores_two_packed_bytes` (asserts the literal
-16-byte cell content, so it fails on either error) plus
-`test_hstdat_two_words_share_one_cell`. Verified as a negative control: putting
-the replicating store back produces 17 failures.
+`test_hstdat_cell_expansion` had asserted replication and was correct all along;
+the packed version that replaced it in `d91ae6a` is gone. Added
+`test_hstdat_discards_low_address_bits`, which pins the `0xfffffff0` mask, and
+`gsp_display_list_musashi_test.c`'s cell expectation moved back from packed to
+filled -- that expectation had been written for `fcf1eab` ("post fcf1eab" in its
+comment) and is changed here because the measurement refuted it, not because the
+implementation needed to pass.
 
-### 27.3 A check that could not pass
+### 27.5 A check that could not pass
 
 `replay_host_writes()` in `native/gsp_rtl/gsp_rtl_main.cpp` ended in an
-unconditional `RESULT FAIL` / `return 1`. There was no pass branch at all, so
+unconditional `RESULT FAIL` / `return 1`. There was no pass branch, so
 `tools/check-gsp-replay` returned 1 on a byte-identical match and its exit code
-was not a verdict on anything. Its header calls byte-identity the pass
-condition; the code could not express it. Fixed to return 0 on
-`diff_bytes == 0` with matching byte sums.
+was not a verdict on anything. It now returns 0 on `diff_bytes == 0` with
+matching byte sums. This fix stands; it was independent of the store question
+and was correct on its own.
 
-Worth stating plainly, because it is the same class of problem as 15.6: this
-check had been run and reported and had always said FAIL, so the natural
-reading of any of its history is "it has been failing". It had never actually
-been able to succeed, and nobody could tell that from its output.
+### 27.6 The general lesson
 
-### 27.4 What is still NOT evidence
+Two errors in this file were made in the same direction and hid each other for a
+week, and `d91ae6a` shows the failure mode is not "make a mistake" but "make a
+plausible one and then write a long comment defending it":
 
-The models now agree with each other across the full 4 MiB. That is a real
-result and it is not MAME parity. Neither model has been compared against
-`tools/mame-gsp-vram-dump` successfully, because the frame-600 oracle is
-contaminated by the GSP core itself:
+* A readable chain of quotable driver lines said `packed`.
+* The board model said `replicated`.
+* `check-gsp-replay` compared those two against **each other**, never MAME.
 
-```text
-MAME oracle: 208,025 nonzero 16-byte cells
-   1 distinct byte/cell: 182,052 (87.5%)   2: 25,973 (12.5%)
-   top uniform values: 0x82 5023, 0xb8 4594, 0xaa 4390, 0xa3 3877
-   equal to ctrl_lo[0]=0xff: 1,537 / 182,052  (0.84%)
+So the check could not see either error while they cancelled, and when the size
+fix separated them it reported a divergence whose cause was not the one being
+looked for. The correct reading was available in the source and was still wrong.
 
-host-port replay produces: 82,720 nonzero cells
-```
+The thing that settled it was one write and one read-back, at a moment chosen so
+that nothing else could be responsible for the answer. That is cheap. Reading
+`write_word` as "two bytes" cost a week, a commit, and a revert.
 
-The uniform cells carry GSP framebuffer data written after the 68010 stream
-ended, and they are not the 2bpp colour. The clean arbitration needs a capture
-taken while the GSP is still in reset, so that host writes are the only writes;
-MAME's share is still entirely zero at frame 60, so the window has not been
-located yet. That is the open item, and it is *independent* of everything above.
+### 27.7 What is still NOT established
+
+Neither model has been compared against MAME at a frame where the GSP has run.
+The frame-390 window gives host-write-only parity; the frame-600 oracle remains
+87.5% uniform GSP framebuffer data that no host-port replay can reproduce, and
+the 2bpp path is still unmodelled in the arbitration harness above.
 
 Section 18.2 stands unchanged: the capture ends 560,422 68010 cycles after the
-final HLT release with the GSP halted for 99.61% of its window. Even with the
-share correctly sized and the store correctly modelled, a replay of a stream in
-which the GSP never ran will not match a frame in which it did.
+final HLT release with the GSP halted for 99.61% of its window.

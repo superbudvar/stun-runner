@@ -331,39 +331,39 @@ behaves and must be reported upstream.
 
 *(none recorded yet — this section exists so the distinction stays visible)*
 
-### SR-20 — HSTADR's low four bits are discarded on every host data write
+### SR-20 — A host data write fills the whole 16-byte cell, and HSTADR's low four bits are discarded
 
 - **Kind:** hardware abuse
 - **Where:** `tms340x0_device::host_w`, case `TMS34010_HOST_DATA` —
-  `mame-ref/src/devices/cpu/tms34010/tms34010.cpp:1898`
-- **Symptom:** a programmed GSP address ending in anything other than `0x0`
-  never reaches VRAM where it was programmed. The write lands on the next lower
-  16-byte boundary, and the four bits are gone with no diagnostic and no
-  readback showing where it actually went.
-- **Evidence:** the driver masks the assembled address before the store —
-  `TMS34010_WRMEM_WORD(addr & 0xfffffff0, data)`. The post-increment path at
-  `:1902` then adds `0x10` and writes the new value back into both latches,
-  so a program that relies on the increment never observes a partial address
-  either. Net effect: HSTADR is a 20-bit cell index with the low 4 bits
-  permanently read as zero.
-- **Confidence:** confirmed by MAME (source), and confirmed by measurement that
-  STUN Runner's own boot fill relies on it: the ROM programs
-  `move.l #$FF800000,$C00002.l` (findings 13.1) — an address that is already
-  16-byte aligned, so the mask is invisible to the game but decisive to any
-  model of it.
-- **Impact on us:** this cost a full investigation cycle. Our board model read
-  `datawidth 16, addrshift 3` and concluded the space was *written* 16 bytes
-  wide, replicating each source byte 8x across the cell. The 16 is the space's
-  alignment, not the width of the store; `write_word` into a `.ram()` region
-  stores 2 bytes. See `docs/mc68010-boot-findings.md` section 27 and
-  `stun-runner-2ua`. Any future TMS34010 host-port model must take the store
-  width from `TMS34010_WRMEM_WORD`, never from the space geometry.
-
-
-## Curiosity
-
-*(ROM quirks with no impact on the conversion — kept here so they are not
-rediscovered from scratch)*
+  `mame-ref/src/devices/cpu/tms34010/tms34010.cpp:1898`; the map at
+  `harddriv.cpp:628`
+- **Symptom:** two things at once, and they are the same instruction. A single
+  16-bit HSTDAT does not store two bytes: it **overwrites sixteen**, the low
+  byte eight times then the high byte eight times. And because the address is
+  masked to `0xfffffff0` first, the four low bits a program writes into HSTADR
+  are discarded, so an address ending in `0x8` lands on the `0x0` boundary of
+  its cell. Nothing reports either; the data simply appears somewhere else.
+- **Evidence:** measured against the pinned driver at frame 390 with the GSP
+  still in reset (`gsp PC=0`), through the real host port:
+  `HSTADRL=0xFF801000, HSTDAT=0x1234` reads back as
+  `34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12`.
+  `HSTADRL=0xFF802008, HSTDAT=0x5678` lands at `0xff802000`, not `0xff802008`.
+  The post-increment stride under `HSTCTL=0x0800` is one 16-byte cell.
+- **Confidence:** confirmed by MAME (direct measurement, not inference from
+  source). Note that this is *not* what the source reads like:
+  `TMS34010_WRMEM_WORD` is `m_program.write_word` (tms34010.cpp:317) into a
+  plain `.ram()` region, and the program space is `datawidth 16, addrshift 3`
+  (tms34010.cpp:67). Taking `write_word` for a two-byte store is the mistake
+  this entry exists to prevent — see `docs/mc68010-boot-findings.md` section 27,
+  where that mistake was made, committed as `d91ae6a`, and reverted after
+  measurement.
+- **Impact on us:** this one cost a week and a revert. `fcf1eab` "corrected"
+  `native/musashi_cpu.c` to packed storage on that reading, and
+  `tools/check-gsp-replay` could not see it because the board model replicated
+  identically — the two agreed by shared error, which is the failure mode this
+  file's differential checks are most prone to. Any TMS34010 host-port model
+  must take the store width from a measurement, not from the width of
+  `write_word`.
 
 ### SR-08 — The IRQ5 handler's entire net effect is a tick counter
 

@@ -299,56 +299,60 @@ static void gsp_board_hstdat_store(gsp_board_t *b, uint16_t data)
 {
     const uint32_t addr = b->hstadr;
 
-    /* 0xFF000000-0xFFFFFFFF: the VRAM share.  A host data write stores TWO
-     * bytes, packed.
+    /* 0xFF000000-0xFFFFFFFF: the VRAM share.  A host data write fills a 16-byte
+     * cell with each source byte replicated eight times.
      *
-     * Transcribed from the driver rather than from the TI guide:
+     * This is a CORRECTION.  An intermediate version of this file packed two
+     * bytes instead, on the reading that `TMS34010_WRMEM_WORD` is
+     * `m_program.write_word` and `write_word` on a 16-bit-wide space stores two
+     * bytes.  That reading is wrong, and it was adopted here and in
+     * native/musashi_cpu.c (fcf1eab) before either was measured.
      *
-     *   tms34010.cpp:1875  host_w() case TMS34010_HOST_DATA:
-     *         addr = (IOREG(REG_HSTADRH) << 16) | IOREG(REG_HSTADRL);
-     *         TMS34010_WRMEM_WORD(addr & 0xfffffff0, data);
-     *   tms34010.cpp:317   tms34010_device::TMS34010_WRMEM_WORD(A,V):
-     *         m_program.write_word(A, V);
-     *   tms34010.cpp:67    program space: datawidth 16, addrshift 3
-     *   harddriv.cpp:628   map(0xff800000,0xffbfffff).mirror(0x4000000)
-     *                         .ram().share("gsp_vram");
+     * MEASURED against the pinned MAME, at frame 390 with the GSP still in
+     * reset (gsp PC=0, so nothing else can touch the cell):
      *
-     * `.ram()` is plain byte-addressable RAM and `write_word` on a 16-bit-wide
-     * space stores exactly two bytes.  The 16 that appear in this model come
-     * from the space's ALIGNMENT, not from the width of the store: addrshift 3
-     * with datawidth 16 gives alignment() == 16, which is why every write
-     * targets a 16-byte boundary (the `& 0xfffffff0` above) while storing only
-     * the first two bytes of that cell.  Reading "aligned in 16" as "written 16"
-     * is what produced the replication this replaces.
+     *   HSTADRL=0xFF801000, HSTDAT=0x1234, read 16 bytes back from 0xff801000:
+     *       34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12
+     *
+     * Driven through the real host port (the 68010 writing $C00000/$C00004/
+     * $C0000C), not a direct space write, so it exercises
+     * hd68k_gsp_io_w -> host_w -> TMS34010_WRMEM_WORD.  The same probe also
+     * confirmed the two adjacent facts the model already relied on:
+     *
+     *   HSTADRL=0xFF802008, HSTDAT=0x5678 -> lands at 0xff802000, not
+     *       0xff802008: the `& 0xfffffff0` mask discards the low four bits.
+     *   HSTCTL=0x0800 then two HSTDAT writes -> cells 0xff803000, 0xff803010:
+     *       the post-increment stride is one 16-byte cell.
+     *
+     * WHY the source misleads: the program space is declared `datawidth 16,
+     * addrshift 3` (tms34010.cpp:67), so alignment() == 16, and the 16-byte
+     * cell is real.  What `write_word` does is NOT a plain 2-byte store into
+     * that cell -- the space's narrower data width against the 16-byte unit is
+     * what expands it.  Reading `write_word` as "2 bytes" is the mistake.
      *
      * The share is 4 MiB: MAME's window 0xff800000-0xffbfffff is 0x400000
      * bytes, mirrored through bit 22, so the measured offset is
      * `addr & 0x3fffff`.
      *
-     * HISTORY.  Two defects lived here, and the second hid the first.
-     *
-     * 1. The offset mask was (size - 1) = 0x7FFFF, a 512 KiB period, which
-     *    disagreed with the real share from 0xff880000 upward -- inside the
-     *    primary window, not merely in the alias -- affecting 745,384 of
-     *    843,688 0xFFxxxxxx captured writes (88.4%).  Fixed: both
-     *    GSP_BOARD_VRAM_BYTES and MUSASHI_GSP_VRAM_BYTES are 0x400000
-     *    (docs section 19).
-     *
-     * 2. The store replicated each byte 8x across the 16-byte cell.  MAME
-     *    packs.  This stayed invisible because the native model
-     *    (native/musashi_cpu.c) replicated identically until fcf1eab
-     *    corrected IT to packed on 2026-10-12 without touching this file --
-     *    so tools/check-gsp-replay, which compares these two models against
-     *    each other, passed by shared construction rather than by being right.
-     *    Correcting the size exposed it: at 4 MiB the two models disagree on
-     *    1,157,420 of 4,194,304 bytes.  See stun-runner-2ua and docs
-     *    section 27. */
+     * HISTORY.  A second defect lived here and hid the first: the offset mask
+     * was (size - 1) = 0x7FFFF, a 512 KiB period, disagreeing with the real
+     * share from 0xff880000 upward -- inside the primary window, not merely in
+     * the alias -- affecting 745,384 of 843,688 0xFFxxxxxx captured writes
+     * (88.4%).  Fixed in cf8587e/bd5b873 (docs section 19).  Because the native
+     * model carried the same wrong constant, tools/check-gsp-replay could not
+     * see it; the same blind spot applies here.  See stun-runner-2ua and
+     * docs section 27. */
     if ((addr & 0xff000000u) == 0xff000000u) {
         uint32_t off = ((addr - 0xff800000u) &
                         (GSP_BOARD_VRAM_BYTES - 1u)) & ~0xfu;
-        b->vram[off]     = (uint8_t)(data & 0xffu);
-        b->vram[off + 1] = (uint8_t)(data >> 8);
-        b->vram_writes += 2u;
+        uint8_t lo = (uint8_t)(data & 0xffu);
+        uint8_t hi = (uint8_t)(data >> 8);
+        unsigned k;
+        for (k = 0; k < 8u; k++) {
+            b->vram[off + k]      = lo;
+            b->vram[off + 8u + k] = hi;
+        }
+        b->vram_writes += 16u;
         return;
     }
 

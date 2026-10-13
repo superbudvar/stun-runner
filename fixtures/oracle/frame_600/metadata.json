@@ -35,5 +35,10 @@
     "512KiB_page_twins": "page 0 is byte-identical to page 4, delta 0x200000; pages 1,2,3,5,6,7 have no twin",
     "interpretation": "a 2 MiB CONTENT period in what the ROM wrote, NOT a mirror period. The share itself is 4 MiB and its mirror period is 0x4000000 (bit 22). Do not re-derive the mirror formula from page twins."
   },
-  "contamination_warning": "This capture is the share's state at frame 600, which includes writes made by the GSP core executing its own program, not only the MC68010 host-port stream. 87.5% of its nonzero 16-byte cells are uniform and hold framebuffer data (0x82, 0xb8, 0xaa, ...); a host-port replay produces 82,720 nonzero cells against this capture's 208,025. So a whole-array diff against a host-port-only model cannot decide storage semantics. Capturing while the GSP is still in reset would be needed for that, and that window has not been located yet (MAME's share is still entirely zero at frame 60). See docs/mc68010-boot-findings.md section 27.4."
+  "contamination_warning": "This capture is the share's state at frame 600, which includes writes made by the GSP core executing its own program, not only the MC68010 host-port stream. 87.5% of its nonzero 16-byte cells are uniform and hold framebuffer data (0x82, 0xb8, 0xaa, ...); a host-port replay produces 82,720 nonzero cells against this capture's 208,025. So a whole-array diff against a host-port-only model cannot decide storage semantics. For that, capture at a frame where the GSP is still in reset: frame 390 works (gsp PC=0, 429,504 nonzero words) while the share is still entirely zero at frame 360 and the GSP is running by 420. See docs/mc68010-boot-findings.md section 27.",
+  "verification_window": {
+    "frame": 390,
+    "gsp_pc": 0,
+    "note": "Host-port-only capture point. Used to measure the HSTDAT store width; see BUGS.md SR-20 and findings section 27. Not stored here because it is 4 MiB and fully regenerable from tools/mame-gsp-vram-dump."
+  }
 }
