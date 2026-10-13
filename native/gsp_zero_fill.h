@@ -192,12 +192,17 @@ extern "C" {
 typedef enum stunrun_hostport_decode {
     /* Outside $C00000-$C03FFF: not a host-port access (the watchdog). */
     STUNRUN_HOSTPORT_OUTSIDE = -1,
-    /* Inside the window, but `(offset/2)^1` is not 0-3: the driver drops it. */
+    /* Inside the window, but the word-offset decode lands outside 0-3.  Nothing
+     * in the $548E window reaches this: every word offset 0-7 decodes.  Kept so
+     * the predicate is total and so a caller probing $C00010 gets a verdict. */
     STUNRUN_HOSTPORT_DISCARDED = -2,
-    STUNRUN_HOSTPORT_HSTADRL = 0, /* $C00002 */
-    STUNRUN_HOSTPORT_HSTADRH = 1, /* $C00000 */
-    STUNRUN_HOSTPORT_HSTDAT = 2,  /* $C00006 */
-    STUNRUN_HOSTPORT_HSTCTL = 3   /* $C00004 */
+    /* Each register owns two adjacent 68010 addresses, because the driver
+     * receives word offsets and the 68010 is big-endian: the high half of a
+     * long lands at the lower address and the low half at the next one up. */
+    STUNRUN_HOSTPORT_HSTADRL = 0, /* $C00004, $C00006 */
+    STUNRUN_HOSTPORT_HSTADRH = 1, /* $C00000, $C00002 */
+    STUNRUN_HOSTPORT_HSTDAT = 2,  /* $C0000C, $C0000E */
+    STUNRUN_HOSTPORT_HSTCTL = 3   /* $C00008, $C0000A */
 } stunrun_hostport_decode_t;
 
 /* Classify one 68010 program-space address.  Returns one of the enum values. */

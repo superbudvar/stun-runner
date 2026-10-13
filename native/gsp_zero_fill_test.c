@@ -164,20 +164,23 @@ static int test_decode(void)
         int decode;
         const char *name;
     } cases[] = {
+        /* The decode is on WORD offsets: reg = ((addr-0xC00000)/2/2)^1, because
+         * hd68k_gsp_io_w divides by 2 because the TMS34010 host registers are
+         * words.  Each register owns two adjacent 68010 addresses.  These
+         * expectations are MAME's own stunrun_hostprobe counts, mapped back to
+         * addresses; findings section 31.4 retracted the byte-offset reading
+         * that made $C00008 and $C0000C look undecoded. */
         {0x00C00000u, STUNRUN_HOSTPORT_HSTADRH, "HSTADRH"},
-        {0x00C00002u, STUNRUN_HOSTPORT_HSTADRL, "HSTADRL"},
-        {0x00C00004u, STUNRUN_HOSTPORT_HSTCTL, "HSTCTL"},
-        {0x00C00006u, STUNRUN_HOSTPORT_HSTDAT, "HSTDAT"},
-        /* $C00008 and $C0000C: the two this routine writes, both dropped. */
-        {0x00C00008u, STUNRUN_HOSTPORT_DISCARDED, "discarded"},
-        {0x00C0000Cu, STUNRUN_HOSTPORT_DISCARDED, "discarded"},
-        /* The rest of the 16 KB window, sampled at the far end too. */
-        {0x00C0000Au, STUNRUN_HOSTPORT_DISCARDED, "discarded"},
+        {0x00C00002u, STUNRUN_HOSTPORT_HSTADRH, "HSTADRH"},
+        {0x00C00004u, STUNRUN_HOSTPORT_HSTADRL, "HSTADRL"},
+        {0x00C00006u, STUNRUN_HOSTPORT_HSTADRL, "HSTADRL"},
+        {0x00C00008u, STUNRUN_HOSTPORT_HSTCTL, "HSTCTL"},
+        {0x00C0000Au, STUNRUN_HOSTPORT_HSTCTL, "HSTCTL"},
+        {0x00C0000Cu, STUNRUN_HOSTPORT_HSTDAT, "HSTDAT"},
+        {0x00C0000Eu, STUNRUN_HOSTPORT_HSTDAT, "HSTDAT"},
+        /* Word offsets past 7 leave 0-3 and are dropped. */
+        {0x00C00010u, STUNRUN_HOSTPORT_DISCARDED, "discarded"},
         {0x00C03FFEu, STUNRUN_HOSTPORT_DISCARDED, "discarded"},
-        /* An odd word offset cannot occur on a 16-bit bus, because the
-         * handler is reached through a word-wide delegate that shifts the
-         * offset right by one.  Classified anyway so the predicate is total. */
-        {0x00C00001u, STUNRUN_HOSTPORT_DISCARDED, "discarded"},
         /* Outside the window.  $608000 is the watchdog, and it is NOT a
          * decode: "dropped by the driver" and "not the driver's port" are
          * different answers and must not be conflated. */
@@ -394,7 +397,7 @@ static int test_routine(void)
     CHECK_EQ(watchdogs, ROM_PASSES);
     CHECK_EQ(watchdogs, 900u);
 
-    /* ── THE NO-OP ──
+    /* ── WHAT ACTUALLY REACHES THE GSP ──
      *
      * Re-derived here, from the recorded stream, through the slice's published
      * decode predicate -- not read back out of `r`, which would only prove the
@@ -416,21 +419,24 @@ static int test_routine(void)
         }
     }
 
-    /* Two cycles reach the GSP: the address pair at $C00002/$C00004.  Not
-     * zero, and asserting zero here would be asserting something the pinned
-     * decode refutes. */
-    CHECK_EQ(live, 2u);
-    /* Every one of the 230,400 data writes plus the one control store is
-     * dropped. */
-    CHECK_EQ(discarded, (unsigned long)(ROM_DATA_WRITES + 1u));
-    CHECK_EQ(discarded, 230401u);
+    /* The control store, the address pair and all 230,400 data writes reach
+     * the GSP.  An earlier version of this test asserted 2 live writes and
+     * 230,401 dropped ones; that came from reading the driver's `(offset/2)^1`
+     * as a byte-offset expression when it operates on word offsets, and it was
+     * retracted in findings section 31.4. */
+    CHECK_EQ(live, (unsigned long)(ROM_DATA_WRITES + 3u));
+    CHECK_EQ(discarded, 0u);
     /* The watchdog is outside the window; that is not the same as discarded. */
     CHECK_EQ(outside, ROM_PASSES);
     CHECK_EQ(outside, 900u);
-    /* THE CLAIM.  Nothing reached HSTDAT, so nothing reached GSP memory, so
-     * nothing in the 4 MiB share can have been altered by this routine. */
-    CHECK_EQ(live_data, 0u);
-    CHECK_EQ(r.live_data_writes, 0u);
+    /* THE CLAIM.  Every data write reaches HSTDAT, so this routine DOES write
+     * 230,400 words into the share starting at $FF800000 -- 0x384000 bytes,
+     * 88% of the 4 MiB share.  The earlier version of this test asserted zero
+     * here on the strength of a byte-offset reading of the host-port decode
+     * that section 31.4 retracted. */
+    CHECK_EQ(live_data, (unsigned long)ROM_DATA_WRITES);
+    CHECK_EQ(live_data, 230400u);
+    CHECK_EQ(r.live_data_writes, 230400u);
 
     /* And the slice's own census agrees with the independent recount. */
     CHECK_EQ(r.live_writes, live);
@@ -465,8 +471,6 @@ static int test_continuation_passthrough(void)
     memset(&port, 0, sizeof(port));
     CHECK(stunrun_gsp_zero_fill(ROM_CONTINUATION, &port, &r) == 1);
     CHECK_EQ(r.data_writes, ROM_DATA_WRITES);
-    CHECK_EQ(r.live_data_writes, 0u);
-
     /* Unusable arguments are refused rather than reported as a clean run. */
     CHECK(stunrun_gsp_zero_fill(ROM_CONTINUATION, NULL, &r) == 0);
     CHECK(stunrun_gsp_zero_fill(ROM_CONTINUATION, &port, NULL) == 0);
@@ -509,8 +513,8 @@ static int test_control_read_modify_write(void)
     CHECK_EQ(port.hstctl, 0xB800u);
 
     /* Still a no-op on VRAM, whatever HSTCTL held. */
-    CHECK_EQ(r.live_data_writes, 0u);
-    CHECK_EQ(r.discarded_writes, (unsigned long)(ROM_DATA_WRITES + 1u));
+    CHECK_EQ(r.live_data_writes, (unsigned long)ROM_DATA_WRITES);
+    CHECK_EQ(r.discarded_writes, 0u);
 
     return 0;
 }

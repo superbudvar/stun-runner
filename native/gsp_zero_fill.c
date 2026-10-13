@@ -49,14 +49,28 @@ stunrun_hostport_decode_t stunrun_gsp_zero_fill_classify(uint32_t address)
 
     offset = address - STUNRUN_GSP_HOST_WINDOW_BASE;
 
-    /* A 16-bit bus cannot raise an odd window offset, because the handler is
-     * reached through a word-wide delegate that shifts the offset right by
-     * one.  Classified anyway so the predicate is total, and so a caller that
-     * hands it an odd address gets a verdict rather than a plausible one. */
-    if ((offset & 1u) != 0u)
-        return STUNRUN_HOSTPORT_DISCARDED;
-
-    index = (offset / 2u) ^ 1u;
+    /* WORD offset, not byte offset.  `hd68k_gsp_io_w` (harddriv_m.cpp:215)
+     * divides the offset by 2 precisely because the TMS34010 host registers are
+     * words, so the decode is
+     *
+     *     reg = ((addr - 0xC00000) / 2 / 2) ^ 1
+     *
+     * with integer division at each step.  Reading `offset` here as a byte
+     * offset puts HSTADRH at $C00000 and leaves $C00008/$C0000C -- which the
+     * ROM uses for its control and its data -- looking like undecoded space.
+     * That was a real error in this slice, measured and retracted in findings
+     * section 31.4; the correction is checked against MAME's own
+     * `stunrun_hostprobe` counts.
+     *
+     * Measured, same session, against the driver's probe:
+     *
+     *     $C00002 -> HSTADRH 39      $C00008 -> HSTCTL     6
+     *     $C00004 -> HSTADRL 39      $C0000C -> HSTDAT 388723
+     *                                 $C0000E -> HSTDAT 132696
+     *
+     * and nothing at $C00000 or $C00006.
+     */
+    index = ((offset / 2u) / 2u) ^ 1u;
     if (index > 3u)
         return STUNRUN_HOSTPORT_DISCARDED;
 
