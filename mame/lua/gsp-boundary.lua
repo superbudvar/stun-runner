@@ -9,6 +9,7 @@ local first_limit = 32
 local first = {}
 local command_first = {}
 local execution_first = {}
+local gsp_execute_tap_status = 'unavailable'
 local gsp_pc_samples = {}
 local reset_writes = {}
 local sw_off_prefix = {
@@ -104,19 +105,32 @@ local function install_tap()
     -- Host FIFO writes are only one possible submission path.  Record
     -- execution of the known GSP startup/consumer landmarks independently so
     -- an empty host-port tap cannot be mistaken for an idle GSP.
+    --
+    -- Execute taps are optional in this MAME's Lua API: the GSP program space
+    -- here has no `install_execute_tap`.  Calling it unguarded threw at this
+    -- line, which aborted install_tap() and left the GSP taps uninstalled,
+    -- while the run still exited 0 -- so `execution_landmarks` was permanently
+    -- empty and read as evidence about the GSP rather than about the script.
+    -- The status is emitted so an absent tap can never be reported as an
+    -- unexecuted landmark.
     if gsp_space ~= nil then
-        gsp_space:install_execute_tap(0xfff59920, 0xfff59920,
-            'stunrun_gsp_startup_landmark', function()
-                if frame >= capture_start_frame and #execution_first < first_limit then
-                    execution_first[#execution_first + 1] = {frame = frame, pc = 0xfff59920}
-                end
-            end)
-        gsp_space:install_execute_tap(0xfff48c20, 0xfff48c20,
-            'stunrun_gsp_fifo_consumer_landmark', function()
-                if frame >= capture_start_frame and #execution_first < first_limit then
-                    execution_first[#execution_first + 1] = {frame = frame, pc = 0xfff48c20}
-                end
-            end)
+        if type(gsp_space.install_execute_tap) == 'function' then
+            gsp_execute_tap_status = 'observed'
+            gsp_space:install_execute_tap(0xfff59920, 0xfff59920,
+                'stunrun_gsp_startup_landmark', function()
+                    if frame >= capture_start_frame and #execution_first < first_limit then
+                        execution_first[#execution_first + 1] = {frame = frame, pc = 0xfff59920}
+                    end
+                end)
+            gsp_space:install_execute_tap(0xfff48c20, 0xfff48c20,
+                'stunrun_gsp_fifo_consumer_landmark', function()
+                    if frame >= capture_start_frame and #execution_first < first_limit then
+                        execution_first[#execution_first + 1] = {frame = frame, pc = 0xfff48c20}
+                    end
+                end)
+        else
+            gsp_execute_tap_status = 'unavailable'
+        end
     end
 end
 
@@ -156,6 +170,7 @@ emu.register_frame_done(function()
             print(string.format('M1_GSP_RESET_WRITE frame=%d addr=%08X data=%08X mask=%08X',
                 row.frame, row.address, row.data, row.mask))
         end
+        print('M1_GSP_EXECUTE_TAP_STATUS status=' .. gsp_execute_tap_status)
         print('M1_GSP_BOUNDARY_DONE frames=' .. frame .. ' output=' .. output)
         manager.machine:exit()
     end

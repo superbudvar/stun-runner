@@ -3,10 +3,29 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import shutil
 import subprocess
 from typing import IO, Mapping, Sequence
+
+# MAME reports a failed `-autoboot_script` as a line in its own output and then
+# carries on, exiting 0. A wrapper that only looks at the return code therefore
+# publishes a capture that stopped collecting the moment the script threw.
+#
+# This is not hypothetical. `mame/lua/gsp-boundary.lua` calls
+# `install_execute_tap`, which this build does not expose on the GSP program
+# space; the script died at line 108, never installed its GSP taps, and
+# `tools/mame-gsp-boundary` still exited 0 with `execution_landmarks: []` -- an
+# empty list that reads as "the GSP never executed here" rather than "the
+# observer crashed". Any script can fail this way, so the check belongs here
+# rather than being re-derived in each wrapper.
+LUA_ERROR = re.compile(r"^.*\[LUA ERROR\].*$", re.MULTILINE)
+
+
+def find_lua_errors(text: str) -> list[str]:
+    """Return the MAME Lua errors in captured output, in order."""
+    return LUA_ERROR.findall(text)
 
 
 def run_mame(

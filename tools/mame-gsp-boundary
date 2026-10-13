@@ -11,7 +11,7 @@ import sys
 import subprocess
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from mame_harness.process import run_mame
+from mame_harness.process import find_lua_errors, run_mame
 
 
 FIRST = re.compile(
@@ -23,11 +23,23 @@ COMMAND_FIRST = re.compile(
     r"data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+) post_init=(true|false)"
 )
 EXECUTION_FIRST = re.compile(r"M1_GSP_EXEC_FIRST frame=(\d+) pc=([0-9A-Fa-f]+)")
+EXECUTE_TAP_STATUS = re.compile(r"M1_GSP_EXECUTE_TAP_STATUS status=([a-z-]+)")
 PC_SAMPLE = re.compile(r"M1_GSP_PC_SAMPLE frame=(\d+) pc=([0-9A-Fa-f]+)")
 RESET_WRITE = re.compile(
     r"M1_GSP_RESET_WRITE frame=(\d+) addr=([0-9A-Fa-f]+) "
     r"data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+)"
 )
+
+
+def observer_missing(tap_status, execution_landmarks):
+    """True when `execution_landmarks` is empty for lack of an observer.
+
+    The landmark list is the only evidence here that the GSP itself ran. An
+    empty list means "not observed" only when the tap was actually installed;
+    otherwise it means the observer never started, and publishing it would turn
+    our own failure into a claim about the hardware.
+    """
+    return tap_status != "observed" and not execution_landmarks
 
 
 def main() -> int:
@@ -88,6 +100,8 @@ def main() -> int:
         for m in RESET_WRITE.finditer(text)
     ]
     canonical = re.sub(r"output=[^\n]+", "output=<output>", text)
+    lua_errors = find_lua_errors(text)
+    tap_status = EXECUTE_TAP_STATUS.findall(text)
     result = {
         "schema": "stunrun-gsp-boundary-result/v1",
         "experiment": "gsp_boundary",
@@ -96,6 +110,8 @@ def main() -> int:
         "frames": args.frames,
         "input": args.input,
         "returncode": completed.returncode,
+        "lua_errors": lua_errors,
+        "gsp_execute_tap_status": tap_status[-1] if tap_status else "unknown",
         "first_writes": first,
         "first_command_writes": command_first,
         "distinct_first_pcs": sorted({row["pc"] for row in first}),
@@ -107,8 +123,15 @@ def main() -> int:
         "canonical_log_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
     (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    if completed.returncode:
-        raise SystemExit(f"MAME failed; see {log}")
+    if completed.returncode or lua_errors:
+        raise SystemExit(f"MAME or its Lua script failed; see {log}")
+    # `execution_landmarks` is the only evidence here that the GSP itself ran.
+    if observer_missing(result["gsp_execute_tap_status"], execution_first):
+        raise SystemExit(
+            "no GSP execute tap was installed (status="
+            f"{result['gsp_execute_tap_status']}), so execution_landmarks is "
+            f"empty for lack of an observer rather than for lack of execution; "
+            f"see {log}")
     print(json.dumps(result, separators=(",", ":")))
 
 
