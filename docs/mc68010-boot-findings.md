@@ -6038,3 +6038,358 @@ This is the same class of failure section 29 describes — a setting that is
 silently not applied and an observation that reads as a fact about the machine.
 `tests/test_mame_lua_hooks.py` now asserts no `mame/lua` script applies input
 through `emu.register_prestart`, with the reason recorded in the failure message.
+
+### 31.4 Why the writes are discarded: the host-port decode
+
+Found by reading the pinned driver rather than the ROM. `multisync_68k_map`
+maps the window with no shift (`harddriv.cpp:611`):
+
+```text
+map(0xc00000, 0xc03fff).rw(FUNC(harddriv_state::hd68k_gsp_io_r),
+                           FUNC(harddriv_state::hd68k_gsp_io_w));
+```
+
+and `hd68k_gsp_io_w` (`harddriv_m.cpp:215-221`) does:
+
+```c
+stunrun_hostprobe(offset, data);
+offset = (offset / 2) ^ 1;
+m_hd34010_host_access = true;
+m_gsp->host_w(offset, data);
+m_hd34010_host_access = false;
+```
+
+`tms34010.cpp:1875` switches on that value against **four** cases:
+
+```text
+#define TMS34010_HOST_ADDRESS_L     0
+#define TMS34010_HOST_ADDRESS_H     1
+#define TMS34010_HOST_DATA          2
+#define TMS34010_HOST_CONTROL       3
+```
+
+Any `offset` that is not 0-3 falls through the switch and is **discarded with no
+side effect**. So the window only has four live words:
+
+| 68010 address | word offset | `(off/2)^1` | register |
+| --- | --- | --- | --- |
+| `$C00000` | 0 | 1 | HSTADRH |
+| `$C00002` | 1 | 0 | HSTADRL |
+| `$C00004` | 2 | 3 | HSTCTL |
+| `$C00006` | 3 | 2 | HSTDAT |
+| `$C00008` and up | >=4 | 5+ | **discarded** |
+
+**Every host-port constant in the project is wrong by one register.** The table
+in `native/mc68010_text_writer.h` and the constants beside it claim
+
+```text
+$C00002 HSTADRH   $C00008 HSTCTL
+$C00004 HSTADRL   $C0000C HSTDAT
+```
+
+but under this decode `$C00008` and `$C0000C` are word offsets 4 and 6, both
+discarded. `STUNRUN_TEXT_HSTCTL` (0x00C00008) and `STUNRUN_TEXT_HSTDAT`
+(0x00C0000C) point at nothing. `STUNRUN_TEXT_HSTADR_HI` (0x00C00002) is
+actually HSTADRL and `STUNRUN_TEXT_HSTADR_LO` (0x00C00004) is actually HSTCTL.
+
+This retires section 31.2's puzzle and explains section 30.4 at the same time.
+The `$548E` fill's `ori.w #$1800,$c00008.l` never sets INCW, and every one of its
+230,400 `move.w D0,$c0000c.l` writes is dropped — which is exactly why patching
+the fill value to `$1a1a` produced a byte-identical frame-600 image. And
+`$25E8` writes its glyph data to `$C0000C`, so **the text routine has never put
+a byte in VRAM under this driver either.**
+
+That last point was in the committed oracle the whole time and was read as a
+PC-filter artefact: `service-f2-text-host-writes` `address_counts` is
+`{'0xC00002': 520, '0xC00004': 520}` — address latches only, **not one HSTDAT
+write**. Those 1040 taps are the latches; there are no data writes to find.
+
+MAME's own probe agrees about what does get through:
+
+```text
+reg 0 HSTADRL  writes 39      first: raw=0x02 data=0x0100
+reg 1 HSTADRH  writes 39      first: raw=0x01 data=0xc000
+reg 2 HSTDAT   writes 780315  first: raw=0x06 data=0xb800
+reg 3 HSTCTL   writes 6       first: raw=0x04 data=0xa000
+```
+
+780,315 HSTDAT writes do reach the GSP — but from raw offset `$C00006`, not from
+`$C0000C`. Different routines use different host-port addresses, and the ones
+using `$C00008`/`$C0000C` are the ones being dropped.
+
+**This is either a ROM/driver mismatch or a driver defect and it is not yet
+decided.** Either the ROM targets a register layout this driver does not
+implement, or `(offset/2)^1` is wrong and the driver drops writes real hardware
+accepts. Do not "fix" the project constants to match until that is settled: if
+the driver is right, the correct fix is to stop the ROM's writes going nowhere;
+if the driver is wrong, the correct fix is upstream and the constants stay as
+the ROM intends. Filed for `BUGS.md` as a possible MAME entry, pending a
+measurement that separates the two.
+
+The measurement that separates them: write a known value to `$C0000C` and to
+`$C00006` from the 68010, and separately from a direct space write, then read
+back. If `$C00006` lands and `$C0000C` does not, the driver is behaving as
+written and the question becomes what real hardware does. Nothing in this
+repository answers that yet.
+
+## 31.548E The `$548E` zero-fill transcribed to C: 231,303 bus cycles, none of which touch VRAM
+
+Slice: `native/gsp_zero_fill.{h,c}`, test `native/gsp_zero_fill_test.c`.
+Ported by a subagent on 2026-10-13; the measurement in 31.1/31.2 is the parent's.
+
+### 31.548E.1 The transcription
+
+ROM `$0000548E-$000054C0`, source chip: the STUN Runner maincpu program ROM,
+assembled flat by `tools/build-maincpu-image` from the six
+136070-210x/300x/5xxx/6xxx pairs. Image
+`roms/stunrun/stunrun_maincpu.bin`, sha256
+`29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c`. Bytes
+re-checked with musashi's `m68kdasm` (`tools/dis68k.c`) rather than taken on
+trust from the prose:
+
+```text
+$ /tmp/opencode/dis68k roms/stunrun/stunrun_maincpu.bin 0x548e 14
+0000548e: 00 79 18 00 00 c0 00 08  ori.w   #$1800, $c00008.l
+00005496: 23 fc ff 80 00 00 00 c0 00 02  move.l  #$ff800000, $c00002.l
+000054a0: 30 3c 00 00           move.w   #$0, D0
+000054a4: 34 3c 03 83           move.w   #$383, D2
+000054a8: 32 3c 00 ff           move.w   #$ff, D1
+000054ac: 33 c0 00 c0 00 0c     move.w   D0, $c0000c.l
+000054b2: 51 c9 ff f8           dbra    D1, $54ac
+000054b6: 42 79 00 60 80 00     clr.w   $608000.l
+000054bc: 51 ca ff ea           dbra    D2, $54a8
+000054c0: 4e d0                 jmp     (A0)
+```
+
+Reach path confirmed as a continuation chain with no `jsr`/`jmp` xref:
+`$5076 bra $53F2` -> `$507A lea ($6,PC),A0` (A0 = `$5082`) -> `$507E bra $548E`
+-> `jmp (A0)` at `$54C0` -> `$5086 bra $54C2`. So `$5082` is a **caller-supplied**
+argument in the port, not a constant, and the test passes two other
+continuations to prove the value is passed through rather than baked in.
+
+### 31.548E.2 CONFIRMED — the loop arithmetic
+
+`dbra Dn,target` runs seed + 1 times, so D2 = `$383` gives **900** passes and
+D1 = `$FF` gives **256** words per pass. 900 x 256 = **230,400** HSTDAT cycles.
+The seeds are transcribed as seeds (`STUNRUN_GSP_ZERO_FILL_PASS_SEED`,
+`..._WORD_SEED`) and the iteration counts derived from them in the header, so
+the +1 cannot drift between the two.
+
+The watchdog at `$54B6` sits **between** the inner and the outer `dbra`, so it
+is kicked once per 256 data words -- not once per pass, and not once at the
+end. The slice reports 900, and the test asserts the position of *every one of
+the 900* against `4 + 257k + 256`, not a sample.
+
+Cycle census, exhaustively asserted over all 231,304 recorded cycles:
+
+| what | count | address | reaches the GSP? |
+| --- | --- | --- | --- |
+| `ori.w` read half | 1 | `$C00008` | no — discarded |
+| `ori.w` store | 1 | `$C00008` | no — discarded |
+| `move.l` high word | 1 | `$C00002` | **yes** — HSTADRL := `$FF80` |
+| `move.l` low word | 1 | `$C00004` | **yes** — HSTCTL := `$0000` |
+| data words | 230,400 | `$C0000C` | no — discarded |
+| watchdog kicks | 900 | `$608000` | outside the window entirely |
+| **total writes** | **231,303** | | 2 live, 230,401 discarded, 900 outside |
+
+### 31.548E.3 CONFIRMED — the no-op, and what it is *not*
+
+Applying section 31.4's decode to this routine's three addresses:
+
+| address | byte offset | `(off/2)^1` | `host_w` case | outcome |
+| --- | --- | --- | --- | --- |
+| `$C00002` | 2 | 0 | `HOST_ADDRESS_L` | **lands** (HSTADRL := `$FF80`) |
+| `$C00004` | 4 | 3 | `HOST_CONTROL` | **lands** (HSTCTL := `$0000`) |
+| `$C00008` | 8 | 5 | none | dropped |
+| `$C0000C` | 12 | 7 | none | dropped |
+
+**Correction to the task brief I was handed.** The brief asked the test to
+assert that *zero* writes reach a live register. That is wrong, and asserting it
+would have produced a test that fails against the oracle. **Two** writes reach
+live registers: the address pair at `$C00002`/`$C00004`. What is zero is writes
+reaching **HSTDAT**, and that is the claim that carries the meaning:
+
+```text
+live_writes      = 2
+discarded_writes = 230401     (230400 data + 1 control)
+outside_writes   = 900        (the watchdog)
+live_data_writes = 0          <- the load-bearing zero
+```
+
+So "this routine is a no-op on VRAM" is precise only if read as *nothing reached
+the register that can move a byte in VRAM*. It is **not** "nothing lands". A
+port that reported the fill as a pure no-op would have been overstating it, and
+one that redirected the writes to `$C00006` to make them land would have been
+asserting something section 31.2's `$1A1A` patch already refuted. The slice
+reproduces the mechanism and reports the discard.
+
+Note the second-order effect, which is worth keeping separate: even if `$C0000C`
+*did* decode, the routine could not walk an address, because the `ori.w #$1800`
+that would have set INCW also went to a discarded address. Two independent
+failures, either of which alone is sufficient.
+
+`$608000` is classified as **OUTSIDE**, not **DISCARDED**. Those are different
+answers and the slice keeps them distinct: the watchdog is a real machine effect
+and the driver never had an opinion about it.
+
+### 31.548E.4 The port-port decode predicate, and why it is in the slice
+
+`stunrun_gsp_zero_fill_classify()` derives the verdict from the formula rather
+than from a table of four addresses:
+
+```c
+offset = address - 0x00C00000u;
+if ((offset & 1u) != 0u) return DISCARDED;   /* unreachable on a 16-bit bus */
+index = (offset / 2u) ^ 1u;
+if (index > 3u)       return DISCARDED;
+return index;
+```
+
+Two reasons it lives here rather than being inlined at each call site. First, it
+is the finding: a caller needs to ask "was this write kept?" without
+re-deriving a MAME decode, and it is not available anywhere else in the repo.
+Second, section 15.6's trap -- a constant that moves with the code and leaves
+the fixture sitting on it -- applies with full force to a hardcoded table. The
+formula is short enough that the test can pin it independently: the test
+classifies the recorded stream through the **published** predicate rather than
+reading the slice's own tally back, so a slice that lied about its own
+classification would be caught.
+
+The odd-offset branch cannot fire for this CPU (`emumem_hedp` shifts the
+delegate offset right by one), but it is classified rather than undefined so the
+predicate is total.
+
+### 31.548E.5 What the test asserts, and why those things
+
+The test is **literal-first**: it asserts ROM-transcribed values (900, 256,
+230,400, `$1800`, `$FF800000`, `$C0000C`, `$608000`, `$5082`) and only then
+checks the header's copy against those literals. A test that read its
+expectations out of the header would move its goalposts with any wrong constant
+-- and would have made the fault injection below impossible, since the mutation
+would have changed both sides at once.
+
+Asserted:
+
+1. the exact ordered cycle stream, including the `ori.w` **read half** in cycle
+   0 (a slice that modelled `ori.w` as a plain store emits no read and is
+   caught by `expect_cycle(0u, 1u, ...)`), the long access split high-word-first
+   at `$C00002`/`$C00004`, and the group boundary at cycles 260 and 517;
+2. every one of the 231,304 cycles individually -- no address outside
+   {`$C00008`, `$C00002`, `$C00004`, `$C0000C`, `$608000`} may appear, no late
+   address latch, every data word `$0000`, and each watchdog at exactly
+   `4 + 257k + 256` including the **last** group, so a loop that stops one
+   iteration early is caught;
+3. the no-op, re-derived from the recorded stream through the published
+   predicate, as `live_data == 0` plus the three-way census summing to
+   `r.writes` -- an **assertion on a tally**, not on an absence;
+4. `continuation` passthrough for `$5082`, `$12345` and `$00000000`;
+5. the routine still counts correctly with **no** observer attached, and refuses
+   NULL arguments with `0` rather than reporting a clean run.
+
+The whole stream is recorded (231,304 cycles, 2.8 MB, file scope) rather than
+sampled, so the cadence assertion covers all 900 watchdogs.
+
+### 31.548E.6 Negative control — the test can fail
+
+Six mutants, each a copy of `native/gsp_zero_fill.c` mutated in a scratch
+directory and compiled against the **unmodified** header and test. All six must
+fail; a pass would mean the assertions are decorative.
+
+```bash
+# the mutant harness is python3 + sed over a scratch copy; per-mutant commands:
+gcc -std=c99 -O2 -Wall -Wextra -o /tmp/opencode/zf_mut/<name>/t \
+    /tmp/opencode/zf_mut/<name>/gsp_zero_fill.c \
+    /tmp/opencode/zf_mut/<name>/gsp_zero_fill_test.c \
+    -I/tmp/opencode/zf_mut/<name> && /tmp/opencode/zf_mut/<name>/t
+```
+
+| # | mutation | caught by | actual output |
+| --- | --- | --- | --- |
+| 1 | `PASSES` -> `PASSES - 1` (899 passes) | `r.data_writes` | `r.data_writes = 230144 (0x38300), expected 230400 (0x38400)` |
+| 2 | `WORDS_PER_PASS` -> `- 1` (255) | `r.data_writes` | `r.data_writes = 229500 (0x3807C), expected 230400 (0x38400)` |
+| 3 | watchdog kicked once after the loop | `r.watchdog_writes` | `r.watchdog_writes = 1 (0x1), expected 900 (0x384)` |
+| 4 | `seed = 0x1A1A` (the §31.2 patch value) | `r.data_value` | `r.data_value = 6682 (0x1A1A), expected 0 (0x0)` |
+| 5 | data redirected to `$C00006` (make it land) | stream census | `cycle 4 = write $00C00006 = $0000, expected write $00C0000C = $0000` |
+| 6 | decode `(off/2)^1` -> `(off/2)^3` | decode table | `classify($00C00000) = HSTCTL (3), expected HSTADRH (1)` |
+
+All six build clean and exit 1. Mutants 1-4 are the four the brief asked for;
+5 and 6 are the ones that matter most, because each is a way of *making the
+routine do something* and each must not survive. Mutant 5 is caught by the
+stream census rather than by the no-op tally, because the census rejects an
+address it was not expecting first. That is the two checks doing their jobs in
+the right order: the census makes "a data write landed" unreachable, and the
+tally is the independent confirmation.
+
+### 31.548E.7 Build facts
+
+```bash
+gcc -std=c99 -O2 -Wall -Wextra -o /tmp/opencode/gsp_zero_fill_test \
+    native/gsp_zero_fill.c native/gsp_zero_fill_test.c -Inative
+/tmp/opencode/gsp_zero_fill_test   # -> gsp zero-fill slice: all checks passed (exit 0)
+```
+
+Clean under `-Wall -Wextra` and additionally under
+`-Wpedantic -Wshadow -Wconversion` at `-O0`, and clean under
+`-fsanitize=address,undefined`. No ROM is needed to build or run it.
+
+### 31.548E.8 INFERENCE, not transcription — what is *not* settled here
+
+- **Which register the ROM meant at `$C00002`.** The slice transcribes that the
+  two words **decode**, that the high half goes to the lower address, and that
+  the control word never arrives. It does *not* claim the ROM meant
+  HSTADRH:HSTADRL. This project's constants have always read `$C00002` as
+  HSTADRH, which would make the access a plain address pair; under the pinned
+  decode `$C00002` is HSTADRL and `$C00004` is HSTCTL, so the same long write
+  puts `$FF80` in the address latch and **clears** the control register. Which
+  is right is section 31.4's open question, and it is left open. Neither
+  reading is applied.
+- **What the driver returns for a read of `$C00008`.** The `ori.w` reads a
+  discarded address, so there is no device value to model. `port.hstctl` is a
+  caller preset and exists only so the OR is visible in the trace. Nothing
+  depends on its value, because the write half is dropped too. The test's
+  `$A000` preset is arbitrary and is **not** a measured MAME value.
+- **Nothing here is evidence about the boot path's live HSTCTL contents.** The
+  ROM's own HSTCTL store at `$C00008` is discarded, so this slice cannot say
+  what INCW was during the real boot, and does not.
+- **The 230,400 writes are counted, not timed.** The slice models bus cycles,
+  not cycle counts. If a caller wants the elapsed time this routine costs on
+  real hardware, that is a different measurement and nothing here supports it.
+
+### 31.548E.9 Candidate for `BUGS.md` — for the parent to file
+
+Under section 31.2 this becomes a routine -- **ROM-code / driver-mismatch
+candidate**. The evidence in this section adds one thing section 31.2 did not
+have: the discard is not confined to the fill.
+
+- **Affected range:** `$C00008` and `$C0000C` in the 68010's GSP host window
+  (`multisync_68k_map`, $C00000-$C03FFF).
+- **Mechanism:** `hd68k_gsp_io_w` computes `offset = (offset / 2) ^ 1` and hands
+  it to `tms340x0_device::host_w`, whose switch has exactly four cases. Word
+  offsets 4 and 6 -- the ROM's `$C00008` (HSTCTL) and `$C0000C` (HSTDAT) -- decode
+  to 5 and 7, fall through, and are discarded with no side effect.
+- **Consequence measured here:** `native/gsp_zero_fill_test.c` records 231,303
+  writes from `$548E`; 230,401 of them are dropped by the driver. Of the two
+  that survive, both are latches, so **no HSTDAT cycle from this routine reaches
+  the GSP**. This is the second ROM routine in the project to depend on
+  `$C00008`/`$C0000C` being real; §31.4 shows `$25E8` uses `$C0000C` for its
+  glyph data, which is why
+  `service-f2-text-host-writes address_counts` is
+  `{'0xC00002': 520, '0xC00004': 520}` and contains not one HSTDAT write.
+- **Not decided:** whether the ROM targets a register layout this driver does
+  not implement, or the driver's decode is wrong and real hardware accepts
+  writes at `$C00008`/`$C0000C`. Confidence that the **driver as written** drops
+  these writes: CONFIRMED (derived from the pinned source, and consistent with
+  the `$1A1A` patch being byte-identical). Confidence about **real hardware**:
+  UNKNOWN, and this section supplies no evidence either way.
+- **The measurement that would settle it** is unchanged from §31.4: write a
+  known value to `$C0000C` and to `$C00006` from the 68010, read both back, and
+  separately do a direct space write. If `$C00006` lands and `$C0000C` does not,
+  the driver is behaving as written and the question becomes what the hardware
+  accepts. **Do not change `STUNRUN_TEXT_HSTCTL`/`STUNRUN_TEXT_HSTDAT` until
+  that measurement exists** -- §31.4 gives the reason, and this slice gives the
+  second example of code that depends on the answer.
+
+This section files nothing in `BUGS.md` and changes no shared header. The
+`gsp_zero_fill` constants are its own; `STUNRUN_TEXT_HSTCTL` and
+`STUNRUN_TEXT_HSTDAT` in `native/mc68010_text_writer.h` are left exactly as
+§31.4 found them.

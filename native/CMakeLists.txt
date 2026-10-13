@@ -615,6 +615,20 @@ add_executable(stunrun-gsp-boot-slice-test
 set_target_properties(stunrun-gsp-boot-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-boot-slice-c COMMAND stunrun-gsp-boot-slice-test)
 
+# --- gsp_zero_fill slice ---------------------------------------------------
+# MC68010 boot VRAM fill (ROM $0000548E-$000054C0): 256 x 900 = 230400 HSTDAT
+# writes reached through $C0000C, which the pinned driver's host-port decode
+# discards.  The test asserts the full ordered bus stream, the watchdog cadence
+# and -- the load-bearing zero -- that no data write reaches a live register,
+# so the routine is observably a no-op on memory.  See docs/mc68010-boot-findings.md
+# sections 31.2 and 31.4 and native/gsp_zero_fill.h.
+add_executable(stunrun-gsp-zero-fill-slice-test
+  gsp_zero_fill.c
+  gsp_zero_fill_test.c)
+set_target_properties(stunrun-gsp-zero-fill-slice-test PROPERTIES C_STANDARD 99)
+add_test(NAME gsp-zero-fill-slice-c
+  COMMAND stunrun-gsp-zero-fill-slice-test)
+
 # MC68010 diagnostic/GSP handshake transcription (ROM 0x004F82-0x00506A).
 # The test asserts the host-address sequence, marker initialization and the
 # 16-word diagnostic copy; the opaque subroutines remain callback seams.
