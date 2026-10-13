@@ -6903,3 +6903,63 @@ diagnostic under service mode with this same tap and see whether its
 `0x01010101` writes land. If they do not, MD-09 and §33.10 are one defect and
 should be tracked as one. If they do, then the text routine's failure is
 specific and INCW-related as §33.10 suggests, and that is a much narrower bug.
+
+### 33.13 Three service-mode runs: still zero, and the counts move
+
+`mame/lua/gsp-vram-reach.lua` with `--input service`, to frame 700:
+
+```text
+run 1  writes=492544  nonzero=0  max_offset_any=0x3FFFF0
+run 2  writes=350832  nonzero=0  max_offset_any=0x383FF0
+run 3  writes=447474  nonzero=0  max_offset_any=0x383FF0
+```
+
+**Zero nonzero writes in every run**, same as game mode. So whatever service
+mode did, it did not put a nonzero value into the share through this address
+space either.
+
+This also explains §33.11: the write count is not a fixed property of the run,
+it varies run to run (492,544 / 350,832 / 447,474 at the *same* target frame).
+That is consistent with the §29 input flakiness changing how much work the
+machine actually did, not with a broken counter. `max_offset_any` moving between
+`0x3FFFF0` and `0x383FF0` is the same story: `0x384000` is the top of the `$548E`
+fill, so runs that reach the top of the share did something the others did not.
+
+**What this does not settle:** whether the `$004F82` diagnostic actually executed
+in any of these three runs. Service mode was a coin flip (§29) and this probe
+does not report which arm it landed in. Reaching "zero nonzero writes" without
+knowing the diagnostic ran is not the same as testing MD-09, and it must not be
+quoted as though it were.
+
+### 33.14 The lead this exposes: some VRAM writes bypass the address space entirely
+
+The share at frame 600 holds **1,664,200 nonzero words**. This probe has now
+observed **zero nonzero writes reaching that memory by any address-space path**,
+in game mode or service mode, across six runs.
+
+Those 1.66M nonzero words cannot have come from nowhere. The handler that
+produces them is visible in the pinned source and does not go through the address
+space at all:
+
+```c
+/* harddriv_v.cpp:304, hdgsp_vram_2bpp_w */
+uint32_t *dest = &m_gsp_vram[offset * 4];      /* direct share pointer */
+```
+
+That is a raw pointer into the `memory_share`, so it **cannot** appear in a
+write tap installed on the GSP program space. `hdgsp_vram_1bpp_w` at `:276` does
+the same. So the framebuffer content is written share-direct, while the 68010's
+host-port writes go through `m_program.write_word` and *should* be visible.
+
+Which leaves exactly one unexplained case, and it is the one that matters: **the
+`$548E` fill's `$C0000C` writes are visible to the tap, and the text routine's
+`$C0000C` writes are not.** Same address, same instruction form, same `host_w`
+path, same `m_program` target. The difference has to be in the value or the
+target address the routine supplies, and the CPU-side bus trace already contains
+both — so this is answerable with tooling we have, not with new tooling.
+
+**Do not treat "the tap says zero" as "VRAM is empty."** §30.1's zero-share
+readings at frames 44–52 came from the bulk reader, and this section now shows
+the bulk reader and the tap can both be blind to writes that matter. Both of our
+"the share is all zeros" claims need re-testing against a reader that goes
+share-direct, which is what MAME itself uses.
