@@ -418,7 +418,111 @@ settings are **blue** when selected and **white** when not.* Selector `$47` carr
 colour byte `DF` and `$43` carries `FF`, so the descriptor colour field is a
 palette index, not a brightness.
 
-## 8. Corrections this transcription forces on the OCR-derived notes
+---
+
+## 8. Figure 2-1 — the ROM test screen (manual page 2-3, PDF 13)
+
+This identifies `Y*X*W*V*U*T*S*R`, `200` and `210`, which section 7.1 had to
+leave unmatched. The screen, as printed:
+
+```text
+BAD PROGRAM ROM IS BLANK BOX
+      Y  X  W  V  U  T  S  R
+200    ·   ▣   ▢   ▣   ▣   ▣
+210    ▣   ▢   ▣   ▣   ▣
+ROMS AT 200R AND 210R
+CONTAIN THE SELF-TEST PROGRAM
+─────────────────────────────
+PROGRAM RAM OK
+
+PRESS START TO BYPASS SELF-TEST
+```
+
+> The top of the screen shows the ROM test result. The **numbers on the left and
+> the letters at the top** of the screen show the **locations of the ROMs on the
+> main PCB**. If a white box appears, then the ROM at that location is good. If
+> an **empty box** appears (as shown at 200U and 210U), then the ROM at that
+> location is bad. If nothing appears, then nothing was tested there.
+
+### 8.1 The identification
+
+`Y X W V U T S R` is **not menu text**. It is the **column axis of a ROM-location
+grid**: rows are the ROM part numbers (`200`, `210`, …) and columns are the
+suffix letters (`R`, `S`, `T`, `U`, `V`, `W`, `X`, `Y`). The boxes are the
+per-location test results — filled for good, empty for bad, absent for untested.
+
+Our decode lands exactly on this:
+
+| Selector | ROM descriptor | Text | What it is |
+|---|---|---|---|
+| `$50` | `$06D41` | `Y*X*W*V*U*T*S*R` | the **column legend** |
+| `$51` | `$06D54` | `200` | a **row label** |
+| `$52` | `$06D5B` | `210` | a **row label** |
+
+The `*` characters are the blank glyph (§20.6, font entry at `$1FBC` is all zero),
+which is why the strings read as spaced. Eight columns and the first two rows are
+the minimum the screen needs before any result can be drawn.
+
+The suffixes line up with the ROM set itself, which carries exactly these
+markings on the main CPU region: `2101`/`2102` (`210r`), `2103`…`2106`
+(`210s`…`210t`), `2107`…`2112` (`200r`…`200w`). So `200` and `210` are the two
+*families* the game ROMs come from, and the grid covers both.
+
+### 8.2 This is a VRAM oracle, and it is the good one
+
+Figure 2-1 predicts **VRAM content we can check**, not just text: a grid of
+filled rectangles at known row and column positions, one cell per ROM location.
+On a machine whose ROMs are all good, every box is filled; the illustrated screen
+is the failure case with `200U` and `210U` empty.
+
+That makes the ROM test screen the right target for the thing section 33.8 left
+open. Unlike a frame of scrolling geometry, this screen is:
+
+* **static** — it is drawn once and left, and the manual says it stays for only
+  a few seconds, so it is both easy to catch and easy to hold;
+* **geometrically predictable** — a rectangle grid, so row stride and column
+  stride can be read straight off the VRAM image;
+* **known-answer** — every box filled is the expected result for a good ROM set;
+* **free of the open palette question** — filled versus empty is a binary, not a
+  colour match.
+
+§30.3 already established the descriptor geometry for this exact draw: character
+advance `0x40`, glyph row stride `0x1000`, 8 rows per glyph, base `$FF800040` for
+this group. So the grid's screen positions are already known to us from the ROM
+side. What is missing is the VRAM-side read-back, which is exactly the §33.9
+inconsistency.
+
+### 8.3 Timing, and where our captures sit
+
+> This screen disappears after a few seconds and the self-test continues.
+> However, the screen with the results of the complete self-test, shown in
+> Figure 2-2, will show the message *Bad Program ROM* (or *Bad Program RAM*) if it
+> found an error in the program ROMs or RAMs.
+
+> It tests the video RAM and color RAM in the GSP microprocessor system, the ADSP
+> board, and the sound board. **The test takes four to five minutes.**
+
+Our two draws sit well inside that window: frames 45–47 is the bottom line of
+this screen (`PRESS START TO BYPASS SELFFTEST`, selector `$47`), and frames
+165–167 is the grid legend plus row labels. Figure 2-2's first result line is
+`PROGRAM ROM OK`, which is selector `$43` in the same frame group — so the
+frame-165 draw carries both the Figure 2-1 grid header and the Figure 2-2 result
+line, consistent with the automated test running straight from one into the next.
+
+### 8.4 Test menu navigation, precisely
+
+> To move down the menu, press the right trigger switch. To move up the menu,
+> press the left trigger switch. **You can choose the test menu item with the
+> white letters by pressing START.**
+
+So the four test-menu items are individually highlighted, and the highlighted one
+is rendered in **white** while the others are another colour. That is a
+predictable colour difference between four descriptors on one screen, and the
+same white letters mark the selectable item on the operator screens. It is also
+a second, independent reason the left and right triggers must reach the game —
+see `docs/hardware-contract.md` §5.
+
+## 9. Corrections this transcription forces on the OCR-derived notes
 
 * `FF 8000 - FF BFFF RAM 0 (16K)` and `FF C000 - FF FFFF RAM 1 (16K)`. The OCR
   reads `FE BFEF` / `FF BFEF`; the image is unambiguous.
