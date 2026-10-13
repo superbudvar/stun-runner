@@ -19,6 +19,8 @@
 int main_wrapper_tests(void);
 int main_input_handler_tests(void);
 static int main_trajectory_tests(void);
+static int main_collision_tests(void);
+static int main_award_tests(void);
 
 int main(void)
 {
@@ -76,6 +78,10 @@ int main(void)
     main_input_handler_tests();
 
     main_trajectory_tests();
+
+    main_collision_tests();
+
+    main_award_tests();
 
     puts("all mc68010_physics tests passed");
     return 0;
@@ -569,5 +575,385 @@ static int main_trajectory_tests(void)
     test_trajectory_update_exit_flag();
     test_trajectory_update_clamp();
     puts("trajectory integration tests passed");
+    return 0;
+}
+
+/* ── $03B02C collision test ────────────────────────────────────────────── */
+
+/* A record whose +$0C extent, after the $400 centring subtraction, is
+ * exactly 200. That makes the axis test easy to reason about: a hit needs
+ * |dy| < 200 and |dx| < half_a. */
+static struct stunrun_collision_record coll_record(int16_t x, int16_t y,
+                                                   int16_t half_a)
+{
+    struct stunrun_collision_record r;
+
+    r.x = x;
+    r.y = y;
+    r.half_a = half_a;
+    r.half_b = (int16_t)(STUNRUN_COLLISION_B_CENTRE + 200);
+    r.half_c = (int16_t)(STUNRUN_COLLISION_C_CENTRE + 200);
+    r.type = 5;
+    return r;
+}
+
+static void test_collision_miss_writes_nothing(void)
+{
+    struct stunrun_collision_record r = coll_record(0, 0, 100);
+    int16_t dx = 0, dy = 0;
+
+    /* |dx| = 500 >= half_a 100, so the first axis test already fails. */
+    assert(stunrun_mc68010_collision_test(&r, 500, 0, 0, 0, 0,
+                                          &dx, &dy) == 0);
+    /* The deltas are still written to $FFDD14/$FFDD12 as a side effect. */
+    assert(dx == 500);
+    assert(dy == 0);
+
+    /* A NULL record cannot be tested. */
+    assert(stunrun_mc68010_collision_test(NULL, 0, 0, 0, 0, 0,
+                                          &dx, &dy) == 0);
+    puts("collision miss test passed");
+}
+
+static void test_collision_strict_less_than(void)
+{
+    struct stunrun_collision_record r = coll_record(0, 0, 100);
+    int16_t dx = 0, dy = 0;
+
+    /* |dx| = 99 < 100 and |dy| = 0 < 200: hit. */
+    assert(stunrun_mc68010_collision_test(&r, 99, 0, 0, 0, 0,
+                                          &dx, &dy) == 1);
+
+    /* |dx| = 100 is NOT < 100. bls is unsigned-or-equal, so this misses.
+     * An off-by-one to <= would pass here and is the mutation this
+     * assertion exists to catch. */
+    assert(stunrun_mc68010_collision_test(&r, 100, 0, 0, 0, 0,
+                                          &dx, &dy) == 0);
+    puts("collision strictness test passed");
+}
+
+static void test_collision_negative_deltas(void)
+{
+    struct stunrun_collision_record r = coll_record(0, 0, 100);
+    int16_t dx = 0, dy = 0;
+
+    /* Negative dx and dy use the abs branches at $03B126/$03B144. */
+    assert(stunrun_mc68010_collision_test(&r, -99, 0, 0, 0, 0,
+                                          &dx, &dy) == 1);
+    assert(dx == -99);
+    assert(stunrun_mc68010_collision_test(&r, -100, 0, 0, 0, 0,
+                                          &dx, &dy) == 0);
+    assert(dx == -100);
+
+    /* The record offset participates: a record at x=+50 needs the
+     * accumulator within 50 of it. */
+    r = coll_record(50, 0, 100);
+    assert(stunrun_mc68010_collision_test(&r, 149, 0, 0, 0, 0,
+                                          &dx, &dy) == 1);
+    assert(dx == 99);
+    assert(stunrun_mc68010_collision_test(&r, 150, 0, 0, 0, 0,
+                                          &dx, &dy) == 0);
+    puts("collision negative delta test passed");
+}
+
+static void test_collision_second_axis(void)
+{
+    struct stunrun_collision_record r = coll_record(0, 0, 100);
+    int16_t dx = 0, dy = 0;
+
+    /* dx is comfortably inside; dy decides. |dy| must be < 200. */
+    assert(stunrun_mc68010_collision_test(&r, 0, 199, 0, 0, 0,
+                                          &dx, &dy) == 1);
+    assert(stunrun_mc68010_collision_test(&r, 0, 200, 0, 0, 0,
+                                          &dx, &dy) == 0);
+    assert(dy == 200);
+    puts("collision second axis test passed");
+}
+
+static void test_collision_timer_widens_extents(void)
+{
+    struct stunrun_collision_record r = coll_record(0, 0, 100);
+    int16_t dx = 0, dy = 0;
+
+    /* timer == 0: no widening, |dx| = 120 misses. */
+    assert(stunrun_mc68010_collision_test(&r, 120, 0, 0, 0, 0,
+                                          &dx, &dy) == 0);
+
+    /* timer != 0: half_a becomes 100 + 25 = 125, so 120 now hits.
+     * This is the $03B0EE widening, half_a += half_a>>2. */
+    assert(stunrun_mc68010_collision_test(&r, 120, 0, 1, 0, 0,
+                                          &dx, &dy) == 1);
+
+    /* ...but record type 3 is excluded from the widening at $03B0EE. */
+    r.type = 3;
+    assert(stunrun_mc68010_collision_test(&r, 120, 0, 1, 0, 0,
+                                          &dx, &dy) == 0);
+    puts("collision timer widening test passed");
+}
+
+static void test_collision_selector_and_size_class(void)
+{
+    struct stunrun_collision_record r = coll_record(0, 0, 100);
+    int16_t dx = 0, dy = 0;
+
+    /* Give +$0E a much larger extent than +$0C. The selector picks
+     * which one is active at $03B09C. */
+    r.half_b = (int16_t)(STUNRUN_COLLISION_B_CENTRE + 10);   /* 10  */
+    r.half_c = (int16_t)(STUNRUN_COLLISION_C_CENTRE + 900);  /* 900 */
+
+    /* selector 0 uses +$0C: |dy| = 100 misses. */
+    assert(stunrun_mc68010_collision_test(&r, 0, 100, 0, 0, 0,
+                                          &dx, &dy) == 0);
+    /* selector 1 uses +$0E: |dy| = 100 hits. */
+    assert(stunrun_mc68010_collision_test(&r, 0, 100, 0, 0, 1,
+                                          &dx, &dy) == 1);
+
+    /* Size class 0x320 doubles +$0C's extent: 10 becomes 20. */
+    r.half_b = (int16_t)(STUNRUN_COLLISION_B_CENTRE + 10);
+    assert(stunrun_mc68010_collision_test(&r, 0, 19, 0,
+                                          STUNRUN_COLLISION_CLASS_2X, 0,
+                                          &dx, &dy) == 1);
+    assert(stunrun_mc68010_collision_test(&r, 0, 20, 0,
+                                          STUNRUN_COLLISION_CLASS_2X, 0,
+                                          &dx, &dy) == 0);
+
+    /* Size class 0xC80 halves it: 10 becomes 5. */
+    assert(stunrun_mc68010_collision_test(&r, 0, 5, 0,
+                                          STUNRUN_COLLISION_CLASS_HALF, 0,
+                                          &dx, &dy) == 0);
+    assert(stunrun_mc68010_collision_test(&r, 0, 4, 0,
+                                          STUNRUN_COLLISION_CLASS_HALF, 0,
+                                          &dx, &dy) == 1);
+    puts("collision selector/size class test passed");
+}
+
+static int main_collision_tests(void)
+{
+    puts("\n=== Object collision test ($03B02C) ===");
+    test_collision_miss_writes_nothing();
+    test_collision_strict_less_than();
+    test_collision_negative_deltas();
+    test_collision_second_axis();
+    test_collision_timer_widens_extents();
+    test_collision_selector_and_size_class();
+    puts("object collision tests passed");
+    return 0;
+}
+
+/* ── $03A262 jump-table case 5: hit award chain ────────────────────────── */
+
+/* The 33-byte threshold table at ROM $4EE4E, transcribed by the
+ * subagent's ROM scan. Courses 0, 1 and 4 have no threshold (byte 0);
+ * course 2 wants hit 11 and course 5 wants hit 28. */
+static const uint8_t award_thresholds[33] = {
+    0x00, 0x00, 0x0B, 0x13, 0x00, 0x1C, 0x0F, 0x13, 0x14, 0x46, 0x16,
+    0x13, 0x15, 0x17, 0x14, 0x15, 0x24, 0x15, 0x10, 0x15, 0x14, 0x14,
+    0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01, 0x00, 0x01
+};
+
+static void test_award_miss_writes_nothing(void)
+{
+    stunrun_collision_award_t a =
+        stunrun_mc68010_collision_award(0, 0x1000, 0x2000,
+                                        7, 1700, 0, award_thresholds);
+
+    assert(a.hit == 0);
+    assert(a.counter_written == 0);
+    assert(a.score_written == 0);
+    assert(a.last_record_written == 0);
+    assert(a.event_queued == 0);
+    assert(a.milestone_queued == 0);
+    assert(a.frame_hit_flag == 0);
+    /* Unwritten fields pass through unchanged. */
+    assert(a.hit_count == 7);
+    assert(a.score == 1700);
+    assert(a.last_record == 0x2000);
+    puts("award miss test passed");
+}
+
+static void test_award_first_course_is_50(void)
+{
+    stunrun_collision_award_t a =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        0x0001, 0, 0, award_thresholds);
+
+    assert(a.hit == 1);
+    assert(a.counter_written == 1);
+    assert(a.hit_count == 2);
+    assert(a.score_written == 1);
+    assert(a.score == 50);                       /* course 0 -> 50 */
+    assert(a.last_record_written == 1);
+    assert(a.last_record == 0x1000);
+    assert(a.event_queued == 1);
+    assert(a.event == STUNRUN_EVENT_HIT_FIRST);  /* 0x6C */
+    assert(a.frame_hit_flag == 1);
+    puts("award first course test passed");
+}
+
+static void test_award_later_course_is_500(void)
+{
+    stunrun_collision_award_t a =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        0x0001, 0, 5, award_thresholds);
+
+    assert(a.score == 500);                      /* course 5 -> 500 */
+    assert(a.event == STUNRUN_EVENT_HIT_LATER);  /* 0x5F */
+    puts("award later course test passed");
+}
+
+static void test_award_score_add_is_32_bit(void)
+{
+    stunrun_collision_award_t a, b;
+
+    /* Case 1: a carry out of bit 16 that a 16-bit add would drop.
+     * 0xFFF0 + 500 = 0x101E4. The ROM uses add.l, so the upper half
+     * survives and the result is 0x000101E4; a 16-bit add would give
+     * 0x000001E4. This is the assertion that actually distinguishes the
+     * two widths. */
+    a = stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        0x0001, 0x0000FFF0u, 5,
+                                        award_thresholds);
+    assert(a.score == 0x000101E4u);
+
+    /* Case 2: a carry out of bit 32, so the add wraps to zero-extended.
+     * 0xFFFFFF00 + 500 = 0x1_000000F4, which truncates to 0x000000F4.
+     * Note this case alone cannot tell 16-bit from 32-bit: both produce
+     * the same low 16 bits. It is here to pin the wrap point. */
+    b = stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        0x0001, 0xFFFFFF00u, 5,
+                                        award_thresholds);
+    assert(b.score == 0x000000F4u);
+    puts("award 32-bit score add test passed");
+}
+
+static void test_award_counter_is_16_bit(void)
+{
+    stunrun_collision_award_t a =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        0xFFFF, 0, 0, award_thresholds);
+
+    /* $03A298 is addq.w: 0xFFFF wraps to 0x0000. A 32-bit add would
+     * leave 0x00010000 and truncate differently. */
+    assert(a.counter_written == 1);
+    assert(a.hit_count == 0x0000);
+    puts("award 16-bit counter test passed");
+}
+
+static void test_award_duplicate_is_deduped(void)
+{
+    stunrun_collision_award_t a =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x1000,
+                                        0x0005, 100, 0, award_thresholds);
+
+    /* Same record as the latch: returns 1 and sets the frame flag, but
+     * scores nothing. Dropping the $03A294 dedupe would score 50 here. */
+    assert(a.hit == 1);
+    assert(a.frame_hit_flag == 1);
+    assert(a.counter_written == 0);
+    assert(a.score_written == 0);
+    assert(a.score == 100);
+    assert(a.last_record_written == 0);
+    assert(a.event_queued == 0);
+    puts("award dedupe test passed");
+}
+
+static void test_award_milestone_requires_exact_match(void)
+{
+    /* Course 5 wants hit 28. The threshold is compared against the
+     * counter AFTER the $03A298 increment, so the input that lands on
+     * 28 is 27. */
+    stunrun_collision_award_t below =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        26, 0, 5, award_thresholds);
+    assert(below.hit_count == 27);
+    assert(below.milestone_queued == 0);
+
+    stunrun_collision_award_t exact =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        27, 0, 5, award_thresholds);
+    assert(exact.hit_count == 28);
+    assert(exact.milestone_queued == 1);
+
+    stunrun_collision_award_t above =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        28, 0, 5, award_thresholds);
+    /* $03A2C6 is cmp.w, so 29 != 28 and the milestone does not fire.
+     * Replacing cmp with >= would fire here. */
+    assert(above.hit_count == 29);
+    assert(above.milestone_queued == 0);
+    puts("award milestone exactness test passed");
+}
+
+static void test_award_milestone_needs_nonzero_threshold(void)
+{
+    /* Course 0 and course 4 have threshold byte 0, which the $03A2AC
+     * tst.b rejects outright, so no milestone is possible. */
+    stunrun_collision_award_t a =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        0, 0, 4, award_thresholds);
+    assert(a.milestone_queued == 0);
+
+    /* A NULL table models an all-zero table and also suppresses it. */
+    stunrun_collision_award_t b =
+        stunrun_mc68010_collision_award(1, 0x1000, 0x2000,
+                                        10, 0, 5, NULL);
+    assert(b.milestone_queued == 0);
+    /* ...but scoring still happens. */
+    assert(b.score_written == 1);
+    assert(b.score == 500);
+    puts("award milestone threshold test passed");
+}
+
+static void test_award_oracle_vector(void)
+{
+    /* Regression anchor from
+     * reference/experiments/stunrun/main-ram-center-object-score.metadata.json:
+     * $FF9578 stayed 0, $FFDD02 took values "0x01 through 0x22" at writer
+     * $03A298, and $FF9532 took values "50 through 1700" at $03A2EC.
+     *
+     * That is 34 distinct counter values (1..34) and 34 awards
+     * (34 * 50 = 1700), so the counter starts at 0 and is incremented
+     * once per award. Distinct records are required, otherwise the
+     * $03A294 dedupe suppresses both the increment and the award.
+     *
+     * If this does not reproduce, the model is wrong; do not adjust the
+     * expectation to make it pass. */
+    uint16_t count = 0;
+    uint32_t score = 0;
+    uint32_t latch = 0;
+    unsigned i;
+
+    for (i = 0; i < 34u; i++) {
+        uint32_t record = 0x1000u + (i * 0x10u);
+        stunrun_collision_award_t a =
+            stunrun_mc68010_collision_award(1, record, latch, count, score,
+                                            0, award_thresholds);
+        assert(a.counter_written == 1);
+        assert(a.score_written == 1);
+        count = a.hit_count;
+        score = a.score;
+        latch = a.last_record;
+    }
+
+    /* 34 increments from 0 -> 0x22. */
+    assert(count == 0x22);
+    /* 34 awards of 50 -> 1700. */
+    assert(score == 1700);
+    puts("award oracle vector test passed");
+}
+
+static int main_award_tests(void)
+{
+    puts("\n=== Object-hit award chain ($03A262 case 5) ===");
+    test_award_miss_writes_nothing();
+    test_award_first_course_is_50();
+    test_award_later_course_is_500();
+    test_award_score_add_is_32_bit();
+    test_award_counter_is_16_bit();
+    test_award_duplicate_is_deduped();
+    test_award_milestone_requires_exact_match();
+    test_award_milestone_needs_nonzero_threshold();
+    test_award_oracle_vector();
+    puts("object-hit award chain tests passed");
     return 0;
 }

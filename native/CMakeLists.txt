@@ -342,6 +342,7 @@ add_executable(stunrun-opengl-demo
       gsp_video.c
       ../reproduction/maincpu/score.c
       ../reproduction/maincpu/award_path.c
+      mc68010_physics.c
       fake_ports.c
       game_loop.c
       road_strip.c
@@ -368,6 +369,7 @@ if(EXISTS stage.c AND EXISTS vehicle.c)
     gsp_video.c
     ../reproduction/maincpu/score.c
     ../reproduction/maincpu/award_path.c
+    mc68010_physics.c
     ../reproduction/maincpu/trajectory_state.c
     ../reproduction/maincpu/geom_upload.c
     ../reproduction/maincpu/road_fifo.c
@@ -561,9 +563,10 @@ add_test(NAME road-buffer-math-slice-c COMMAND stunrun-road-buffer-math-slice-te
 # immediates (0x1F4 at 0x3A2E6, dest words 0xFFDD02/0xFF9532).
 add_executable(stunrun-award-path-slice-test
   ../reproduction/maincpu/award_path.c
-  ../reproduction/maincpu/award_path_test.c)
+  ../reproduction/maincpu/award_path_test.c
+  mc68010_physics.c)
 target_include_directories(stunrun-award-path-slice-test PRIVATE
-  ../reproduction/maincpu)
+  . ../reproduction/maincpu)
 set_target_properties(stunrun-award-path-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME award-path-slice-c COMMAND stunrun-award-path-slice-test)
 # Object-record slot template ($03CEFA immediates) and per-frame

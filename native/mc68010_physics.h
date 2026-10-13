@@ -290,3 +290,118 @@ struct stunrun_trajectory_state stunrun_trajectory_initial_state(void);
  * game_loop.c scaffolding uses.
  */
 int16_t stunrun_trajectory_step_simple(int16_t coord, int16_t delta);
+
+/* ── Object collision test at $03B02C ───────────────────────────────────── */
+
+/* RAM landmarks used by the collision helper and its caller.
+ * These are addresses in the 32 KiB work RAM at $FF8000. */
+#define STUNRUN_COLLISION_ACCUM      0xFFDBFEu  /* LONG, d1 base */
+#define STUNRUN_COLLISION_REC_X      0xFFDD14u  /* WORD, |dx| out */
+#define STUNRUN_COLLISION_REC_Y      0xFFDD12u  /* WORD, |dy| out */
+#define STUNRUN_COLLISION_Y_REF      0xFFDC1Au  /* WORD, dy base   */
+#define STUNRUN_COLLISION_TIMER      0xFFDD4Eu  /* WORD, size adj  */
+
+/* Record half-extent fields (signed 16-bit words). */
+#define STUNRUN_COLLISION_HALF_A     0x0Au     /* record +$0A */
+#define STUNRUN_COLLISION_HALF_B     0x0Cu     /* record +$0C */
+#define STUNRUN_COLLISION_HALF_C     0x0Eu     /* record +$0E */
+#define STUNRUN_COLLISION_REC_XPOS   0x02u     /* record +$02 */
+#define STUNRUN_COLLISION_REC_YPOS   0x06u     /* record +$06 */
+#define STUNRUN_COLLISION_REC_TYPE   0x10u     /* record +$10 */
+
+/* Centring offsets subtracted from the half-extents at $03B094/$03B098. */
+#define STUNRUN_COLLISION_B_CENTRE   0x400     /* $400, from +$0C */
+#define STUNRUN_COLLISION_C_CENTRE   0xC0      /* $C0,  from +$0E */
+
+/* Collision-size class constants dispatched at $03B0B0 on the owner's
+ * record +$0A. These are exact immediates, not a range. */
+#define STUNRUN_COLLISION_CLASS_1_5A 0x4B0     /* half * 1.5      */
+#define STUNRUN_COLLISION_CLASS_2X   0x320     /* half << 1        */
+#define STUNRUN_COLLISION_CLASS_3_2A 0x3E8     /* half + (half>>1) */
+#define STUNRUN_COLLISION_CLASS_HALF 0xC80     /* half >> 1        */
+
+/* The object/collision state consumed by the $03B02C helper. */
+struct stunrun_collision_record {
+    int16_t x;        /* record +$02, signed */
+    int16_t y;        /* record +$06, signed */
+    int16_t half_a;   /* record +$0A        */
+    int16_t half_b;   /* record +$0C        */
+    int16_t half_c;   /* record +$0E        */
+    uint16_t type;    /* record +$10        */
+};
+
+/* Strict two-axis AABB overlap test, transcribed from ROM $03B02C.
+ *
+ * Returns 1 only when |dx| < half_a AND |dy| < half_b, where the deltas
+ * are computed against the live accumulator/motion landmarks:
+ *   dx = accumulator - record.x
+ *   dy = y_ref      - record.y
+ * and half_b is selected from record +$0C or +$0E by `selector`, then
+ * scaled by the collision-size class `size_class` from the owner record.
+ * When the timer landmark is nonzero and the record type is not 3, both
+ * extents are widened: half_a += half_a>>2, half_b += half_b>>4.
+ *
+ * `out_dx` and `out_dy` receive the signed deltas, which the ROM writes
+ * to 0xFFDD14 and 0xFFDD12 as a side effect of the test.
+ */
+int stunrun_mc68010_collision_test(
+    const struct stunrun_collision_record *record,
+    int16_t accumulator, int16_t y_ref, uint16_t timer,
+    uint16_t size_class, int selector,
+    int16_t *out_dx, int16_t *out_dy);
+
+/* ── Object-hit award chain at $03A262 (jump-table case 5) ──────────────── */
+
+/* $03A298 is the middle of jump-table case 5 inside the $039B82 routine,
+ * not a routine entry. Case 5 is entered at $03A262; $03A298 is reachable
+ * only as a fall-through from $03A294, i.e. after a non-duplicate hit.
+ *
+ * RAM landmarks for the case-5 chain. */
+#define STUNRUN_AWARD_HIT_COUNT   0xFFDD02u  /* WORD, addq.w #$1        */
+#define STUNRUN_AWARD_COURSE      0xFF9578u  /* WORD, course index      */
+#define STUNRUN_AWARD_SCORE       0xFF9532u  /* LONG, add.l d2          */
+#define STUNRUN_AWARD_LAST_RECORD 0xFFDD78u  /* LONG, dedupe latch      */
+#define STUNRUN_AWARD_THRESHOLDS  0x4EE4Eu   /* ROM byte table, 33 bytes */
+
+/* Award immediates at $03A2E2 / $03A2EA. $FF9578 is the 22-value course
+ * counter, so this is a first-course-versus-later tier, not a per-track
+ * lookup. */
+#define STUNRUN_AWARD_FIRST_COURSE 0x0032u   /* 50  */
+#define STUNRUN_AWARD_LATER_COURSE 0x01F4u   /* 500 */
+
+/* Event bytes pushed to the $00301CA staging queue. */
+#define STUNRUN_EVENT_MILESTONE       0x16u
+#define STUNRUN_EVENT_HIT_LATER       0x5Fu
+#define STUNRUN_EVENT_HIT_FIRST       0x6Cu
+
+/* Observable effects of one pass through case 5.
+ *
+ * Every field is a "was this written" pair so a caller can distinguish a
+ * miss, a duplicate (dedupe), and a scoring hit without inspecting
+ * internals. */
+typedef struct stunrun_collision_award {
+    int      hit;                 /* d0 left in the register            */
+    int      counter_written;     /* 0 when $03A298 was not reached     */
+    uint16_t hit_count;           /* new (uint16_t)$FFDD02               */
+    int      milestone_queued;    /* 0x16 pushed to $00301CA            */
+    int      score_written;       /* 0 when $03A2EC was not reached     */
+    uint32_t score;               /* new $FF9532                         */
+    int      last_record_written; /* 0 when $03A2F2 was not reached     */
+    uint32_t last_record;         /* new $FFDD78                         */
+    uint16_t event;               /* 0x5F or 0x6C, 0 when none queued   */
+    int      event_queued;
+    uint8_t  frame_hit_flag;      /* -$12(a6), set to 1 on a hit         */
+} stunrun_collision_award_t;
+
+/* Run one pass of the $03A262-$03A31E case-5 chain.
+ *
+ * `hit` is the value $03B02C left in D0. `record` is the current record
+ * pointer compared against the $FFDD78 latch at $03A28E; a duplicate hit
+ * returns 1 but writes nothing except the frame flag. `thresholds` is the
+ * 33-byte ROM table at $4EE4E indexed by course; pass NULL to model a
+ * table of zeros, which suppresses the milestone event.
+ */
+stunrun_collision_award_t stunrun_mc68010_collision_award(
+    int hit, uint32_t record, uint32_t last_record,
+    uint16_t hit_count, uint32_t score, uint16_t course,
+    const uint8_t *thresholds);

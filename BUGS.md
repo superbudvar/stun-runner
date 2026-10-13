@@ -205,6 +205,47 @@ behaves and must be reported upstream.
   (voice-2 stop) write when sound index 46 is playing, and emits nothing when
   only sound index 48 is playing. Do not "fix" the handler to index by sound.
 
+### SR-18 — A duplicate-record hit silently consumes a course milestone
+
+- **Kind:** ROM code
+- **Where:** `136070-2102.200r` @ `0x3A294` (dedupe) and `0x3A2C6` (threshold compare)
+- **Symptom:** each course has a hit count at which a milestone event fires. The
+  milestone requires the counter to land on that value by *equality*. The dedupe at
+  `0x3A294` returns early **without** incrementing the counter when the same record
+  is hit twice in a row. So a repeated hit that straddles the threshold consumes the
+  threshold permanently: the counter skips the exact value and the milestone never
+  fires for that course.
+- **Evidence:** `0x3A294: beq $03A314` jumps past both `0x3A298: addq.w #$1,$FFDD02`
+  and `0x3A2EC: add.l d2,$FF9532`. `0x3A2C6: cmp.w $FFDD02,D0` followed by
+  `0x3A2CC: bne $03A2DA` is equality, not `>=`. Thresholds live in a 33-byte ROM table
+  at `0x4EE4E` indexed by the course word at `0xFF9578`; course 2 wants hit 11,
+  course 5 wants hit 28, course 9 wants hit 70, course 16 wants hit 36.
+- **Confidence:** confirmed by static reading; the runtime consequence is inferred
+  and needs a course-2 or course-5 run that collides with the same record on two
+  consecutive frames.
+- **Impact on us:** `stunrun_mc68010_collision_award()` in `native/mc68010_physics.c`
+  reproduces both the dedupe and the equality compare, and
+  `test_award_duplicate_is_deduped` plus `test_award_milestone_requires_exact_match`
+  pin them separately. Do not relax `==` to `>=` to "fix" the lost milestone.
+
+### SR-19 — The event staging queue drops entries silently when a lane is full
+
+- **Kind:** ROM code
+- **Where:** `136070-2102.200r` @ `0x301E6` (queue), callers `0x3A2D2` / `0x3A30C`
+- **Symptom:** `$00301CA` stages event bytes into a 32-lane, 32-deep byte buffer. When
+  a lane already holds 32 entries the routine returns immediately with no flag, no
+  counter bump, and no error. Callers unconditionally pop their argument and continue,
+  so a full lane loses the event with nothing observable. The object-hit path pushes
+  `0x16` (milestone) and `0x5F`/`0x6C` (per-course hit) through this queue.
+- **Evidence:** `0x301E6: cmpi.b #$20,(A0,D0.W)` / `0x301EC: bcc` returns before any
+  store. Lane index is the byte at `0xFFDBC8`, count is the byte at `0xFFDBC4`, and the
+  payload lands at `0xFFDB64 + lane*32 + count`.
+- **Confidence:** confirmed by static reading; the consequence is inferred.
+- **Impact on us:** any slice that models event dispatch must decide explicitly whether
+  it drops on full. `native/mc68010_physics.c` models the queue producer's decision
+  (`milestone_queued`, `event_queued`) but not the queue itself; the drop-on-full
+  behaviour must not be "fixed" to block or to wrap.
+
 ## ROM data
 
 ### SR-04 — The palette cube writes the high bank before the low bank

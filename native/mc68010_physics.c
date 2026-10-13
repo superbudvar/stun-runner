@@ -3,6 +3,8 @@
  */
 #include "mc68010_physics.h"
 
+#include <stddef.h>
+
 /* ── The speed-update block ($03AB82-$03ABDE) ─────────────────────────── */
 
 /* Disassembly (lines 69590-69619 of maincpu-68010.lst):
@@ -678,4 +680,207 @@ int16_t stunrun_trajectory_step_simple(int16_t coord, int16_t delta)
 {
     int32_t result = (int32_t)coord + (int32_t)delta;
     return stunrun_trajectory_clamp((int16_t)result);
+}
+
+/* ── $03B02C: object collision test ─────────────────────────────────────── */
+
+/*
+ * Verbatim transcription of the decisive tail, ROM $03B112-$03B160:
+ *
+ *   03B112: moveq  #$0,d3            ; d3 = 0
+ *   03B114: tst.w  $ffdd14.l         ; sign of dx
+ *   03B11A: blt    $03B126
+ *   03B11C: move.w $ffdd14.l,d2
+ *   03B122: ext.l  d2                ; d2 = dx
+ *   03B124: bra    $03B130
+ *   03B126: move.w $ffdd14.l,d2
+ *   03B12C: ext.l  d2
+ *   03B12E: neg.l  d2                ; d2 = -dx
+ *   03B130: moveq  #$0,d0
+ *   03B132: move.w  d5,d0            ; d0 = half_a
+ *   03B134: move.l  d0,d1
+ *   03B136: cmp.l   d2,d1
+ *   03B138: bls    $03B156           ; |dx| >= half_a -> miss
+ *   03B13A: tst.w  (a1)              ; sign of dy
+ *   03B13C: blt    $03B144
+ *   03B13E: move.w (a1),d2
+ *   03B140: ext.l  d2
+ *   03B142: bra    $03B14A
+ *   03B144: move.w (a1),d2
+ *   03B148: ext.l  d2
+ *   03B14A: ... d1 = d4 ; cmp.l d2,d1
+ *   03B152: bls    $03B156           ; |dy| >= half_b -> miss
+ *   03B154: moveq  #$1,d3            ; HIT
+ *   03B156: move.l  d3,d0
+ *   03B158: movem.l -$10(a6),d2-d5
+ *   03B15E: unlk   a6
+ *   03B160: rts
+ *
+ * bls is unsigned-or-equal, so the test is a strict "less than" overlap:
+ * a hit requires |dx| < half_a AND |dy| < half_b.
+ */
+
+int stunrun_mc68010_collision_test(
+    const struct stunrun_collision_record *record,
+    int16_t accumulator, int16_t y_ref, uint16_t timer,
+    uint16_t size_class, int selector,
+    int16_t *out_dx, int16_t *out_dy)
+{
+    int32_t dx, dy, adx, ady;
+    int32_t half_a, half_b;
+    int result;
+
+    if (record == NULL)
+        return 0;
+
+    /* $03B064-$03B082: the two deltas, written to $FFDD14 and $FFDD12. */
+    dx = (int32_t)accumulator - (int32_t)record->x;
+    dy = (int32_t)y_ref      - (int32_t)record->y;
+
+    half_a = (int32_t)record->half_a;
+    half_b = (int32_t)record->half_b;
+
+    /* $03B094-$03B098: subtract the centring offsets from the two
+     * candidate extents. */
+    half_b = (int32_t)record->half_b - STUNRUN_COLLISION_B_CENTRE;
+
+    /* $03B09C-$03B0AA: the selector picks which extent is active. */
+    if (selector) {
+        half_b = (int32_t)record->half_c - STUNRUN_COLLISION_C_CENTRE;
+    }
+
+    /* $03B0B0-$03B0EC: size-class scaling on exact immediates. An
+     * unlisted class leaves the extent unscaled, which is what the
+     * ROM's default fall-through does. */
+    switch (size_class) {
+    case STUNRUN_COLLISION_CLASS_3_2A:
+    case STUNRUN_COLLISION_CLASS_1_5A:
+        half_b += half_b >> 1;   /* * 1.5 */
+        break;
+    case STUNRUN_COLLISION_CLASS_2X:
+        half_b <<= 1;            /* * 2 */
+        break;
+    case STUNRUN_COLLISION_CLASS_HALF:
+        half_b >>= 1;            /* * 0.5 */
+        break;
+    default:
+        break;
+    }
+
+    /* $03B0EE: timer nonzero and type != 3 widens both extents. */
+    if (timer != 0 && record->type != 3) {
+        half_a += half_a >> 2;   /* * 1.25 */
+        half_b += half_b >> 4;   /* * 1.0625 */
+    }
+
+    adx = dx < 0 ? -dx : dx;
+    ady = dy < 0 ? -dy : dy;
+
+    if (out_dx != NULL)
+        *out_dx = (int16_t)dx;
+    if (out_dy != NULL)
+        *out_dy = (int16_t)dy;
+
+    /* $03B136/$03B152: strict less-than on both axes. */
+    result = (adx < half_a) && (ady < half_b) ? 1 : 0;
+    return result;
+}
+
+/* ── $03A262: jump-table case 5, object-hit award chain ─────────────────── */
+
+/*
+ * Verbatim transcription of the scoring portion, ROM $03A28E-$03A31A:
+ *
+ *   03A28E: cmp.l  $ffdd78.l,d0       ; d0 = current record
+ *   03A294: beq    $03A314           ; duplicate -> return 1, score nothing
+ *   03A298: addq.w #$1,$ffdd02.l     ; hit counter (16-bit wrap)
+ *   03A29E: move.w $ff9578.l,d0      ; course index
+ *   03A2A4: ext.l  d0
+ *   03A2A6: movea.l #$4ee4e,a0       ; threshold table
+ *   03A2AC: tst.b  (a0,d0.l)         ; table[course] != 0 ?
+ *   03A2B0: beq    $03A2DA           ; no threshold -> skip
+ *   03A2B2..$03A2C2: d0 = table[course]
+ *   03A2C6: cmp.w  $ffdd02.l,d0      ; EQUALITY, not >=
+ *   03A2CC: bne    $03A2DA
+ *   03A2CE: pea.l  $16.w             ; milestone event
+ *   03A2D2: jsr    $301ca.l
+ *   03A2DA: tst.w  $ff9578.l
+ *   03A2E0: beq    $03A2EA
+ *   03A2E2: move.l #$1f4,d2          ; 500
+ *   03A2EA: moveq  #$32,d2           ; 50
+ *   03A2EC: add.l  d2,$ff9532.l      ; 32-bit add
+ *   03A2F2: move.l -$e(a6),$ffdd78.l ; latch last record
+ *   03A2FA: tst.w  $ff9578.l
+ *   03A300: beq    $03A308
+ *   03A302: pea.l  $5f.w             ; later-course hit event
+ *   03A308: pea.l  $6c.w             ; first-course hit event
+ *   03A30C: jsr    $301ca.l
+ *   03A314: moveq  #$1,d0            ; return 1
+ *   03A316: move.b d0,-$12(a6)       ; per-frame hit flag
+ *   03A31A: bra    $03A4FE           ; shared loop exit
+ */
+
+stunrun_collision_award_t stunrun_mc68010_collision_award(
+    int hit, uint32_t record, uint32_t last_record,
+    uint16_t hit_count, uint32_t score, uint16_t course,
+    const uint8_t *thresholds)
+{
+    stunrun_collision_award_t out;
+
+    out.hit = 0;
+    out.counter_written = 0;
+    out.hit_count = hit_count;
+    out.milestone_queued = 0;
+    out.score_written = 0;
+    out.score = score;
+    out.last_record_written = 0;
+    out.last_record = last_record;
+    out.event = 0;
+    out.event_queued = 0;
+    out.frame_hit_flag = 0;
+
+    /* $03A280/$03A286: a miss jumps straight to the loop exit. */
+    if (!hit)
+        return out;
+
+    /* $03A314: both the duplicate and the scoring path return 1. */
+    out.hit = 1;
+
+    /* $03A28E-$03A294: a repeat of the same record is deduped. It still
+     * returns 1 and still sets the frame flag, but scores nothing. */
+    if (record == last_record) {
+        out.frame_hit_flag = 1;
+        return out;
+    }
+
+    /* $03A298: 16-bit increment; 0xFFFF wraps to 0x0000. */
+    out.counter_written = 1;
+    out.hit_count = (uint16_t)(hit_count + 1u);
+
+    /* $03A2AC-$03A2CC: the milestone needs the counter to land on
+     * exactly the threshold byte, and the byte to be nonzero. */
+    if (thresholds != NULL && course < 33u) {
+        uint8_t target = thresholds[course];
+        if (target != 0u && (uint16_t)target == out.hit_count)
+            out.milestone_queued = 1;
+    }
+
+    /* $03A2DA-$03A2EC: first course awards 50, later courses 500.
+     * The add is 32-bit, so it wraps at 2^32 rather than 2^16. */
+    out.score_written = 1;
+    out.score = score + (course != 0u
+                         ? (uint32_t)STUNRUN_AWARD_LATER_COURSE
+                         : (uint32_t)STUNRUN_AWARD_FIRST_COURSE);
+
+    /* $03A2F2: latch this record so a repeat cannot rescore. */
+    out.last_record_written = 1;
+    out.last_record = record;
+
+    /* $03A2FA-$03A30C: the per-course hit event. */
+    out.event_queued = 1;
+    out.event = (course != 0u) ? STUNRUN_EVENT_HIT_LATER
+                                : STUNRUN_EVENT_HIT_FIRST;
+
+    out.frame_hit_flag = 1;
+    return out;
 }
