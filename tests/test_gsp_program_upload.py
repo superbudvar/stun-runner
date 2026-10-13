@@ -116,18 +116,19 @@ class ProgramUploadCaptureTests(unittest.TestCase):
         # there yields an all-zero image that looks like a valid capture.
         text = LUA.read_text(encoding="utf-8")
         self.assertIn("was_halted and not halts and hstdat_writes > 0", text)
-        # And this script must not read VRAM at all: doing so from a frame-done
-        # callback silently stops these very taps.
+        # And this script must not read VRAM at all: reading the share drops the
+        # pass-through handler, silently, so the tap would report nothing and the
+        # run would still look clean.
         self.assertNotIn("read_vram", text)
         self.assertNotIn("gsp_space:read_u16", text)
 
     def test_events_use_a_preallocated_ring_not_growth(self):
         text = LUA.read_text(encoding="utf-8")
         self.assertIn("for index = 1, cap * WIDTH do buf[index] = 0 end", text)
-        # `emit` is the per-event path. It must allocate nothing, format nothing
-        # and touch no file, because all three crash this build from inside a
-        # memory-tap callback. Extract the WHOLE body: stopping at the first
-        # `end` would silently inspect only the overflow check.
+        # `emit` is the per-event path. Pass-through callbacks are not coroutines
+        # and fire once per access, so anything per-event is a hazard by
+        # construction. Extract the WHOLE body: stopping at the first `end` would
+        # silently inspect only the overflow check.
         body = text.split("local function emit(")[1]
         emit = body.split("\nlocal function ")[0]
         self.assertNotIn("string.format", emit)
@@ -139,6 +140,21 @@ class ProgramUploadCaptureTests(unittest.TestCase):
         # The once-per-run boundary print is fine; it must not be per event.
         self.assertIn("dropped = dropped + 1", emit)
         self.assertIn("if stored >= cap then", emit)
+
+    def test_tap_drop_is_documented_not_a_mame_defect(self):
+        # These were filed as BUGS.md MD-10/MD-11 and withdrawn. The symptom is
+        # real but MAME documents the cause and the remedy, so claiming a defect
+        # would file a false upstream report.
+        text = LUA.read_text(encoding="utf-8")
+        self.assertIn("ref-mem.rst:197-200", text)
+        self.assertIn("passthrough:reinstall()", text)
+        self.assertIn("is not an emulator defect", text)
+        bugs = (ROOT / "BUGS.md").read_text(encoding="utf-8")
+        self.assertNotIn("### MD-10", bugs)
+        self.assertNotIn("### MD-11", bugs)
+        # The withdrawal is recorded in place, not deleted: BUGS.md entries are
+        # the ones that get reported upstream.
+        self.assertIn("Withdrawn 2026-10-13", bugs)
 
     def test_tool_refuses_a_silent_capture(self):
         # A run that installs taps and then records nothing is this tool's own

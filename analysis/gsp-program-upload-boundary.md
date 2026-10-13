@@ -105,25 +105,24 @@ Three limits on that sentence:
 * the fill values are reported as raw words. No palette, stride, or field meaning
   is claimed.
 
-## Instrumentation defects found and worked around
+## Instrumentation traps in the Lua tap path
 
-These are defects in the installed MAME Lua bridge and in our first draft of the
-tool. None is a fact about the board.
+These are properties of how MAME's pass-through handlers work, and two of them
+cost us a wrong conclusion. None is a fact about the board, and none is a MAME
+defect — see `docs/mc68010-boot-findings.md` §28 for the refutation of our
+earlier claim that they were.
 
-| Symptom | Measured behaviour | Response |
+| Behaviour | Measured | Why it matters |
 |---|---|---|
-| Segfault, no Lua error | retaining one Lua table per event from a memory tap | preallocated ring buffer |
-| Segfault, log truncated mid-line at event 339 | `file:write` from inside a memory tap | stream after the run |
-| Callback silently stops after 1,493 events | growing a table from inside a memory tap | preallocate before installing taps |
-| **Taps install cleanly and record nothing** | reading the GSP share from a frame-done callback | VRAM imaged in separate runs |
-| Run 100× slower, 600 frames unfinished in 4 min | 4 MiB image per frame | boundary first, then two images |
+| A handler can be **silently dropped** by a handler change | 1000 tap events without a VRAM read, **0** with one; `passthrough:reinstall()` restores it (29,287 → 139,120) | A script counting its own events cannot tell "the board did nothing" from "my handler went away". |
+| Callbacks are **not coroutines**, once per access (~500,000/min) | table per event → segfault; `file:write` → segfault truncated at event 339; growing a table → silently stops at 1493; preallocated ring → clean | Anything per-event is a hazard by construction. Preallocate, format after the run. |
 
-The fourth is the dangerous one. The identical script records 1,000 events
-without a VRAM read and **0 events** with one, exits cleanly in both cases, and
-reports `consumer_capture_status=observed`. A tool that both dumps VRAM and
-reports host-port traffic would have published "the 68010 never wrote to the GSP
-host port" as a hardware finding. `tools/capture-gsp-program-upload` now refuses
-to emit a result with zero captured events.
+The first row is the one that bit us. MAME documents it
+(`ref-mem.rst:197-200`: `reinstall()` "may be necessary if the handler is removed
+due to other changes to handlers in the address space"), and we had not read
+that. The documented remedy works; the problem is only that the removal is
+silent. The tool therefore images VRAM in separate runs and still refuses to
+emit a capture with zero host events.
 
 Two more traps worth keeping:
 

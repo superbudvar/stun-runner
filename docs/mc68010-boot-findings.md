@@ -5523,3 +5523,93 @@ the 2bpp path is still unmodelled in the arbitration harness above.
 
 Section 18.2 stands unchanged: the capture ends 560,422 68010 cycles after the
 final HLT release with the GSP halted for 99.61% of its window.
+
+---
+
+## 28. The Lua tap "defects" we filed were ours, not MAME's
+
+### 28.1 What was claimed
+
+`tools/capture-gsp-program-upload` was written against MAME `0.289
+(mame0289-dirty)` and hit two behaviours that looked like MAME bugs. Both were
+measured carefully, and both were filed in `BUGS.md` as `driver defect` with the
+instruction to report them upstream:
+
+* **MD-10.** Reading the shared GSP VRAM through `gsp.spaces['program']` inside a
+  `register_frame_done` callback made every already-installed MC68010 write tap
+  stop firing. Same script, same binary, same ROM set: **1000 events without the
+  read, 0 events with it**, no Lua error, clean exit either way.
+* **MD-11.** Work inside a memory-tap callback corrupted MAME depending on the
+  work: one retained Lua table per event segfaulted, `file:write` per event
+  segfaulted with the log truncated mid-line at event 339, growing a table
+  silently stopped the callback at 1493 events, while assigning into a
+  preallocated ring captured 65,536 events cleanly.
+
+### 28.2 MD-10 is documented behaviour, with a documented remedy
+
+MAME's own Lua reference says, at
+`docs/source/luascript/ref-mem.rst:197-200`:
+
+```text
+passthrough:reinstall()
+    Reinstalls the pass-through handler in the address space.  May be necessary
+    if the handler is removed due to other changes to handlers in the address
+    space.
+```
+
+So a pass-through handler being dropped by a handler change is a documented
+possibility, and `reinstall()` exists for precisely that. We never read it.
+
+Measured, using the documented remedy instead of our hand-rolled one:
+
+```text
+M1_REINSTALL_INSTALLED handler=true
+M1_REINSTALL_AFTER_READ before=29287      # 29287 events, then the VRAM read
+M1_REINSTALL_CALLED                       # handler:reinstall()
+M1_REINSTALL_DONE frames=20 raw=139120    # tap keeps firing
+```
+
+One call on the existing handler object restores it. There is no defect here.
+The `tap_helper` implementation is `lua_engine::tap_helper` in
+`src/frontend/mame/luaengine_mem.cpp:195-316`, which installs a
+`memory_passthrough_handler` and exposes exactly this method.
+
+The genuine lesson is the one already in §27.6: we concluded "the emulator is
+wrong" from a measured symptom, without reading the documentation for the
+feature we were using. The measurement was right and the conclusion drawn from it
+was not.
+
+### 28.3 MD-11 is misuse
+
+The same page notes that pass-through handler callbacks **are not run as
+coroutines**. They fire once per memory access — roughly 500,000 times a minute
+for this board's host window. Doing file I/O, growing a table, or allocating a
+table per call is a performance hazard by construction, not an emulator defect,
+and a PR reporting it would have been rejected. The working pattern (preallocate,
+format after the run) is the right answer regardless, and it is what the tool
+does.
+
+### 28.4 What changed in the repository
+
+* `BUGS.md` MD-10 and MD-11 are withdrawn, with the withdrawal recorded in place
+  rather than deleted, because that section's entries are the ones that get
+  reported upstream and two false reports are worse than none.
+* `tools/capture-gsp-program-upload` keeps its two-phase design — record events,
+  then image VRAM in a separate run — but the stated reason is now correct: it
+  is the documented, supported way to run a tap this hot, not a workaround for a
+  crash. The tool also still refuses to emit a capture with zero host events,
+  which remains worth having: the failure mode is *silent*, so a guard is
+  cheaper than the mistake.
+* `analysis/gsp-program-upload-boundary.md` and `STATUS.md` no longer describe
+  these as upstreamable defects.
+
+### 28.5 The one thing that might still be worth upstream
+
+The removal itself is silent: nothing tells a Lua script that its pass-through
+handler stopped being called. The documentation says `reinstall()` "may be
+necessary" without saying how a script can notice. A script cannot distinguish
+"the board stopped writing" from "my handler was dropped" except by counting its
+own events, which is exactly the check we had to invent. A one-line note in
+`ref-mem.rst`, or a debug log line in `tap_helper` when a handler is dropped,
+would be a defensible small contribution — but that is a suggestion, not a
+finding, and it is not worth a PR before someone wants it.

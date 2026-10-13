@@ -19,10 +19,16 @@ So the capture is pinned to the event, not the frame, and it runs in two phases:
    at ``release``. The diff between them is the GSP's own first output, separated
    from the upload. Do not read a frame-600 dump as "the GSP program".
 
-The two phases are separate runs because reading the shared VRAM through the GSP
-program space inside the tap script SILENTLY STOPS the MC68010 write taps -- the
-identical script records 1000 events without a read and 0 with one, no Lua error,
-clean exit either way. Phase 1 therefore reads no VRAM at all.
+The two phases are separate runs for a documented reason, not a workaround for a
+crash: MAME's Lua reference states that a pass-through handler "may be
+removed due to other changes to handlers in the address space" and that
+``passthrough:reinstall()`` "may be necessary"
+(``docs/source/luascript/ref-mem.rst:197-200``). Reading the shared VRAM is
+exactly such a change, and the removal is SILENT -- nothing tells the script its
+handler stopped being called, so a script that both reads VRAM and counts host
+traffic reports "the board wrote nothing" when the real cause was its own tap.
+Phase 1 therefore reads no VRAM at all, and the tool refuses to emit a capture
+with zero host events rather than mistaking a dropped handler for a finding.
 
 It also does not pretend to know more than it observed:
 

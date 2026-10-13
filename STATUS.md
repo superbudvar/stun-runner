@@ -101,10 +101,18 @@ nothing fills.
     `$00000000`, which is not a mapped cell of the share; and it is not yet
     established whether the two program writers interleave as halves of one
     32-bit fill. See `analysis/gsp-program-upload-boundary.md`.
-- **New MAME bridge defects, upstreamable:** `BUGS.md` MD-10 (reading the GSP
-  share from a frame-done callback silently stops MC68010 write taps — the
-  dangerous one, because it reports "no host traffic" instead of failing) and
-  MD-11 (a memory-tap callback cannot allocate, grow a table, or do file I/O).
+- **Correction, 2026-10-13:** the two Lua-tap behaviours first filed as MAME
+  driver defects (MD-10, MD-11) are **withdrawn** — they are documented
+  behaviour and misuse respectively, not defects, and `BUGS.md` says its entries
+  get reported upstream, so false ones are a liability. MAME documents
+  `passthrough:reinstall()` as the remedy for a handler dropped by a handler
+  change, and one call restores the tap (measured 29,287 events before the read,
+  139,120 after). The behaviour is still worth guarding against because the
+  removal is silent. Refutation: `docs/mc68010-boot-findings.md` §28.
+- **Still open from that work:** the pinned oracle binary is not stock MAME.
+  `/mnt/build/mame-ref` carries local observation-only hooks in
+  `harddriv_m.cpp`, `harddriv_v.cpp` and `tms34010.cpp`, and this repository does
+  not yet record them. See the open question below.
 
 ### M4 completion
 

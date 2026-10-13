@@ -23,21 +23,28 @@
 --     executes inside a written range is a separate question, answered where the
 --     post-release PC samples land inside VRAM the upload wrote.
 --
--- VRAM images are NOT taken here.  Reading the shared VRAM through the GSP
--- program space inside a frame-done callback SILENTLY STOPS the MC68010 write
--- taps (measured: the identical script records 1000 events without a read and 0
--- events with one, no Lua error, clean exit either way), and re-installing the
--- taps after each image makes the run roughly a hundred times slower: a 4 MiB
--- image per frame across the upload window did not finish 600 frames in four
--- minutes.  The wrapper therefore runs this script for the event stream and the
--- boundary frame, then takes the two images in separate runs with the proven
--- tools/mame-gsp-vram-dump path.
+-- VRAM images are NOT taken here, for a documented reason.  MAME's Lua
+-- reference states that a pass-through handler "may be removed due to other
+-- changes to handlers in the address space" and that `passthrough:reinstall()`
+-- "may be necessary" (docs/source/luascript/ref-mem.rst:197-200).  Reading the
+-- shared VRAM is such a change.  The removal is SILENT -- no error, clean exit,
+-- and a script that counts its own events sees zero and concludes the board did
+-- nothing.  Measured here: the identical script records 1000 events without a
+-- VRAM read and 0 events with one, and `handler:reinstall()` restores it
+-- (29,287 events before the read, 139,120 after).
+--
+-- So the split is not a crash workaround: it is the supported way to run a tap
+-- this hot.  Taking a 4 MiB image per frame across the upload window is also
+-- why it was not simply done inline -- that did not finish 600 frames in four
+-- minutes.  The wrapper runs this script for the event stream and the boundary
+-- frame, then takes the two images with the proven tools/mame-gsp-vram-dump.
 --
 -- Why the event log is a preallocated ring buffer
 -- ------------------------------------------------
--- A 60-frame run issues roughly 500,000 host-window writes. Measured on this
--- MAME build, a memory-tap callback may assign numbers into slots that already
--- exist, but it may NOT grow a table, allocate a table, or do file I/O:
+-- A 60-frame run issues roughly 500,000 host-window writes. These callbacks are
+-- NOT coroutines (ref-mem.rst), they fire once per memory access, so anything
+-- per-event is a performance hazard by construction. Measured here on MAME
+-- 0.289:
 --
 --   retaining one Lua table per event  -> returncode -11 (segfault, no Lua error)
 --   calling file:write per event        -> returncode -11, output truncated
@@ -46,8 +53,9 @@
 --   assigning into a preallocated ring  -> 65536 events captured, 449508 counted
 --                                           as dropped, clean exit
 --
--- So `buf` is fully populated here, at script load, and the tap only writes into
--- it. Overflow is counted, never silently dropped.
+-- That is not an emulator defect and is not filed as one; it is why this script
+-- preallocates `buf` at load and formats its output after the run. Overflow is
+-- counted, never silently dropped.
 --
 -- Why tap_install_count is reported
 -- ----------------------------------
