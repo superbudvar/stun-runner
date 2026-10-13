@@ -585,10 +585,19 @@ int musashi_cpu_load_rom_bank(musashi_cpu_t *cpu, unsigned bank,
     if (bank >= MUSASHI_NUM_ROM_BANKS) return -1;
     if (!even_bytes || !odd_bytes) return -1;
 
+    /* MAME's ROM_LOAD16_BYTE loads 128KB from each file at a 128KB-aligned
+     * offset (e.g. ROM_LOAD16_BYTE("136070-2102.200r", 0x20000)).  Our files
+     * are only 64KB, so the upper 64KB of each 128KB bank is implicitly
+     * 0xFF in MAME (unmapped region reads as 0xFF).  Initialise the full bank
+     * to 0xFF before loading the 64KB file data. */
+    memset(cpu->rom_banks[bank], 0xFF, MUSASHI_ROM_BANK_SIZE);
+
     /* De-interleave: even_bytes[i] = MSB of word i, odd_bytes[i] = LSB of word i.
      * MC68010 big-endian bus: even byte address = MSB, odd byte address = LSB.
-     * We store as linear byte array where byte[N] = byte at address N. */
-    for (unsigned i = 0; i < MUSASHI_ROM_BANK_SIZE; i++) {
+     * We store as linear byte array where byte[N] = byte at address N.
+     * Only the first 64KB of each 128KB bank is populated from the file;
+     * the upper 64KB remains 0xFF as MAME expects. */
+    for (unsigned i = 0; i < MUSASHI_ROM_FILE_SIZE; i++) {
         cpu->rom_banks[bank][i] = (i & 1) ? odd_bytes[i >> 1] : even_bytes[i >> 1];
     }
     return 0;

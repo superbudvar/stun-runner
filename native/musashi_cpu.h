@@ -46,6 +46,7 @@ struct stunrun_jsa_latches;
 /* ROM bank info: 6 banks × 128KB each, mapped to 0x000000-0x0BFFFF */
 #define MUSASHI_NUM_ROM_BANKS  6
 #define MUSASHI_ROM_BANK_SIZE  0x20000u  /* 128KB per bank */
+#define MUSASHI_ROM_FILE_SIZE  0x10000u  /* 64KB per even/odd file pair (half of bank) */
 #define MUSASHI_ROM_TOTAL_SIZE  (MUSASHI_NUM_ROM_BANKS * MUSASHI_ROM_BANK_SIZE)  /* 0xC0000: 6 banks, flat */
 
 /* ── GSP host port ──
