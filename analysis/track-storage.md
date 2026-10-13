@@ -493,10 +493,67 @@ compare adjacent frames, and inspect individual byte lanes. Its readout labels
 the course and score addresses as candidates/observations rather than
 asserting semantics.
 
+## Road_expand_bits format — decoded
+
+Each 16-bit word in the 384-word track table is transformed by the
+`road_expand_bits` algorithm (a 16-bit ROXL expansion producing 32 bits).
+The resulting 32-bit value encodes both the drawing type and the road
+edge geometry:
+
+```text
+bits 31..24  : color/type code
+bits 23..16  : left edge position
+bits  7.. 0  : right edge position
+```
+
+### Color/type codes
+
+| Code (hex) | Meaning |
+| --- | --- |
+| `0x2a` | ROAD — asphalt surface |
+| `0x22` | EDGE — barrier/edge markings |
+| `0x20` | SHOULDER — rumble strip |
+| `0x08` | CENTER — center line dashes |
+| `0x02` | TUNNEL_A — tunnel interior variant A |
+| `0x0a` | TUNNEL_B — tunnel interior variant B |
+| `0x28` | TUNNEL_C — tunnel interior variant C |
+| `0x00` | EMPTY — no drawing |
+
+The left/right positions encode the horizontal pixel positions of the road
+strip edges. For a straight road both edges are roughly symmetric around
+center (~85). For curves the asymmetry shifts one way or the other:
+- center < 70 → left curve
+- center > 100 → right curve
+
+Example from Track 0 at `0x044630`:
+```
+Idx   Raw     Expanded     Code  Left  Right  Type
+  5   0xFF73  0x2AAA2A0A  0x2A   170    10   ROAD
+  7   0xFF57  0x2AAA222A  0x2A   170    42   ROAD RIGHT->
+ 19   0x519A  0x22028288  0x22     2   136   EDGE <-LEFT
+ 20   0xB268  0x0A082880  0x0A     8   128   TUNNEL_B
+ 22   0xF84E  0x2A8020A8  0x2A   128   168   ROAD RIGHT->
+ 58   0x7432  0x2A200A08  0x2A    32     8   ROAD <-LEFT
+```
+
+### Tunnel geometry data
+
+Tunnel entries in the ROM contain different position encoding than road
+curves. The three tunnel variants (A, B, C) appear at specific ROM
+offsets with symmetric or offset-symmetric positions.
+
+Tunnel mouth data was found at ROM address `0x49348` with a repeating
+signature pattern `2580 0000 9880 0005 dc00` appearing at regular
+intervals. This suggests a structured record format for tunnel geometry
+rather than simple left/right edge pairs.
+
+The strip data table at `0x22E1E` (indexed by strip index × 32) stores
+road strip glyph indices used by the road drawing routines. The strip
+indices in the 0x2A–0x3F range contain actual geometry; indices outside
+that range are empty.
+
 ## What is still unknown
 
-- Which word or bit fields describe lateral position, height, width, or
-  curvature.
 - Whether one 384-word table is one segment, a ring of segments, or a command
   block with mixed metadata and coordinates.
 - Why the producer selects each shared ROM slot for every progression state.
@@ -504,9 +561,10 @@ asserting semantics.
 - Whether other gameplay regimes use a different consumer schedule.
 - How the GSP FIFO words become road pixels and how they combine with the
   already decoded VRAM/palette path.
+- The detailed structure of the tunnel mouth data at `0x49348` — the
+  repeating 5-word pattern is confirmed but its field semantics are unknown.
 
-Those questions remain explicitly open; the current native slices model only
-the observed copy, lane, and transport mechanisms.
+The road_expand_bits format is now decoded; the questions above remain open.
 
 ## Evidence index
 
