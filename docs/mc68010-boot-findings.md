@@ -6580,3 +6580,87 @@ position-specific rather than set-based: a slice that reported both addresses
 but attached them to the wrong register produces the same *set* of values and
 is still caught. **E** shows the ordering assertion is real rather than
 decorative — every register value is still correct and the test still fails.
+
+## 33. What the 1989 Atari Games manual corroborates (TM 238 / SP-338)
+
+`reference/manuals/stunrunner-ocr.txt` is the OCR of the bundled `stunrunner.pdf`:
+the 1989 Atari Games Operator's Manual *with Illustrated Parts Lists*, SP-338,
+which carries the Main Board Memory Map and the Multisync PCB schematic. It is
+vendor documentation for the board we are emulating, so it is independent of
+both the ROM and MAME and it outranks our inference wherever the two disagree.
+
+The OCR is heavily degraded — the schematic pages came through as fragments —
+so everything below is restricted to rows that survived legibly. **A row that
+is not listed here was not read, not disproved.**
+
+### 33.1 Independently confirmed
+
+| Manual text | Corroborates |
+| --- | --- |
+| `FF BFE0 RAM 0 (16K Bytes)` / `FF FFFF RAM 1 (16K Bytes)` | **§9 exactly.** Main RAM is 32 KiB at `$FF8000-$FFFFFF`, not the 512 KiB §2.1 claimed. The old refutation was ours; this is the vendor saying so. |
+| `FF C000` as a RAM boundary | The `$506C` reading that `$FFFFC000` as Initial SSP yields an effective 24-bit SP of `$FFC000` — exactly 16 KiB into the 32 KiB RAM. Two independent routes to the same number. |
+| `ROMEN: ROM0 128K` .. `ROM7 128K`, `$000000-$0FFFFF` | The 1 MiB flat maincpu image and its 8-bank layout. |
+| `60 8000 {W} WOCLR Clear Watch Dog (Address Strobe)` | The `clr.w $608000.l` in both `$548E` and `$25E8` is a documented hardware register, not an incidental write. |
+| `60 C000 {A}` bit `05` = `Self-Test Switch (0 = on)` | §0's IN0 bit 5 = `PORT_SERVICE`. It is a **switch**, not a momentary button. |
+| `60 4006 GSP Reset Low` / `60 4016 GSP Reset High` | The GSP has a **dedicated hardware reset line** at `$604006`/`$604016`, distinct from `HSTCTL` bit 15 (HLT). Two separate ways to stop the GSP; keep them apart. |
+| `60 0000 {RW} SCOM` | The JSA sound window. |
+| `FF 4FFE ZRAM (4K Bytes)` | A **separate 4 KiB zero-power RAM** at `$FF4000`, in the map but not in our machine model. |
+| `34010-50 GSP`, `34012-50 PSP`, `RAM Array (16)`, `Scanner RAM`, `Pixel Color GRN0-GRN7`, `BL0-BL7`, `RD0-RD7` | The GSP is a TMS34010 as assumed; `Scanner RAM` is the framebuffer the scanout reads. |
+
+### 33.2 The text we have been chasing is the operator self-test
+
+Chapter 2's screen list, in order: `PROGRAM ROM`, `PROGRAM RAM`,
+`GSP VRAM OK--SIMPLE TEST`, `GSP COLOR RAM OK`, `ADSP BOARD OK`, `SA II Test`,
+`PRESS START TO SELECT TEST MENU`. Then the test menu, whose items the manual
+lists as `SEL 1..SEL 4` and coin-counter toggles on `$604000`.
+
+That is our two draws, in order:
+
+```text
+frame  45-47  selector $47  'PRESS*START*TO*BYPASS*SELFTEST'   the bypass prompt
+frame 165-167 selector $43  'PROGRAM*ROM*OK'                     self-test line 1
+              selector $50  'Y*X*W*V*U*T*S*R'                   the menu items
+              selector $51  '200'
+              selector $52  '210'
+```
+
+`Y X W V U T S R` against the manual's `SEL 1..SEL 4` / coin counters is close
+enough to be worth chasing and far enough that **it is not evidence yet** — the
+manual's menu is the *coin options* screen (Figure 2-5) as well as the test
+menu, and we have not distinguished them. Recorded as a lead, not a match.
+
+This does settle the mode question from §29: the game-mode capture at frames
+45-47 and 165-167 is the **self-test and test-menu sequence reached by default
+boot**, not attract mode. The attract title screen is what appears later.
+
+### 33.3 What the manual does NOT settle
+
+**The `$C00000` GSP host port is not in the legible Main Board Memory Map.** That
+map runs `$60C000` -> `A00000` -> `A80000` -> `B00000` -> `FF0000` and stops;
+`$C00000` lives on the GSP board, whose schematic page OCR'd to fragments
+(`34010-50 GSP`, `RAM Array (16)`, `Pixel Color GRN0-GRN7`) with no address
+rows.
+
+So **the host-port decode in §31.4 stands on its own measured evidence only.**
+The manual neither confirms nor contradicts it. Do not cite the manual as
+support for it. The word-offset decode
+`reg = ((addr - 0xC00000) / 2 / 2) ^ 1` rests on MAME's own `stunrun_hostprobe`
+counts matching an independent write tap, and on nothing else. Anyone who wants
+it settled properly needs the GSP board schematic read as an image rather than
+as OCR text — see §33.4.
+
+### 33.4 Suggested next step
+
+`stunrunner.pdf` is 8.5 MB and its schematic pages are vector/raster artwork
+that OCR cannot read. Two things it would settle that are currently open:
+
+1. the `$C00000` host-port register layout, which is the difference between
+   "MAME is right and the ROM targets a layout MAME lacks" and "MAME's
+   `(offset/2)^1` is wrong" — still unresolved from §31.4;
+2. the font, if the GSP board carries a character-generator ROM or a glyph
+   table the 68010 copies, which is the transform `tools/extract-screen-glyphs`
+   and `tools/dump-glyph-font` currently disagree about.
+
+Rendering the PDF pages to images and reading them is the route. That is a
+one-off investigation, not a harness capability, and it belongs to the
+Investigator role.
