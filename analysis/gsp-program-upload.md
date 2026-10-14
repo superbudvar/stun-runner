@@ -250,3 +250,85 @@ The consequences are bounded, and this is stated rather than overstated:
   consistent across sibling boards either. **No claim of a defect is made here.**
   Establishing it needs the actual share index arithmetic worked out from
   MAME's region setup, not from reading the expression.
+
+## Pinned encodings for the RTL work (2026-10-14)
+
+The gaps blocking `tools/check-gsp-replay --boot` are now specified, taken from
+`34010dsm.cpp` and **verified against this program** — each rule below reproduces
+the exact targets the disassembler printed, by hand.
+
+### JR family — missing from `tms34010_decode.sv`
+
+The RTL has only `JUMP Rs` (`bits[15:5] == 0x00B`) and the `DSJ` family. The
+conditional-jump family is absent, and it is in the hot loop.
+
+Encoding, from `case 0xc000 … case 0xce00` at `34010dsm.cpp:1451`:
+
+| field | bits | meaning |
+|---|---|---|
+| family | `[15:9]` = `0x60`–`0x67` | JR. Equivalently `op & 0xfe00` ∈ {`0xc000`, `0xc200`, …, `0xce00`} |
+| condition | `[11:8]` | `0x000`=UC, `0x100`=P, `0x200`=LS, `0x300`=HI, `0x400`=LT, `0x500`=GE, `0x600`=LE, … |
+| form select | `[7:0]` | `0x00` = two-word relative; `0x80` = `JA` absolute; anything else = one-word relative |
+
+Target computation:
+
+```c
+/* bits[7:0] == 0x00 : two words. w is the following word, signed 16-bit. */
+target = pc + 32 + (w << 4);
+
+/* bits[7:0] == 0x80 : JA, a 32-bit absolute parameter. */
+target = long_param;
+
+/* otherwise : one word. The offset is the low 8 bits of the opcode, signed. */
+target = pc + 16 + ((int8_t)op << 4);
+```
+
+`pc + 16` / `pc + 32` skip past the current one- or two-word instruction, and the
+`<< 4` is the 16-byte cell this program's words live in — the same unit as
+`share offset = pc & 0x3fffff`.
+
+Verification against three instructions this program actually executes:
+
+```text
+0x340f90  0xc4fb  bits[7:0]=0xfb (-5)  cond LT  -> 0x340f90+0x10+(-5<<4) = 0x340f50  ✓ JRLT
+0x3410a0  0xcb04  bits[7:0]=0x04 (+4)  cond NE  -> 0x3410a0+0x10+( 4<<4) = 0x3410f0  ✓ JRNE
+0x3410e0  0xc00b  bits[7:0]=0x0b(+11)  cond UC  -> 0x3410e0+0x10+(11<<4) = 0x3411a0  ✓ JR
+```
+
+All three reproduce the disassembler's printed targets exactly. Note `0xcb04`'s
+condition field is `0xb00`; the table above stops at `0x600` and the remaining
+codes were not read off `print_condition_code` before the end of this session —
+**the full condition list still needs transcribing**, though `LT`, `NE` and `UC`
+are confirmed by these three.
+
+### Repeat instructions — encoding not yet pinned
+
+MAME's **disassembler** has no mnemonic for `RS`/`RS1`/`RS2`/`RI`/`RPT`, which is
+recorded as MD-13. The *executor* was not reached for these before the end of
+this session, so the encoding and semantics are **not** pinned here. Do not
+implement from the disassembler's `MOVE *,*` rendering — that rendering is
+MAME's fallback for an unhandled encoding, not a statement about the data.
+
+Two routes to the answer, both cheap:
+
+1. `execute_op()` in `tms34010.cpp` — the authoritative semantics, in the same
+   file the fetch trace already comes from.
+2. SPVU001A, which `tms34010_decode.sv` already cites for its other encodings.
+
+### Scope of the remaining work
+
+Running this program on our own core is gated on exactly two things:
+
+1. the JR family above, which is now specified to the point of three verified
+   examples; and
+2. the repeat instructions, which are not yet pinned.
+
+Nothing else in the decode is missing for the opcodes this program has executed
+so far. `CLR` is *not* a gap — MAME emits it as `XOR` with source and destination
+equal, and the RTL has `XOR`.
+
+Once both are in, the run is `tools/check-gsp-replay --boot <stream> --vram-out
+<vram>`, which already feeds the recorded host writes into the Verilated core and
+dumps the resulting VRAM. The two open questions from above still stand and are
+not blocked by this: whether the GSP *display* pipeline is modelled well enough to
+compare a frame rather than only VRAM writes.
