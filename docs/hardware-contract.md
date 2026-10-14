@@ -206,3 +206,77 @@ Also from Page 10: `XO-SCH 40MHZ` pixel oscillator, `16 MHz` 68010 clock, jumper
 `Speed A,B` / `BCLK QB` / `VCLK QB/2`. Directly relevant to `stun-runner-bzq`,
 which derives the OKI rate from a hardcoded `3579545/3` rather than from a clock
 the manual states.
+
+## 8. Schematics read directly from page images (2026-10-14)
+
+A clean source transcription is in `docs/manual-transcription.md`, based on the
+rendered SP-338 scans rather than the unreliable schematic OCR. Pages 2–8 and
+11–14 have now been transcribed. Page 9 (ADC/shifter) remains unread; it is the
+most obvious missing source for the analogue wiring.
+
+### 8.1 Clock correction: CPU pin is 8 MHz
+
+The Page 3 CPU sheet (PDF page 60) draws `8MHZ` directly to `U68010 CLK` pin 15.
+Page 10 (PDF 67) shows clock *domains* including `4 MHz` and `16 MHz`, but does
+not identify the CPU's CLK pin. Therefore the manual does **not** support the
+previous statement that the 68010 itself runs at 16 MHz. The most specific
+wiring evidence says CLK=8 MHz; the 16 MHz label belongs to another domain or
+path. Keep both labels and their source visible until the divider tree is
+reconciled. Any OKI/audio-rate derivation must not assume 16 MHz as the 68010
+clock.
+
+### 8.2 Control panel, from the actual wiring diagram (SP-338 Page 1)
+
+The control panel is not one joystick plus three digital buttons. Page 1 draws:
+
+* two START switches (`S3`, `S4`);
+* two FIRE switches (`S2` right fire, `S1` left fire);
+* `R3` labelled ROLL, `R4` labelled PITCH on the modified flight control;
+* a separate `STEERING POT` and `AIM POT` on `J9`;
+* `LEFT TRIGGER` and `RIGHT TRIGGER` on `SW_GND` — discrete switch lines;
+* the physical `TEST SW` (`S11`) on the main PCB.
+
+This supports four analogue functions plus at least six discrete control
+functions (two start, two fire, two trigger), before coin/test switches. MAME's
+`a80000` currently exposes only BUTTON1/BUTTON2/START1 and marks the other 13
+bits unused. The manual memory map calls `$A80000` `/SW2` “Sixteen External
+Switch Inputs”; Page 1 identifies left/right triggers as actual switch nets.
+**The MAME input mapping is incomplete**, and the missing bits are operationally
+important because the manual says the test menu is navigated with those triggers.
+The detailed ADC/channel mapping still awaits Page 9.
+
+### 8.3 Main-board decode and serial subsystem
+
+Pages 2–4 show the 68010 clock/reset/interrupt wiring and discrete address
+strobe decoders. Page 3 has a priority encoder combining `/OUIRQ`, `/LINKIRQ`,
+`/GSPIRQ`, `/ADSPIRQ`, `/MSPIRQ` into IPL2/IPL1/IPL0. Page 4 contains ROM and
+NBUS/LSBUS/HSBUS decoders, plus RAM/ZRAM/DUART select logic. It does not show the
+GSP host-port register implementation at `$C00000`; that decode remains a MAME
+measurement, not a manual-confirmed fact.
+
+Pages 5–8 expose ROM-bank decode, address/data bus transceivers, the expansion
+connector `J7` (`FA1…FA20`, `FD0…FD15`, `/LINKIRQ`, `/ADSPIRQ`, clock/reset
+signals), SW1/DIP handling and `IN0`/coin input logic. Page 8's `170E LS244B`
+input map matches the 8-bit IN0 definition already in `native/fake_ports.c`;
+its pull-up on D0 independently supports the idle diagnostic bit.
+
+Pages 12–13 show the SA Audio II sound board: `SCOM` carries `SELF-TEST`, `DATA`,
+`FIN`, `FOUT`, and `CLK`; `YM2151S` generates `/IRQ`, and separate `/OKIRES` and
+`/YAMRES` reset nets go to the OKI and Yamaha devices. This corroborates the
+software-side SCOM window and separates sound-board reset from the main GSP
+reset. Page 13's CPU symbol is anomalous: it is labelled `6502A` inside a
+40-pin box but has internally inconsistent pin numbers/names. Do not resolve
+that drawing anomaly by changing the runtime CPU identity without corroboration.
+
+### 8.4 What the schematic sheets do *not* settle
+
+* Pages 5–8 contain many `27512` EPROMs and one `8Kx8` SRAM, but **no GSP VRAM
+  array, no Color RAM and no `$C00000` host port**. Those pages' absence is not
+  proof the devices do not exist; Page 10's block diagram explicitly shows a
+  16-chip VRAM array and Color RAM.
+* The VRAM array's detailed chip/address wiring is not on Pages 2–8 or 11–14.
+  The Page 10 block diagram says `VRAM Array (16) 64K x 4` (512 KiB total), while
+  MAME's backing-share model and direct-share capture are a separate question.
+* Color RAM is a distinct device in the video chain, fed by the Pixel Scanner's
+  `SPIX0…SPIX7`; the scanout contract's two 1024×16-bit planes remain an
+  implementation hypothesis, not a transcription of the board.
