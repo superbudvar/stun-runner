@@ -916,9 +916,13 @@ if(STUNRUN_GSP_RTL)
     message(STATUS "GSP RTL core linked into the shell (STUNRUN_GSP_RTL=1)")
   else()
     message(WARNING
-      "STUNRUN_GSP_RTL=1 but Verilator was not found; the shell will fall "
-      "back to the native software GSP path. See the STUNRUN_VERILATOR hint "
-      "in CMakeLists.txt for where it is looked for.")
+      "STUNRUN_GSP_RTL=1 was requested but the driver target is not available, "
+      "so the shell will fall back to the native software GSP path and no "
+      "TMS34010 core will run. The usual cause is Verilator not being found "
+      "(see the STUNRUN_VERILATOR HINTS below); it can ALSO mean this block "
+      "has been moved ABOVE the driver's add_library, where the target does "
+      "not exist yet -- the message used to blame Verilator for that, which "
+      "sent the last person looking in the wrong place entirely.")
   endif()
 endif()
 

@@ -1835,8 +1835,24 @@ static int run_walk(void)
     }
 
     /* Rendering accepts either the captured whole-VRAM bridge or the
-     * evidence-backed text-cursor fixture. Neither path supplies game state. */
-    stunrun_render_begin(&renderer, g_terminal, 0u, 0u, 0u);
+     * evidence-backed text-cursor fixture. Neither path supplies game state.
+     *
+     * Do NOT begin a frame here if the live path already rendered one.  The
+     * live path draws inside the frame loop; stunrun_render_begin() floods
+     * every pixel with the background colour, so calling it afterwards threw
+     * the frame away and left the buffer black.  Nothing redrew it in a live
+     * run (the captured-VRAM and text-fixture paths below are inert without
+     * their inputs), so the `render frame=... hash=...` line was reporting a
+     * hash of a black buffer -- identical for every run, every origin, every
+     * amount of GSP output.  Three runs with visibly different pictures
+     * printed the same hash, which is how this was found.
+     *
+     * A hash that cannot change is worse than no hash: it looks like a
+     * regression detector and is a constant. */
+    if (g_live_video_presented == 0)
+        stunrun_render_begin(&renderer, g_terminal, 0u, 0u, 0u);
+    else
+        renderer.frame = g_terminal;
     {
         int has_vram = gsp_vram_path != NULL && gsp_vram_path[0] != '\0';
         int has_rgb = gsp_palette_path != NULL && gsp_palette_path[0] != '\0';
