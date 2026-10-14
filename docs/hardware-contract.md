@@ -2,7 +2,7 @@
 
 Every claim here is sourced to one of four places, and the source is named:
 
-* **[MANUAL]** — `reference/manuals/stunrunner.pdf`, Atari Games TM 238 / SP-338,
+* **[MANUAL / S6]** — `reference/manuals/stunrunner.pdf`, Atari Games TM 238 / SP-338,
   1st printing 1989. Read from the rendered page images in
   `/tmp/stunrunner_pages/page-*.png`, **not** from
   `reference/manuals/stunrunner-ocr.txt`, whose page markers are unreliable and
@@ -217,10 +217,11 @@ array built by engineer Don Paauw and deliberately called a Texas Instruments
 part, so that anyone ordering it would be told no such part exists. It is the
 Atari part number, not a mistake.
 
-Also from Page 10: `XO-SCH 40MHZ` pixel oscillator, `16 MHz` 68010 clock, jumpers
-`Speed A,B` / `BCLK QB` / `VCLK QB/2`. Directly relevant to `stun-runner-bzq`,
-which derives the OKI rate from a hardcoded `3579545/3` rather than from a clock
-the manual states.
+Also from Page 10: `XO-SCH 40MHZ` pixel oscillator and clock domains/jumpers
+`Speed A,B` / `BCLK QB` / `VCLK QB/2`. **Correction from Page 3:** the actual
+`U68010 CLK` pin 15 is wired to `8MHZ`; Page 10's 16 MHz domain is not the CPU
+pin. Keep the distinction explicit. The audio board independently has `X1
+3.579M`, relevant to `stun-runner-bzq` and its hardcoded OKI clock derivation.
 
 ## 8. Schematics read directly from page images (2026-10-14)
 
