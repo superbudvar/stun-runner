@@ -101,6 +101,21 @@
       "files": [
         "3rdparty/genie/src/host/version.h"
       ]
+    },
+    {
+      "tag": "STUNRUN-IOB",
+      "files": [
+        "src/devices/cpu/tms34010/tms34010.cpp",
+        "src/devices/cpu/tms34010/tms34010.h"
+      ],
+      "function": "tms34010_device::io_register_w",
+      "env": [
+        "STUNRUN_GSP_IOBREPORT"
+      ],
+      "observation_only": true,
+      "purpose": "MD-12 triage. internal_regs_map exposes offsets 0x00-0x1ff while m_IOregs holds 64 entries and IOREG() indexes it unmasked. Prints sizeof(m_IOregs), the byte delta to m_shiftreg, and where each out-of-bounds offset actually lands, rather than inferring it from the class layout.",
+      "added": "2026-10-14, authored outside this session; recorded by tests/test_mame_local_patches.py, which failed on it as designed"
     }
-  ]
+  ],
+  "provenance_note": "STUNRUN-IOB appeared in the MAME working tree while this session was running and was not authored here. It is recorded because an unrecorded hook in the oracle is exactly the failure tests/test_mame_local_patches.py exists to catch. Its observation-only status was read off its body, not assumed."
 }
