@@ -598,3 +598,48 @@ dumps belong there. Two consequences:
 > Leaving them here would have been an active liability: this section's rule is
 > that its entries get reported upstream, and two false bug reports cost more
 > credibility than the silence they replace.
+
+### MD-12 — GSP register writes past `$C000003F` run off the end of `m_IOregs`
+
+- **Kind:** driver defect (memory safety)
+- **Where:** `src/devices/cpu/tms34010/tms34010.cpp`, `internal_regs_map` and
+  `io_register_w`; `tms34010.h` (`m_IOregs`); `34010ops.h` (`IOREG`)
+- **Symptom:** `internal_regs_map` maps
+  `map(0xc0000000, 0xc00001ff).rw(io_register_r, io_register_w)` — 512 bytes of
+  offsets, `0x00`..`0x1ff`. The backing store is `uint16_t m_IOregs[64]`, and
+  `IOREG(reg)` is `m_IOregs[reg]` with **no mask**. Any access at an offset of
+  `0x40` or above indexes past the end of the array.
+- **Evidence:** S.T.U.N. Runner's GSP program reaches this directly. Disassembly
+  of the uploaded program (`tools/disasm-gsp`, share offset `0x340000`) contains
+  seven such stores, and the addresses were fetched, so they executed:
+
+  ```text
+  00340040: 00050080  MOVE   A0,@C0000110h,0
+  00340080: 00050080  MOVE   A0,@C0000150h,0
+  003400d0: 00050080  MOVE   A0,@C0000160h,0
+  00340210: 00050080  MOVE   A0,@C0000130h,0
+  00340260: 00050080  MOVE   A0,@C0000140h,0
+  003402b0: 00050080  MOVE   A0,@C00000B0h,0
+  003402e0: 00050080  MOVE   A0,@F4800020h,0
+  ```
+
+  Each `@C00001xx` is offset `0x110`..`0x160` into a 64-element array — 208
+  entries past the end. The image word at each of those offsets matches the
+  opcode recorded in the `STUNRUN-FETCH` trace, so this is executed code and not
+  a decode artifact.
+- **Confidence:** the out-of-bounds indexing is **confirmed by reading the
+  source**; what it *corrupts* is not. The build does not crash, because the
+  overflow lands in adjacent `tms34010_device` members rather than unmapped
+  memory. Whether any particular adjacent member is being clobbered has not been
+  determined, and this has not been tested under a sanitiser build.
+- **Second question, unresolved:** the TMS34010's I/O space is 4-byte spaced over
+  `$C0000000`-`$C00001FF`, which is 128 registers, while MAME stores 64 `uint16_t`
+  and names only 32 in its `REG_` enum. So MAME's register file may be half the
+  size the hardware map implies even before the overflow. **UNKNOWN** which
+  reading is intended.
+- **Impact on us:** any measurement that depends on GSP internal register state
+  after the program runs may be reading corrupted data. This is the strongest
+  candidate so far for a real upstream report, but it should be reduced to a
+  three-line reproducer on the TMS34010 before being sent, and the second
+  question answered first — a patch that only grows the array could be papering
+  over a different intent.
