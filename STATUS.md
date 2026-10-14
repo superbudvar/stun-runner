@@ -53,6 +53,14 @@ executed the game display list. The RTL output path remains distinct work; the
 comparison is between two scanout implementations over the shell's available
 board state.
 
+**Superseded for the live path.** `./run.sh` now presents the Verilated core's
+own output: 84,337 nonzero words, `core-set=[DPYSTRT DPYCTL]`,
+`lit=122880/122880 colours=225`, and captured PNGs show the game's screen (a
+logo band and text rows), stable across frames 500/700/900. Findings §39.
+Judging this by `hash=` alone is not possible — every wrong-origin defect here
+produced a stable hash; use `lit=`/`colours=`. Still open in §39.6: colour
+equality against MAME, a sheared image, and the unresolved cycle offset.
+
 ### Parallel thread — GSP execution (`stun-runner-gsvp`)
 
 Distinct from M5. The GSP has no ROM: `mainpcb:user1` is the ADSP object ROM,
