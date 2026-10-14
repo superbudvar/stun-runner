@@ -80,13 +80,41 @@ Program entry, share `0x340000`. It is display setup:
 
 `SETF` pairs at the top clear the interrupt status bits before anything else.
 The `MOVI`/`MOVE A0,@C00001xx` pairs write the GSP's internal register file —
-`internal_regs_map` covers `$C0000000`–`$C00001FF` — loading display parameters.
-`LMO` is load-memory-offset, the circular/stride addressing the plotter uses, and
-it is applied to the two `$400` strides immediately before storing them.
+`internal_regs_map` covers `$C0000000`–`$C00001FF`. `LMO` is load-memory-offset,
+the circular/stride addressing the plotter uses, and it is applied to the two
+`$400` strides immediately before storing them.
+
+**Those register writes do not go where they appear to.** `m_IOregs` holds 64
+entries and `IOREG(reg)` is `m_IOregs[reg]` with no mask, so `@C0000110` is
+offset 272 into a 64-element array. This is recorded as **MD-12** in `BUGS.md`.
+It is also why nothing here is named semantically: it is not merely that MAME's
+`REG_` enum names only 32 of the exposed addresses, it is that most of the
+addresses the program actually writes are out of bounds in the first place. The
+stores are labelled as raw addresses until that is settled.
 
 `00340160` writes to `$FFF6F5A0`, which folds through the mirror to share offset
 `0x36F5A0` — just past the end of the code. That is a data table the program
 points at, not an instruction.
+
+## The decode is checked against execution
+
+A linear disassembly is only worth something if it agrees with what the processor
+actually did. Cross-checking every executed address against the fetch trace:
+
+```text
+executed PCs: 656
+sampled 120 executed PCs: 109 length-consistent, 11 not
+all 11 exceptions: CALLA / JR / CALL A0 / RETS
+```
+
+The 11 are control-transfer instructions, where the next fetch is the branch
+target rather than `pc + length`. `CALLA $FFF46E30` is followed by a fetch at
+share offset `0x346E30` — the same address after the 4 MiB mirror fold. So every
+sampled decode is consistent with execution, and the mirror fold is confirmed on
+branch targets as well as on code.
+
+Entry is genuinely executed: all 28 PCs in the first 1 KB were fetched, and the
+image word at each matches the traced opcode exactly.
 
 ## The hottest loop is a handshake
 
@@ -126,11 +154,10 @@ bit-addressed reading: the driver computes the cell index with `>> 4`, which is
 look like one. This is a MAME disassembler gap, not a property of the data — it
 is why an earlier reading of `$0x9920` as a reset vector was unsound.
 
-**Nothing here has been named semantically.** The register writes at
-`$C0000110`/`$C0000150`/`$C0000160` are decoded as addresses, not as `DPYSTRT`
-and friends, because MAME's `REG_` enum names only 32 of the 128 entries the
-register map exposes and the indexing was not pinned down. That is the next
-piece of work, not a result.
+**Nothing here has been named semantically.** The register writes are decoded as
+raw addresses, not as `DPYSTRT` and friends. See MD-12 above for why: most of
+the addresses the program writes are outside the array MAME backs them with, so
+naming them would assert a mapping that has not been established.
 
 ## Reproducing
 
