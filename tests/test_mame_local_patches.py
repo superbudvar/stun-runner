@@ -13,6 +13,20 @@ change look identical in a diff.
 This compares both lists in `analysis/mame-local-patches.json` against the
 actual working-tree diff and fails when they disagree.
 
+WHAT IT CANNOT CATCH -- measured, not assumed. I added an unrecorded behavioural
+edit to `34010ops.h`, a file already listed in the inventory, changing the body
+of a line that was already accounted for, with no new tag and no new environment
+variable. This file went green. So the guard detects unregistered *tags*,
+unregistered *environment variables*, and unregistered *files*. It does not
+detect a behavioural change hidden inside a file that is already registered, and
+no amount of line-matching would make it do so soundly: the first observation
+hook to reword a comment would trip a heuristic that is otherwise correct.
+
+That limit is stated here rather than papered over, because the alternative is a
+docstring claiming coverage this test does not have. If the guard needs to close
+that gap, the honest mechanism is a recorded fingerprint per entry -- a hash of
+the lines each entry claims -- not pattern matching.
+
 Skipped, not passed, when the MAME tree is absent: an absent tree cannot vouch
 for the oracle, and silently succeeding would be the exact failure this test
 exists to catch.
@@ -213,6 +227,36 @@ class MameLocalPatchInventoryTests(unittest.TestCase):
     def test_oracle_hash_is_recorded_and_well_formed(self):
         digest = self.inventory["oracle_sha256"]
         self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_behaviour_changes_are_tied_to_a_named_binary(self):
+        """A behavioural fix and a frozen hash are different facts about
+        different binaries, and nothing else in this file reconciles them.
+
+        `oracle_sha256` pins the binary that produced everything in
+        `reference/`. `behaviour_changes` records that the emulator model has
+        been altered. If those two are read together without this flag, the
+        natural and wrong conclusion is that the measurements were taken against
+        the modified model. They were not: the frozen oracle predates MD-12.
+        """
+        self.assertIn(
+            "oracle_has_behavioural_changes", self.inventory,
+            "the inventory does not say whether the oracle itself carries a "
+            "behavioural change")
+        self.assertIs(
+            self.inventory["oracle_has_behavioural_changes"], False,
+            "the oracle now carries a behavioural change, so every artifact in "
+            "reference/ was captured against a different model than the one "
+            "about to be used. Re-baseline or state the discrepancy.")
+        if self.behaviour_changes():
+            self.assertIs(
+                self.inventory.get("observer_has_behavioural_changes"), True,
+                "behaviour_changes is non-empty but the inventory does not mark "
+                "the observer build as behaviourally modified")
+            self.assertIn(
+                "which_binary_has_the_behavioural_change", self.inventory,
+                "a behavioural change is recorded without saying which binary "
+                "carries it, so a reader cannot tell what a measurement taken "
+                "with the observer is comparable to")
 
 
 if __name__ == "__main__":

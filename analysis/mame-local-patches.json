@@ -5,6 +5,9 @@
   "mame_git_base_commit": "e4c1c2b5102c032ce93216bc5ce5bae2b6a1f23e",
   "oracle_binary": "/mnt/build/mame-oracle/mame",
   "oracle_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+  "oracle_has_behavioural_changes": false,
+  "observer_has_behavioural_changes": true,
+  "which_binary_has_the_behavioural_change": "The frozen oracle predates MD-12 and is behaviourally stock MAME plus observation hooks only. The stunrun-observe build at /mnt/build/mame-ref/mame includes the MD-12 fix, so it is NOT a behavioural substitute for the oracle: a measurement taken with it must be recorded as such, and must not be compared against anything in reference/ that was captured with the frozen oracle.",
   "patches": [
     {
       "tag": "STUNRUN-DEBUG",
@@ -120,7 +123,7 @@
   "behaviour_changes": [
     {
       "tag": "MD-12-IOBOUNDS",
-      "function": "tms34010_device::execute_run",
+      "function": "IOREG macro (34010ops.h) and m_IOregs declaration (tms34010.h)",
       "env": [],
       "observation_only": false,
       "reason": "The MD-12 memory-safety fix. m_IOregs grew from 64 to 0x200 entries and IOREG() now masks its offset to 0x1ff. Access below offset 0x40 is unaffected, and this game's GSP program writes at 0x90-0x160, so this changes the oracle's behaviour precisely where the unfixed build was running off the end of the array. It is a model fix, not an observation, and must never be filed under patches.",
