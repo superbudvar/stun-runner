@@ -1,0 +1,116 @@
+# MAME bugs found while decompiling S.T.U.N. Runner
+
+Review-and-report index for the defects and gaps we hit in MAME 0.289. The full
+findings live in `BUGS.md` under **MAME driver**; this file exists because that
+section mixes MAME bugs with ROM and hardware findings, and because a bug you
+cannot find again is a bug you will not report.
+
+**None of these have been sent upstream.** Several are close; none is ready.
+The blockers are named per entry, because "we found a MAME bug" is not the same
+as "we can file a useful one", and a report built on an unsettled premise costs
+more credibility than the finding is worth.
+
+## Inventory
+
+| ID | Summary | Kind | Confidence | Upstreamable? |
+|---|---|---|---|---|
+| MD-01 | `m:snapshot()` writes zero files | driver gap | confirmed | yes — smallest reproducer here |
+| MD-02 | `emu.register_periodic` never fires | driver defect | confirmed | yes |
+| MD-03 | gdbstub has no 68010 register description | driver gap | confirmed | yes |
+| MD-04 | GSP display registers unreadable from Lua | driver gap | confirmed | yes — by design, needs framing |
+| MD-05 | **missing — no entry, no withdrawal note** | — | — | bookkeeping gap |
+| MD-06 | Lua tables filled from index 0 silently truncate | driver defect | confirmed | yes |
+| MD-07 | `sizeof()` on a `memory_share_creator` is not the share size | driver defect | confirmed | yes |
+| MD-08 | `scanline_multisync()` does not run headless | driver defect | confirmed | yes — related to MD-04 |
+| MD-09 | Service mode "BAD GSP VRAM" | driver defect **or** ROM behaviour | **unresolved** | **no — do not report yet** |
+| MD-10 | *withdrawn 2026-10-13 — documented behaviour, not a defect* | — | — | no |
+| MD-11 | *withdrawn 2026-10-13 — misuse of a documented API, not a defect* | — | — | no |
+| MD-12 | GSP register writes run off the end of `m_IOregs` | driver defect (memory safety) | indexing confirmed; impact not | **no — needs a sanitiser run first** |
+| MD-13 | TMS34010 disassembler has no RS/RI/RPT mnemonic | driver gap | confirmed | yes — trivial patch, easy approval |
+
+## What each needs before it can be sent
+
+**MD-13 — closest to ready.** The defect is that `34010dsm.cpp` has no case for
+the repeat instructions. The patch is a handful of lines in one `switch`, and the
+TMS34010 instruction encoding for RS/RS1/RS2/RI/RPT is published. Needs: someone
+to check the operand formatting against another TMS34010 disassembler. Low risk,
+easy approval, real value to anyone reading GSP code.
+
+**MD-01, MD-02, MD-03, MD-06, MD-07 — confirmed, need reducers.** Each has a
+measured symptom but was found while working around the oracle, not while
+reducing a test case. A report wants: driver, ROM set, exact command line, and
+observed-vs-expected. MD-06 and MD-07 are the most likely to be accepted as-is,
+because both are self-contained Lua-side API problems with a one-line reproducer.
+
+**MD-04 and MD-08 — need framing, not more evidence.** Both are the same
+underlying fact: the GSP's display registers live in a host-side array that Lua
+and the headless scanline path cannot reach. Reporting them as two separate bugs
+would get one closed as "by design". They should go in as one report about the
+GSP display register being unreachable outside `execute_run`, with MD-08's
+`get_display_params()` contrast as the evidence that a path already exists.
+
+**MD-09 — do not report.** It is unresolved whether "BAD GSP VRAM" is MAME or the
+1989 game. `BUGS.md` records that the MC68010 diagnostic at `$004F82` reads back
+16 words that all return `$FFFF`, and that the instruction encoding at `$004F96`
+is non-canonical in a way the MAME disassembler papers over. Until that is
+settled, a report would be asserting one of two contradictory things.
+
+**MD-12 — the one worth doing properly.** See below.
+
+## MD-12 needs a sanitiser run
+
+`internal_regs_map` exposes `map(0xc0000000, 0xc00001ff)` — 512 bytes of offsets —
+while the backing store is `uint16_t m_IOregs[64]` and `IOREG(reg)` is
+`m_IOregs[reg]` with no mask. The real S.T.U.N. Runner GSP program writes at
+offsets `0x90`–`0x160`, so it indexes 208 entries past the end.
+
+The out-of-bounds indexing is confirmed by reading the source. What it *corrupts*
+is not, and ASAN will probably not tell us: the overflow lands inside the
+`tms34010_device` object, so it is an intra-object overflow rather than a heap
+one, and stock ASAN does not instrument C++ member arrays for that. It would need
+`-fsanitize=address` together with either reordering the member to be last or a
+deliberate probe.
+
+The cheaper and more direct route is to print where `m_IOregs[0x110]` actually
+lands:
+
+```c
+fprintf(stderr, "IOREG %d -> %p (m_IOregs %p, delta %ld)\n",
+        offset, &m_IOregs[offset], (void*)m_IOregs,
+        (long)((char*)&m_IOregs[offset] - (char*)m_IOregs));
+```
+
+for each of the offsets the program writes. That names the clobbered members
+directly instead of inferring them from the class layout, and it costs one
+incremental rebuild instead of a full sanitised one.
+
+**Do not send this upstream yet.** There is a second, unresolved question that has
+to be answered first: the TMS34010's I/O space is 4-byte spaced over `0x200`
+bytes, which is 128 registers, while MAME stores 64 `uint16_t` and names 32 in its
+`REG_` enum. MAME's register file may be half the size the hardware map implies
+even before the overflow. A patch that only grows the array could be papering over
+a different intent, and the MAME maintainers will ask exactly that.
+
+## Withdrawn, and why that matters
+
+MD-10 and MD-11 were filed and then withdrawn. Both turned out to be documented
+behaviour (a pass-through tap being dropped by a handler change) and misuse of a
+documented API (Lua callbacks are not coroutines, so no per-event allocation or
+file I/O). They are recorded with the refutation inline rather than deleted, so
+the next agent does not re-file them.
+
+That is the argument for this file existing. The failure mode here is not "we
+missed a bug" — it is "we reported four things upstream and two were wrong",
+which is how a project stops being taken seriously.
+
+## Local-only, not upstreamable
+
+Recorded in `BUGS.md` but deliberately not numbered: moving the MAME source tree
+invalidates `build/projects/**/ocore_sdl.make`, which bakes in an absolute
+`-include` path from configure time, so any rebuild dies in `osd_sdl`. That is
+build-system behaviour, not a defect worth an issue.
+
+The six local observation hooks in the MAME tree are catalogued in
+`analysis/mame-local-patches.md` with a test that fails if an unrecorded one
+appears in `git diff`. They are not MAME bugs; they are ours, and the guard exists
+so the oracle cannot silently stop being stock.
