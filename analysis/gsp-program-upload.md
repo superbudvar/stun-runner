@@ -171,3 +171,82 @@ so the decoding is MAME's and not a reimplementation that could disagree with it
 It refuses an image that is not the whole 4 MiB share: a 512 KiB capture is a
 different region, not a smaller view of it, and decoding one silently would place
 every address wrong.
+
+## Cross-check against prior art (2026-10-14)
+
+Asked whether anyone outside this repository had already documented this, the
+answer turned out to be yes, in two places, and both are worth recording — one
+because it corroborates the decode, and one because it does not.
+
+### The hardware designer's own account
+
+Jed Margolin designed the board. His account states that the TMS34010 "also used
+the VRAM memory for its program", that VRAM was built from 64Kx4 parts paired
+into banks, and that the memory organisation was switched dynamically because
+"Programs used one memory space, polygon creation used another, and Graphic
+Display used a third."
+
+That independently confirms the central finding here: the GSP program lives in
+VRAM, alongside the data it draws, with no separate program memory. It also
+explains, from the hardware side, why the share is so heavily replicated —
+the part was abused for memory granularity, and the 16-byte cell structure we
+measured is a consequence of that, not an artifact of the capture.
+
+### MAME hardcodes a spin PC, and ours lands on it
+
+`harddriv.cpp:5092` sets, for S.T.U.N. Runner:
+
+```c
+m_gsp_speedup_pc = 0xfff41070;
+m_gsp_speedup_addr[0] = &m_gsp_vram[(0xfff9fc00 - 0xffc00000) >> 4];
+```
+
+Our disassembler, built independently from MAME's decoder, decodes share offset
+`0x341070` — which is `$FFF41070` after the 4 MiB mirror fold — as:
+
+```text
+00341030: 000900e3  MOVI   FFF9FC00h,A3
+00341060: 00840060  MOVE   *A3,A0,0
+00341070: 000b0060  CMPI   FFFFh,A0
+003410a0: 00cb0004  JRNE   3410F0h
+```
+
+`MOVI $FFF9FC00,A3` loads exactly the address in `m_gsp_speedup_addr[0]`, and
+`CMPI $FFFF,A0` compares against exactly the `0xffff` that
+`hdgsp_speedup_r` tests for. The PC matches to the instruction. That
+corroborates the address mapping, the 16-byte cell size, the decode, and the
+identification of the handshake, in one go.
+
+### But the GSP does not spin there
+
+This is where the cross-check stops paying off. Fetch counts over the 400,000
+traced instructions:
+
+```text
+0xfff40f50   78994   MOVE @FFF716A0h,A0  / CMP A1,A0 / JRLT 340F50h
+0xfff40f80   78994
+0xfff40f90   78994
+0xfff41060       44   MOVE  *A3,A0,0
+0xfff41070       44   CMPI  FFFFh,A0
+0xfff410a0       44   JRNE  3410F0h
+```
+
+MAME's `m_gsp_speedup_pc` points at an instruction the GSP passes through **44
+times**, while the loop it actually spends its time in is at `0xFFF40F50` —
+`CMP A1,A0 / JRLT`, waiting for `*$FFF716A0` to reach `A1`, a different handshake.
+
+The consequences are bounded, and this is stated rather than overstated:
+
+- **Performance, not correctness.** `hdgsp_speedup_r` only calls
+  `spin_until_interrupt()` when `m_gsp->pc() == m_gsp_speedup_pc`. With the GSP
+  at `0xFFF40F50`, that test fails, so MAME simulates the spin loop properly.
+  Slower than it could be, and correct.
+- **Whether MAME's watched address is right is UNKNOWN.** `m_gsp_speedup_addr` is
+  a `uint16_t*`, and `(0xfff9fc00 - 0xffc00000) >> 4` uses `0xffc00000`, which is
+  the *driver* board's base, while S.T.U.N. Runner is on *multisync*, mapped at
+  `0xff800000`. But `>> 4` into a `uint16_t*` is not obviously a byte offset, and
+  the mirrored 4 MiB share changes the arithmetic again. `init_harddriv` uses
+  `0xff800000` where `init_harddrivc` uses `0xffc00000`, so the constants are not
+  consistent across sibling boards either. **No claim of a defect is made here.**
+  Establishing it needs the actual share index arithmetic worked out from
+  MAME's region setup, not from reading the expression.
