@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Map the structure of the GSP program: entry points, call graph, code/data boundary.
+
+Answers "what are the functions in the TMS34010 program the 68010 uploaded, and
+which of them did this capture actually reach". A disassembly of one address is
+a curiosity; a function map with call counts is the thing you can port from.
+
+WHAT IT GETS WRONG, and these are load-bearing:
+
+  * **The code/data boundary comes from execution, not from structure.** "Is this
+    word code?" is answered here by "was this address fetched in the trace?". A
+    linear sweep says nothing: decoding past the end of the program produces
+    confident, plausible, wrong instructions. In the capture this was written
+    for, a linear decode ran from 0x340000 to 0x365c90, roughly 4 KiB past the
+    last fetched address, without any visible sign that it had stopped being
+    code. Anything in the trace is code; anything outside it is unknown.
+
+  * **Unreached call targets are unknown, not dead.** 34 of 44 call targets were
+    not fetched in the capture, because the trace is bounded and this game's GSP
+    reaches the rest over more frames. They are real functions that this run did
+    not enter.
+
+  * **CALLA is the only call form counted.** `CALL A0` and `CALLR` are indirect
+    or relative, and their destinations are not resolved here, so the call graph
+    is a lower bound. Calls reached only indirectly will not appear as edges.
+
+Requires a 4 MiB GSP VRAM image, and reads a STUNRUN-FETCH trace if given one.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+DISASM = REPO / "tools" / "disasm-gsp"
+
+SHARE_BASE = 0xFF800000
+SHARE_PERIOD = 0x400000
+WORD_STRIDE = 16
+
+# The TMS34010 has no absolute-jump table; these are the call forms whose
+# destination is an immediate in the instruction stream.
+DIRECT_CALLS = ("CALLA",)
+RETURNS = ("RETS", "RETM", "RET")
+
+
+def read_trace(path: pathlib.Path) -> set[int]:
+    """Fetched share offsets from a STUNRUN-FETCH trace.
+
+    Refuses a trace that is not shaped like one. These logs are tens of megabytes
+    of unversioned text, and a reader that accepts the wrong thing reports an
+    empty executed set, which reads as "the GSP never executed anything" rather
+    than "this file is not a trace".
+    """
+    fetched: set[int] = set()
+    rows = 0
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) != 5:
+                continue
+            # Field count alone is not validation: a five-word English sentence
+            # passes it and then dies in int() with a traceback instead of a
+            # diagnosis. Parse before counting.
+            try:
+                pc = int(parts[2], 16)
+                int(parts[4], 16)
+            except ValueError:
+                continue
+            rows += 1
+            fetched.add(pc & (SHARE_PERIOD - 1))
+    if rows == 0:
+        raise SystemExit(
+            f"{path} contains no fetch records.\n"
+            f"A STUNRUN-FETCH trace has 5 whitespace-separated fields per line:\n"
+            f"  <index> <time> <pc_bits> <pc_byteaddr> <opcode>\n"
+            f"Produced by the observer build with STUNRUN_GSP_FETCH_OUT set.")
+    return fetched
+
+
+def build(image: pathlib.Path, at: int, count: int) -> list[dict]:
+    proc = subprocess.run(
+        [str(DISASM), str(image), "--at", hex(at), "--count", str(count), "--json"],
+        capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise SystemExit(proc.stderr.strip() or "disasm-gsp failed")
+    return json.loads(proc.stdout)["instructions"]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Map the GSP program's functions and call graph.")
+    parser.add_argument("image", type=pathlib.Path,
+                        help="gsp_vram.bin, the whole 4 MiB share")
+    parser.add_argument("--fetch-trace", type=pathlib.Path,
+                        help="gsp-upload-events-style STUNRUN-FETCH trace, "
+                             "used to tell code from data")
+    parser.add_argument("--at", default="0x340000",
+                        help="share offset of the program start (default 0x340000)")
+    parser.add_argument("--count", type=int, default=7000,
+                        help="instructions to decode (default 7000)")
+    parser.add_argument("--json", action="store_true",
+                        help="emit a stunrun-gsp-program-map/v1 document")
+    args = parser.parse_args()
+
+    fetched = read_trace(args.fetch_trace) if args.fetch_trace else None
+    instructions = build(args.image, int(args.at, 0), args.count)
+
+    def reached(offset: int) -> bool | None:
+        return None if fetched is None else offset in fetched
+
+    edges: dict[int, list[int]] = {}
+    callsites: dict[int, int] = {}
+    out_of_share: dict[str, list[int]] = {}
+    for item in instructions:
+        if item["mnemonic"] not in DIRECT_CALLS:
+            continue
+        raw = item["operands"].strip().rstrip("h").strip()
+        if not re.fullmatch(r"[0-9A-Fa-f]+", raw):
+            continue  # indirect or unparsable; the graph is a lower bound
+        canonical = int(raw, 16)
+        if not SHARE_BASE <= canonical <= 0xFFFFFFFF:
+            # Folding this into the share would invent an address. The share is
+            # mirrored over 0xff800000-0xffffffff, so a target below that is
+            # somewhere MAME does not map, and this program has been seen
+            # calling one (CALLA E060DA4h at 0x35a3c0). Recorded, not resolved.
+            out_of_share.setdefault(f"0x{canonical:08X}", []).append(item["offset"])
+            continue
+        target = canonical & (SHARE_PERIOD - 1)
+        edges.setdefault(target, []).append(item["offset"])
+        callsites[item["offset"]] = target
+
+    entry = int(args.at, 0)
+    functions = [{"entry": entry, "vram": SHARE_BASE + entry,
+                  "calls_made": len(edges.get(entry, [])),
+                  "reached": reached(entry)}]
+    for target in sorted(edges):
+        if target == entry:
+            continue
+        functions.append({
+            "entry": target,
+            "vram": SHARE_BASE + target,
+            "calls_made": len(edges[target]),
+            "call_sites": sorted(edges[target]),
+            "reached": reached(target),
+        })
+
+    last_fetched = max(fetched) if fetched else None
+    result = {
+        "schema": "stunrun-gsp-program-map/v1",
+        "image": str(args.image),
+        "trace": str(args.fetch_trace) if args.fetch_trace else None,
+        "program_start": entry,
+        "decoded_instructions": len(instructions),
+        "call_sites": len(callsites),
+        "distinct_targets": len(edges),
+        "last_fetched_offset": last_fetched,
+        "functions": functions,
+        "out_of_share_calls": out_of_share,
+    }
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return 0
+
+    print(f"decoded {len(instructions)} instructions from {entry:#x}")
+    if last_fetched is not None:
+        print(f"last fetched address: {last_fetched:#x} "
+              f"({last_fetched - entry} bytes; anything past this is NOT code "
+              f"on this capture's evidence)")
+    print(f"{len(callsites)} direct calls to {len(edges)} distinct targets\n")
+    seen = sum(1 for f in functions if f["reached"])
+    print(f"{'entry':>10}  {'vram':>10}  {'in':>3}  {'out':>3}  reached")
+    for function in functions:
+        mark = "?" if function["reached"] is None else (
+            "yes" if function["reached"] else "no")
+        print(f"{function['entry']:#010x}  {function['vram']:#010x}  "
+              f"{function['calls_made']:>3}  "
+              f"{len(edges.get(function['entry'], [])):>3}  {mark}")
+    if out_of_share:
+        print(f"\n{len(out_of_share)} call target(s) fall outside the mapped "
+              f"share (0xff800000-0xffffffff) and are NOT folded into it:")
+        for target, sites in sorted(out_of_share.items()):
+            print(f"  {target} called from "
+                  f"{', '.join(hex(s) for s in sorted(sites))}  [UNKNOWN]")
+    if fetched is not None:
+        print(f"\n{seen}/{len(functions)} functions were reached by this capture. "
+              f"'no' means not reached, not dead code.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
