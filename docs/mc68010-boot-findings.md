@@ -7394,3 +7394,269 @@ tools/capture-gsp-program-upload roms <dir> --frames 600 --mame <mame>
 build/gsp_rtl/stunrun-gsp-rtl-harness --boot <stream> --cycles N --vram-out <core>.bin
 tools/check-gsp-first-output <core>.bin <pre>.bin <post>.bin
 ```
+
+## 38. RESIDUAL: the scanout units were never wrong — the row base is `rowaddr << 10` and it stays
+
+A live RTL run with the Verilated core inside the shell filled the share
+(`vram nonzero words = 82720`, `HSTDAT = 898301`, identical to the standalone
+capture) and still rendered nothing. The working diagnosis was that
+`native/gsp_display.c` was reading the share "with the wrong address units":
+that DPYADR is a bit address, that `dpyadr ^ 0xFFFC` was being used directly
+as a VRAM word index, and that the fix was the §34.2 `>> 3` conversion.
+
+**That diagnosis is refuted.** `^ 0xFFFC` is correct and stays, and the row base
+was already `rowaddr << 10` words — which is exactly MAME's own expression.
+What follows is the derivation, then what *is* wrong, because it is not here.
+
+### 38.1 DPYADR is not a program-space address
+
+Three different units meet in this path and they are not interchangeable.
+
+1. **GSP program-space address units are bits.** The program space is
+   `memory_access<32, 1, 3, little>` (`tms34010.h:996`; §12.2 cites `:992`,
+   which is four lines stale) — datawidth 16, addrshift 3 — so one address unit
+   is one bit of GRAM, a 16-bit VRAM word is `0x10` address units, and the
+   `0x400000`-unit mapped window is 512 KiB of backing. §34.2.
+2. **DPYADR / DPYSTRT are not in that space.** They are the screen-refresh
+   address registers. The TMS34010 User's Guide puts DPYADR[15:4] on LAD12..23
+   during row address time and DPYADR[2:6] on LAD6..10 during column address
+   time (ug.txt:5027-5038, transcribed in `docs/tms34010-reference.md` §1.1).
+   DPYADR is a packed **(row, column)** pair. There is therefore no "DPYADR as a
+   share word index" reading to correct, and no `>> 3` to apply to it.
+3. **The share is bytes**: 524288 of them, 262144 `uint16` words.
+
+`get_display_params()` decodes (2) into `rowaddr = dpyadr_xor >> 4` and
+`coladdr`, and the scanline turns the row into a byte offset with a row stride.
+That stride is the whole question.
+
+### 38.2 Which `rowaddr` shift, and why `<< 10`
+
+STUN Runner is `stunrun_machine` (`harddriv.cpp:2046`) → `STUNRUN_BOARD` →
+`stunrun_board_device_state::device_add_mconfig` → `multisync_nomsp(config)`
+(`harddriv.cpp:1861`), which installs
+`set_scanline_ind16_callback(scanline_multisync)` (`harddriv.cpp:1549`). So
+`scanline_multisync` applies and **`rowaddr << 10` is the shift**
+(`harddriv_v.cpp:451`).
+
+The `<< 11` at `harddriv_v.cpp:418` is `scanline_driver`, the Hard Drivin'
+cockpit callback, which builds 4096-pixel rows (`(coladdr & 0xff) << 4`, minus
+15, plus `finescroll & 0x0f`, colour index masked at `0xfff`).
+`harddriv.cpp:1488` is the only place that callback is installed and
+`harddriv.cpp:1549` the only place `scanline_multisync` is; STUN Runner never
+reaches the first. It is not importable.
+
+The two callbacks are internally consistent, and that is worth stating because
+it is easy to assume one shared mask:
+
+| | row stride | column start | colour index mask |
+|---|---|---|---|
+| `scanline_driver` (HD) | `rowaddr << 11` = 4096 B | `(coladdr & 0xff) << 4` | `0xfff` |
+| `scanline_multisync` (ours) | `rowaddr << 10` = 2048 B | `(coladdr & 0xff) << 3` | `0x7ff` |
+
+4096 bytes / 16 pixels-per-unit = 4096-pixel rows; 2048 bytes / 8 = 2048-pixel
+rows. A TMS34010 display row is 2048 pixels, so `rowaddr << 10` is right here
+and the `<< 11` and `0xfff` belong to the board that has the wider row.
+
+`rowaddr << 10` words = 1024 words = 2048 physical bytes, and it is the §34.2
+conversion applied to the row's first bit address, so the two derivations are
+the same statement:
+
+```text
+row R begins at GSP bit address 0xFF800000 + R * 0x4000
+word index = ((0xFF800000 + R*0x4000) - 0xFF800000) >> 3 >> 1
+           = (R << 14) >> 4 = R << 10                      words
+```
+
+`native/gsp_display.c` now computes each of these through its own function —
+`stunrun_gsp_display_row_base_word()` and
+`stunrun_gsp_display_word_from_bit_address()` — so the equality is a **test**
+rather than a comment, and `gsp-display-slice-c` checks all 256 rows plus the
+ROM's own landmarks:
+
+```text
+  all 256 rows: rowaddr<<10 == bit-address conversion        ok
+  HSTADR 0xFF800000 -> share word 0x0000                     ok
+  HSTADR 0xFF896040 -> share word 0x9604 (byte 0x12C08)      ok
+  HSTADR 0xFF801000 -> share word 0x0100 (byte 0x200)        ok
+  mirrored HSTADR 0xFFC00000 aliases word 0x0000             ok
+  byte-addressed 0x96040 is a different cell (the retracted error) ok
+```
+
+### 38.3 Confirmed against MAME's own probe output, not against itself
+
+`reference/experiments/stunrun/gsp-direct-share-frame600-service/mame.log`
+records the resolved geometry of the frame-600 service-mode self-test screen.
+Taking only the registers that log records (`dpyadr=ffff dpystrt=ffff
+dpytap=0000 dpyctl=f010`, `finescroll=7`), the native derivation reproduces all
+eight recorded lines:
+
+```text
+  line 19: rowaddr=000 base=000000 yoffset=0                 ok
+  line 20: rowaddr=000 base=000000 yoffset=1                 ok
+  line 21: rowaddr=000 base=000000 yoffset=2                 ok
+  line 22: rowaddr=000 base=000000 yoffset=3                 ok
+  line 23: rowaddr=001 base=000400 yoffset=0                 ok
+  line 245: rowaddr=038 base=00e000 yoffset=2                ok
+  line 246: rowaddr=038 base=00e000 yoffset=3                ok
+  line 247: rowaddr=039 base=00e400 yoffset=0                ok
+```
+
+Those eight are transcribed constants, not inputs. With the captured share
+itself (the same 524288-byte file, gated on `STUNRUN_GSP_DISPLAY_DUMPDIR`), two
+more:
+
+* every one of the 229 × 512 scanned pens equals the byte at the word index the
+  rasteriser computes — 117,248 pixels, not a summary statistic;
+* `STUNRUN-DPY`'s own `first10=0000^00000000^00000000^00000000^0000ffff^ffff`,
+  recorded for each of lines 19-22, comes out of the rasteriser unchanged.
+
+And the whole frame: feeding that capture through `stunrun_gsp_display_render`
+with that capture's registers produces the self-test screen — `PROGRAM ROM OK`
+at the top, two seven-cell text rows above the counters `200` and `210`, a
+horizontal rule, and `PRESS START TO BYPASS SELFTEST`. (The two middle rows are
+not transcribed here: 4×8 cell glyphs at this size are not legible enough from
+the render to transcribe without guessing, and the scanline addressing they
+exercise is already pinned by the checks above.) Render FNV-1a `0x69424479`,
+identical before and after this section's edits, i.e. the change is
+behaviour-preserving.
+
+The named cell: §34.3 pins the 68010's first text line at HSTADR `$FF896040` →
+physical byte `$12C08`, byte-identical between the native model and MAME's
+direct capture. The scanout fetches exactly that word at **scanline 169, x=8 —
+screen y=150**, which is where §34.4 records MAME's own 237×7 prompt. That is
+the end-to-end cross-check: a ROM address, a physical share offset, a line and a
+column, all agreeing.
+
+### 38.4 What is actually blank, and none of it is here
+
+Three defects, all outside `gsp_display.c`. Reported, not fixed.
+
+1. **The live window is zero-height.** `shell.c:616` sets
+   `dregs->vsblnk = 19`, identical to `veblnk`, so
+   `stunrun_gsp_display_rasterise` returns −1 at `y1 <= y0`, the shell prints
+   `live-video=unavailable` at frame 0 and disables live video for the rest of
+   the run — which is the whole of `mode=blank-scaffold`. §12's own probe
+   records `vsblnk=0x0103` (259) for this board. Reproduce: pass
+   `STUNRUN_VSBLNK=103` and `live-video frames-presented=601` appears.
+2. **The four display registers are still the driver's initialiser.** After a
+   600-frame run `gsp_rtl_driver_get_display_regs` returns `DPYSTRT=0x00f0
+   DPYADR=0xffc3 DPYTAP=0x0200 DPYCTL=0x8201` — byte-for-byte the
+   `s_dpy_regs` initialiser at `gsp_rtl_driver.cpp:56-61`. The core has not
+   issued one `KIND_IO` write to `0xF6000010..17`, so the scanout is being fed
+   placeholders. Their comments are also wrong on their own terms: `0x3C ^
+   0xFFFC` is `0xFFC0`, not `0xFFC3`, so the constant that is *documented* to
+   encode `rowaddr = 0x3C` in fact decodes to `rowaddr = 3`; and `0x8201 &
+   0x03FC` is `0x200`, not the `DUDATE = 0x004` claimed. With those four values
+   the scanout reads share byte `0x1800`, which is zero — correct behaviour on
+   nonsense input.
+3. **`render frame=... hash=...` does not hash the live frame.** `shell.c:1829`
+   calls `stunrun_render_begin()` *after* the frame loop, clearing the
+   framebuffer, and no fixture path then re-renders. So the printed hash is a
+   cleared buffer's. Measured: three runs with different scanout origins print
+   the same `hash=0x7D611DC5` while their captured PNGs differ
+   (`fnv=0x119C337D` vs `0xE2E787AD`).
+
+And one genuine defect **in** this file, deliberately left in place:
+
+> **The frame's first address should come from DPYSTRT, not from a mid-frame
+> DPYADR snapshot.** The TMS34010 reloads DPYADR from DPYSTRT prior to the start
+> of each frame (`tms34010.cpp:1322-1327`; `docs/tms34010-reference.md` §1.2
+> quoting ug.txt:5432-5440, "the starting address points to the location in
+> memory of the first pixel output to the screen during each frame"). Taking
+> DPYADR as read at an arbitrary instant as the top-of-frame address is wrong
+> whenever the caller can observe it mid-frame, which is exactly what the live
+> RTL path does — there, `DPYSTRT=0x00f0` decodes to `rowaddr 0xFF0` → share
+> byte `0x78000`, which is where the core's display-list output actually is,
+> against `DPYADR=0xffc3` → `rowaddr 3` → byte `0x1800`, which is zero.
+>
+> It is not changed here because the same heuristic is duplicated at
+> `backend/gsp_scanout_gl.c:104`, outside this task's ownership: changing one
+> copy alone desynchronises the two scanout windows and breaks
+> `gsp-scanout-gl-parity` (its case 1 sets `regs.dpyadr = 0xFC39` against
+> `dpystrt = 0xFC3C`, which the two readings resolve differently). **Both copies
+> must move in the same commit.** The same applies to `STUNRUN_FORCE_FRAMEBUF`
+> in `shell.c:685`, which sets `dregs->dpyadr` from `(row ^ 0xFFFC)`; that is
+> already wrong independently of this issue, because `get_display_params`
+> divides by 16 — it would need `(row << 4) ^ 0xFFFC`, and after this section's
+> fix it would need to set `dpystrt` rather than `dpyadr`.
+
+### 38.5 Refuted while writing it: the `0xFFF` column mask that is not there
+
+This section first asserted that MAME's multisync scanline masks the colour
+index at `0xfff` (`harddriv_v.cpp:540`) and that this file's `0x7ff` was an
+untested divergence worth recording as UNKNOWN.
+
+**It does not.** `grep -n 'coloridx = coladdr' src/mame/atari/harddriv_v.cpp`:
+
+```text
+433:		int coloridx = coladdr++ & 0xfff;     <- scanline_driver   (HD)
+540:		int coloridx = coladdr++ & 0x7ff;     <- scanline_multisync (STUN Runner)
+```
+
+`scanline_multisync` — the callback STUN Runner actually installs — uses
+`0x7ff`, byte-identical to `native/gsp_display.c`. The mis-read came from
+reading lines 380-551 in one go and carrying `scanline_driver`'s body down to
+the multisync loop; the two callbacks are 60 lines apart and their inner loops
+look nearly identical. Every cited line number in this section was re-checked
+with `sed -n` afterwards, and `harddriv_v.cpp:540` was the only one that had
+been mis-attributed. There is no divergence to record.
+
+The one thing that survives from that draft is an observation about **both**
+implementations rather than a difference between them: `col` is
+`(yoffset<<9) + ((coladdr&0xff)<<3) - 7 + (finescroll & 7)`, and `finescroll = 7`
+cancels the −7 on every frame recorded in this repo. At `finescroll = 0` the
+line would start at −7, and masking turns −7 into 2041 — a jump of ~1000 words
+rather than 7 pixels backwards, where the hardware would read into the previous
+row. MAME does exactly what this file does, so there is nothing to match and no
+evidence yet that either is wrong. If a capture ever shows `finescroll != 7`,
+that is the first thing to check, and it is a candidate for `BUGS.md` if the
+picture disagrees with the board.
+
+### 38.6 What the scanout can show when it is given a sane row base
+
+Not a fix, and not a claim about display-list semantics (§18.2 untouched) — just
+the demonstration that the rasteriser is not what is hiding the picture. The
+native live share at frame 600, addressed at `rowaddr 0x78` (`DPYADR=0xF87C`,
+`DPYSTRT=0xF87C`, `DPYTAP=0`, `DPYCTL=0x8004`, `finescroll=7` → row base word
+`0x01E000`, byte `0x03C000`):
+
+```text
+first lit pen: screen (0,32) rgb=000020  column ci=0
+               -> share word 01e000 = byte 0x03c000 = 1616
+render fnv=0xD1FC02FD
+```
+
+The image is the title screen: red ground, blue `STUN`, green `RUNNER`, the
+tunnel mouth and the runner. The core's output occupies share rows `0x78-0xBB`
+and `0xC8-0xDB` (1024-word rows); the 68010's own writes, which both this model
+and MAME's capture agree on, occupy rows `0x08-0x0B`, `0xF3-0xF5` and `0xFF` —
+the same rows, which is an independent confirmation that the units agree.
+
+### 38.7 Checks
+
+```text
+cmake -S native -B build-test -DCMAKE_BUILD_TYPE=Debug && cmake --build build-test
+ctest --test-dir build-test                61/61 PASS
+  gsp-scanout-gl-parity                    RAN, not skipped:
+      gsp-scanout-gl: cases=3 bytes-per-case=368640 mismatches=0 max-delta=0
+      GL_RENDERER = AMD Radeon Graphics (radeonsi, gfx1200, ...) — hardware GL
+python3 -m unittest discover -s tests     249 tests OK
+```
+
+Negative controls, each a deliberate break restored afterwards — the test has
+to be able to fail:
+
+| break | what failed |
+|---|---|
+| row stride `<< 11` | the 256-row unit check, 4 recorded lines, both capture checks |
+| drop `^ 0xFFFC` | all 8 recorded lines |
+| flip high/low byte selection | all 8 recorded lines |
+| drop `>> 3` in the bit-address conversion | the unit check, 3 landmarks, the `$12C08` cell check |
+
+`STUNRUN_GSP_DISPLAY_DUMPDIR=reference/experiments/stunrun/gsp-direct-share-frame600-service`
+also surfaces a **pre-existing** failure that is not this section's doing:
+`test_acceptance`'s "47 distinct colours" and "21.71% dominant red" are §12's
+*attract-mode* numbers, and the only capture committed here is the *service*
+self-test screen. Pointed at it the test reports 1 distinct colour. It was
+already failing that way before these edits and is left untouched: weakening it
+would hide that the two numbers belong to different screens.
