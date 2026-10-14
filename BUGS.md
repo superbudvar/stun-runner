@@ -643,3 +643,29 @@ dumps belong there. Two consequences:
   three-line reproducer on the TMS34010 before being sent, and the second
   question answered first — a patch that only grows the array could be papering
   over a different intent.
+
+### MD-13 — The TMS34010 disassembler has no mnemonic for the repeat instructions
+
+- **Kind:** driver gap (debugger/disassembler)
+- **Where:** `src/devices/cpu/tms34010/34010dsm.cpp` — the `switch (op & 0xfe00)`
+  dispatch has no case for the RS/RS1/RS2/RI/RPT group
+- **Symptom:** `RS1 A0,$0020` (word `0x9920`), the TMS34010's standard power-on
+  self-test delay idiom, disassembles as `MOVE *A9+,*A0+,0`. The disassembler's
+  mnemonic list contains no repeat instruction at all.
+- **Evidence:** `tools/disasm-gsp` on the captured GSP program decodes word
+  `0x9920` as `MOVE *A9+,*A0+,0`. The full mnemonic set in the file, extracted:
+  `ABS ADD ADDC ... XORI ZEXT` — no RS, RI or RPT.
+- **Confidence:** confirmed by inspection and by running the disassembler
+- **Impact on us:** a power-on delay loop does not look like one. This is one of
+  the two reasons an earlier reading of `$0x9920` as a reset vector was unsound
+  (the other was the 16-byte cell replication). Anything reading GSP disassembly
+  for control flow will mis-classify repeat-heavy code as data movement.
+
+### Local build note (not upstreamable) — generated makefiles keep absolute paths
+
+Not a MAME defect: moving the MAME source tree invalidates `build/projects/**`
+`ocore_sdl.make`, which bakes in `FORCE_INCLUDE -include <abs>/src/osd/sdl/sdlprefix.h`
+from configure time. Any rebuild then dies with `<command-line>: fatal error:
+.../sdlprefix.h: No such file or directory` in `osd_sdl`. Regenerating fixes it.
+Worth knowing before anyone tries to rebuild `/mnt/build/mame-ref`, which is where
+the fetch-trace observer build lives.
