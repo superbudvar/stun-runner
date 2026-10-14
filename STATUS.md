@@ -91,13 +91,33 @@ nothing fills.
     cell is a chain, not a whole-share comparison. The 2bpp expander's
     big-endian store previously cancelled its own big-endian read, so a
     differential check cannot see an error both sides share.
-- **`gsvp.4` first milestone — open.** The prior byte-identical replay compared
-  two software models that shared the same wrong address/size assumptions; it
-  is not oracle evidence. The direct 512 KiB share capture is now at
-  `reference/experiments/stunrun/gsp-direct-share-frame600-service/`. What is
-  *not* yet shown is the TMS34010 core executing the uploaded display list.
-  Scanout still needs a fresh comparison against the direct share and correct
-  early-frame display registers.
+- **`gsvp.4` first milestone — DONE.** The Verilated TMS34010 core executes the
+  uploaded display list and reproduces **MAME's first output byte for byte**.
+  The GSP is frozen by HSTCTL bit 15 for the whole capture, so the release frame
+  edge is the one window in which only the GSP can change the share; both sides
+  agree on it (MAME frame 405 / PC `$0002C1C4` / HSTCTL `$7800`; native record
+  899809 / PC `$0002C1CC` / HSTCTL `$7800`).
+  Replaying the native stream to its own release and running 200,000 GSP cycles:
+  PC `$00000000 -> $FFF59A70`, 24 distinct low-16 values, 11,948 board writes
+  during the run. Then, over the window the pre/post-release pair itself defines
+  (bytes 446118-448912, 1397 words):
+  **core matches post-release 1397/1397, and changed exactly the 1295 words
+  MAME changed - none more, none fewer.** Agreement on a named finite MAME-defined
+  set, not a percentage. Findings section 36.
+  - The oracle needed re-capturing first: the recorded boundary images were
+    4194304 bytes of GSP program ADDRESS, 8x the share. Corrected they give
+    **1295 changed words in 22 ranges**, and `10360 / 8 = 1295` exactly - the
+    old address-space figure and the new physical one agreeing on an 8x factor
+    is the strongest evidence in the file for the `>> 3`. The event stream is
+    byte-identical between captures, so only the reader changed.
+  - **Not whole-share parity:** the core has 81,536 nonzero words against MAME's
+    83,194 (98.0%), and the tool prints that ratio rather than hiding it. The
+    first output is uniform fill; whether the core walks a real display list is
+    not shown. Section 18.2 is untouched - that capture still ends with the GSP
+    halted 99.61% of its window.
+  - `tools/check-gsp-first-output` derives its window from the images rather than
+    assuming it, checks the SET of changed words so a halted core cannot pass,
+    and refuses a 4194304-byte input by name.
 - **`gsvp.5` upload boundary — bus boundary done (`stun-runner-8p4.2`); old VRAM
   images superseded.** The GSP program is
   now pinned to an upload and a release rather than inferred from a frame-600

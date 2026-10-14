@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Check that the Verilated GSP core reproduces MAME's FIRST OUTPUT.
+
+What question this answers, and the trap it avoids
+--------------------------------------------------
+The TMS34010 has no ROM: the MC68010 uploads its program into the shared VRAM
+and then clears HSTCTL bit 15. Before that release the GSP is frozen, so any
+VRAM difference across the release frame edge is the GSP's own output and
+nothing else. That is the only window in which "did the core actually execute
+the uploaded display list" can be asked of a dump pair without a second moving
+part.
+
+The trap this exists to avoid: diffing a frame-600 dump against an earlier one
+measures upload plus everything since, and a 512 KiB share read through the GSP
+program space measures 4 MiB of BIT addresses, not physical bytes. Both have
+produced confident wrong answers here. So this takes three images that are each
+already pinned -- pre-release, post-release, and the core's own dump -- and
+compares them INSIDE the window the pre/post pair itself defines. It never
+assumes where the window is.
+
+The claim this supports is narrow and is stated exactly: inside the window,
+the core's words match the post-release image, and the core changed precisely
+the words the post-release image changed. It does NOT claim the rest of the
+share agrees, and the report prints that ratio so a reader can see the gap
+instead of inferring parity from a pass.
+
+Usage:
+    tools/check-gsp-first-output CORE.bin PRE.bin POST.bin [--json OUT]
+    tools/check-gsp-first-output --derive-window PRE.bin POST.bin [--json OUT]
+"""
+
+import argparse
+import hashlib
+import json
+import pathlib
+import sys
+
+SCHEMA = "stunrun-gsp-first-output-check/v1"
+SHARE_BYTES = 0x80000  # 512 KiB physical GSP VRAM share
+
+
+def read_share(path, what):
+    """Read a share image, refusing a wrong-sized one loudly.
+
+    These are unversioned binary dumps. A reader that does not check the size
+    invents plausible data instead of failing, and 4194304 bytes -- the
+    pre-correction address-space image -- is exactly the size that would be
+    silently accepted by a 4 MiB assumption.
+    """
+    data = pathlib.Path(path).read_bytes()
+    if len(data) != SHARE_BYTES:
+        raise SystemExit(
+            f"{what}: {path} is {len(data)} bytes, expected {SHARE_BYTES} "
+            f"(the 512 KiB physical share).\n"
+            f"  4194304 bytes is a GSP program-address image, not VRAM: the "
+            f"program space is datawidth 16 / addrshift 3, so one address unit "
+            f"is one bit and a 4 MiB address span is 512 KiB of physical bytes."
+        )
+    return data
+
+
+def words_at(buf, first, last):
+    """Little-endian 16-bit words over the half-open byte range [first, last)."""
+    return [buf[i] | (buf[i + 1] << 8) for i in range(first, last, 2)]
+
+
+def derive_window(pre, post):
+    """The byte span that changed between pre- and post-release."""
+    # One entry per differing WORD (the word's first byte offset). Do not
+    # divide by 2 again: the step is already 2.
+    changed = [i for i in range(0, len(pre), 2) if pre[i:i + 2] != post[i:i + 2]]
+    if not changed:
+        raise SystemExit("pre-release and post-release images are identical: "
+                         "no boundary was captured, so there is no first output")
+    return changed[0], changed[-1] + 2, changed
+
+
+def contiguous_ranges(flags):
+    """Byte offsets that changed, collapsed into runs."""
+    out = []
+    start = prev = None
+    for i in flags:
+        if start is None:
+            start = prev = i
+        elif i == prev + 2:
+            prev = i
+        else:
+            out.append((start, prev + 2))
+            start = prev = i
+    if start is not None:
+        out.append((start, prev + 2))
+    return out
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("core", nargs="?", help="core's --vram-out dump")
+    ap.add_argument("pre", help="share image at the last halted frame edge")
+    ap.add_argument("post", help="share image at the first released frame edge")
+    ap.add_argument("--derive-window", action="store_true",
+                    help="report the window and MAME's own change set only, "
+                         "without a core image to compare")
+    ap.add_argument("--json", type=pathlib.Path, default=None)
+    a = ap.parse_args()
+
+    pre = read_share(a.pre, "pre-release")
+    post = read_share(a.post, "post-release")
+    lo, hi, changed = derive_window(pre, post)
+    ranges = contiguous_ranges(changed)
+    w_pre = words_at(pre, lo, hi)
+    w_post = words_at(post, lo, hi)
+    n = len(w_pre)
+
+    report = {
+        "schema": SCHEMA,
+        "window_byte_range": [lo, hi],
+        "window_words": n,
+        "mame_changed_words": len(changed),
+        "mame_changed_ranges": len(ranges),
+        "mame_shape": {
+            "newly_nonzero": sum(1 for a_, b_ in zip(w_pre, w_post) if not a_ and b_),
+            "newly_zero": sum(1 for a_, b_ in zip(w_pre, w_post) if a_ and not b_),
+            "modified": sum(1 for a_, b_ in zip(w_pre, w_post) if a_ and b_ and a_ != b_),
+        },
+        "sha256": {
+            "pre": hashlib.sha256(pre).hexdigest(),
+            "post": hashlib.sha256(post).hexdigest(),
+        },
+    }
+    print(f"first-output window: bytes {lo}..{hi}  ({n} words)")
+    print(f"  MAME changed {len(changed)} words in {len(ranges)} ranges "
+          f"(newly_nonzero {report['mame_shape']['newly_nonzero']}, "
+          f"newly_zero {report['mame_shape']['newly_zero']}, "
+          f"modified {report['mame_shape']['modified']})")
+
+    if a.derive_window:
+        report["core"] = None
+        if a.json:
+            a.json.write_text(json.dumps(report, indent=2) + "\n")
+        print("  (no core image supplied: window derived only)")
+        return 0
+
+    core = read_share(a.core, "core")
+    w_core = words_at(core, lo, hi)
+    agree = sum(1 for x, y in zip(w_core, w_post) if x == y)
+    core_changed = [i for i, (x, y) in enumerate(zip(w_core, w_pre)) if x != y]
+    mame_set = set(changed)
+    core_set = set(lo + 2 * i for i in core_changed)
+    only_core = sorted(core_set - mame_set)
+    only_mame = sorted(mame_set - core_set)
+
+    nonzero_core = sum(1 for w in words_at(core, 0, SHARE_BYTES) if w)
+    nonzero_post = sum(1 for w in words_at(post, 0, SHARE_BYTES) if w)
+
+    report["core"] = {
+        "words_matching_post": agree,
+        "window_words": n,
+        "changed_vs_pre": len(core_changed),
+        "changed_only_core": len(only_core),
+        "changed_only_mame": len(only_mame),
+        "share_nonzero_words": nonzero_core,
+        "mame_share_nonzero_words": nonzero_post,
+    }
+
+    print(f"  core matches post-release: {agree}/{n} "
+          f"({100.0*agree/n:.2f}%)")
+    print(f"  core changed vs pre-release: {len(core_changed)} words "
+          f"(MAME changed {len(changed)})")
+    print(f"  changed by core only: {len(only_core)}   by MAME only: {len(only_mame)}")
+    print(f"  nonzero words in whole share: core {nonzero_core}, MAME {nonzero_post} "
+          f"({100.0*nonzero_core/max(1,nonzero_post):.1f}%) -- not claimed as parity")
+
+    ok = (agree == n and not only_core and not only_mame)
+    report["ok"] = ok
+    if a.json:
+        a.json.write_text(json.dumps(report, indent=2) + "\n")
+
+    if ok:
+        print("RESULT PASS: the core's first output is byte-identical to MAME's, "
+              "and it wrote exactly the words MAME wrote")
+        return 0
+    print("RESULT FAIL: core and MAME disagree on the first output")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

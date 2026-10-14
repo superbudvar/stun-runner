@@ -7228,3 +7228,100 @@ our own models, and the one MAME-anchored point is a single cell. Section 18.2
 is untouched and independent - the display-list capture still ends with the GSP
 halted for 99.61% of its window - and gsvp.4, the core executing the uploaded
 display list, remains the thing that actually produces pixels.
+
+## 36. The Verilated core reproduces MAME's first output, byte for byte (gsvp.4)
+
+The TMS34010 core now demonstrably executes the uploaded display list. This is
+the item gsvp.4 was opened for, and the claim is deliberately narrow.
+
+### 36.1 Why the release is the only clean question to ask
+
+The GSP is frozen by HSTCTL bit 15 for essentially the whole capture, so across
+the release frame edge nothing but the GSP can change the share. That is the
+one window in which "did the core execute the uploaded program" can be asked of
+a pair of images without a second moving part. Everywhere else, a diff measures
+upload plus everything since.
+
+The boundary is confirmed on both sides:
+
+```text
+MAME   frame 405, PC 0x0002C1C4, HSTCTL 0x7800
+native record 899809, cycle 50351440, PC 0x0002c1cc, HSTCTL 0x7800
+```
+
+### 36.2 The oracle had to be re-captured first
+
+`reference/experiments/stunrun/gsp-program-upload.metadata.json` records its
+boundary images as 4194304 bytes / 2097152 words. Those predate section 34: they
+are GSP program-address images, 8x the physical share. Its headline - "10,360
+changed words in 22 ranges" - is an address-space figure.
+
+Re-captured with the corrected `tools/mame-gsp-vram-dump` (one word per `0x10`
+address units):
+
+```text
+frame 404, GSP halted  : 524288 bytes, 262144 words, 81899 nonzero
+frame 405, released    : 524288 bytes, 262144 words, 83194 nonzero
+```
+
+**1295 changed words in 22 ranges, all newly nonzero, none modified, none
+zeroed.** And the unit correction checks out arithmetically: `10360 / 8 =
+1295` exactly, because the 4 MiB address image covers each physical word eight
+times. Two independent captures agreeing on an 8x factor is the strongest
+evidence in this file for the `>> 3`.
+
+The event stream is byte-identical between the two captures
+(`5640860abca7c79b...` both times), so only the image extent changed - which is
+what should have happened when only the reader was corrected.
+
+### 36.3 The result
+
+Replay the native bus stream to its own HLT release, hand it to the Verilated
+core, run 200,000 GSP cycles:
+
+```text
+events=899810 host_txns=899804 reset_events=6 timeouts=0
+PC 0x00000000 -> 0xfff59a70   range 0x00000000..0xfff59a90   distinct(low16)=24
+state=5 instr=0x100b
+during run: board writes=11,948 reads=39,025
+```
+
+Then `tools/check-gsp-first-output`, over the window the pre/post pair itself
+defines (bytes 446118..448912, 1397 words):
+
+```text
+  MAME changed 1295 words in 22 ranges (newly_nonzero 1295, newly_zero 0, modified 0)
+  core matches post-release: 1397/1397 (100.00%)
+  core changed vs pre-release: 1295 words (MAME changed 1295)
+  changed by core only: 0   by MAME only: 0
+RESULT PASS
+```
+
+Not a percentage that happens to be high. The core wrote **exactly** the 1,295
+words MAME wrote, no more and no fewer, and every one of the 1,397 words in the
+window matches. It is agreement on a named, finite, MAME-defined set.
+
+### 36.4 What this does not say
+
+- **Not whole-share parity.** The core has 81,536 nonzero words against MAME's
+  83,194 (98.0%). The tool prints that ratio rather than hiding it, because a
+  pass on the first-output window must not be read as a pass on the share.
+- **Not display-list execution.** The first output is uniform fill, which is
+  what the GSP does first; the tool's own report notes the diff is "not decoded;
+  no field names are claimed". Whether the core later walks a real display list
+  is not shown here.
+- **The 68010 side is not re-derived.** The stream is the native model's, and
+  its agreement with MAME at the release (same PC, same HSTCTL) is a
+  correspondence, not a proof of cycle-level equivalence.
+- Section 18.2 is untouched: the display-list capture still ends with the GSP
+  halted for 99.61% of its window.
+
+### 36.5 The check itself
+
+`tools/check-gsp-first-output` never assumes where the window is - it derives it
+from the pre/post pair, so a wrong address constant cannot produce a pass. It
+also checks the SET of changed words, not just the values, which is what stops a
+halted core from passing: zero writes trivially matches the pre-release image,
+and only "by MAME only: 1295" catches it. It refuses a 4194304-byte input
+loudly, naming the bit-address confusion, because that exact file has been
+committed here once already.

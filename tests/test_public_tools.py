@@ -1360,5 +1360,118 @@ class OracleFixtureTests(unittest.TestCase):
         self.assertEqual(meta["supersedes"]["second"]["size_bytes"], 0x400000)
 
 
+class GspFirstOutputTests(unittest.TestCase):
+    """tools/check-gsp-first-output must decide the question, not just run.
+
+    The claim under test is narrow: inside the window that the pre/post-release
+    pair itself defines, the GSP core's output is byte-identical to MAME's and
+    touches exactly the words MAME touched. These are synthetic images -- the
+    real ones need MAME, a ROM set and 200k GSP cycles -- so the tests here are
+    about the decision logic, and the real run is recorded in findings 36.
+    """
+
+    SHARE = 0x80000
+
+    def _images(self, temp, core_words=None):
+        """A pre/post pair with a known first output, and a matching core dump."""
+        pre = bytearray(self.SHARE)
+        post = bytearray(self.SHARE)
+        core = bytearray(self.SHARE)
+        lo = 0x1234
+        for i in range(4):
+            w = 0x2000 + i
+            post[lo + 2 * i] = w & 0xFF
+            post[lo + 2 * i + 1] = w >> 8
+        if core_words is None:
+            core[lo:lo + 8] = post[lo:lo + 8]   # the core produced the same thing
+        else:
+            for i, w in enumerate(core_words):
+                core[lo + 2 * i] = w & 0xFF
+                core[lo + 2 * i + 1] = w >> 8
+        p = pathlib.Path(temp)
+        for name, buf in (("pre.bin", pre), ("post.bin", post), ("core.bin", core)):
+            (p / name).write_bytes(bytes(buf))
+        return p / "core.bin", p / "pre.bin", p / "post.bin"
+
+    def test_matching_core_passes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            core, pre, post = self._images(temp)
+            out = pathlib.Path(temp) / "r.json"
+            r = subprocess.run(
+                [str(ROOT / "tools" / "check-gsp-first-output"), str(core),
+                 str(pre), str(post), "--json", str(out)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            report = json.loads(out.read_text(encoding="utf-8"))
+            self.assertTrue(report["ok"])
+            self.assertEqual(report["mame_changed_words"], 4)
+            self.assertEqual(report["core"]["changed_only_core"], 0)
+            self.assertEqual(report["core"]["changed_only_mame"], 0)
+
+    def test_wrong_value_in_the_core_fails(self):
+        """Negative control: matching byte COUNTS is not the claim.
+
+        A core that writes the right number of words with the wrong values is
+        the failure this check exists to catch, so a count-based test would
+        pass it.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            core, pre, post = self._images(
+                temp, core_words=[0x2000, 0x2001, 0x2002, 0xBEEF])
+            r = subprocess.run(
+                [str(ROOT / "tools" / "check-gsp-first-output"), str(core),
+                 str(pre), str(post)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("RESULT FAIL", r.stdout)
+
+    def test_core_writing_nothing_fails(self):
+        """Negative control: a halted core must not pass.
+
+        This is the specific false pass that matters -- the core staying in
+        reset produces zero writes, which trivially matches the pre-release
+        image, and only the MAME-changed set catches it.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            core, pre, post = self._images(temp, core_words=[])
+            r = subprocess.run(
+                [str(ROOT / "tools" / "check-gsp-first-output"), str(core),
+                 str(pre), str(post)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("by MAME only: 4", r.stdout)
+
+    def test_refuses_a_4mib_address_space_image(self):
+        """Negative control: the size guard, on the exact confusion that recurred.
+
+        4194304 bytes is a GSP program-address image, not the 512 KiB physical
+        share. A reader without this guard invents plausible data instead of
+        failing, and that mislabelled file has been committed here before.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            too_big = temp / "addrspace.bin"
+            too_big.write_bytes(bytes(0x400000))
+            r = subprocess.run(
+                [str(ROOT / "tools" / "check-gsp-first-output"), str(too_big),
+                 str(too_big), str(too_big)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("524288", r.stderr)
+
+    def test_identical_pre_and_post_is_an_error_not_a_pass(self):
+        """No boundary means no first output; that is a failed capture."""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            same = temp / "same.bin"
+            same.write_bytes(bytes(self.SHARE))
+            r = subprocess.run(
+                [str(ROOT / "tools" / "check-gsp-first-output"), str(same),
+                 str(same), str(same)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("no boundary", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
