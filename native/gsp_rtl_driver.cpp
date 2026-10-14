@@ -40,6 +40,9 @@ static gsp_board_t           *s_board = nullptr;
 static tms34010_sv           *s_top  = nullptr;
 static bool                   s_init_done = false;
 static bool                   s_gsp_halted = true;
+/* Set once the core has stepped a real budget; until then musashi's share is
+ * authoritative and must be copied in, or the board starts empty. */
+static bool                   s_core_ran = false;
 
 /* Shadow display-register state, updated from GSP I/O register bus cycles.
  * The TMS34010 display registers (DPYSTRT, DPYCTL, DPYTAP, DPYADR) live at
@@ -64,60 +67,68 @@ static constexpr unsigned GSP_CYCLE_RATIO = 5;
  * Halts early if the GSP self-halts (no host traffic for a full line).
  * Uses the harness tick() pattern from gsp_rtl_main.cpp: clock with eval(),
  * service any pending cycle_req_o, track host_ack_o for idle detection. */
+/* One clock edge, servicing any local-bus cycle the core raised.
+ *
+ * The pending flag MUST persist across calls: the bus arbiter holds cycle_req_o
+ * until it sees cycle_ack_i, so a request raised on cycle N is serviced on cycle
+ * N+1. Declaring `cycle_pending` inside the stepping loop -- which is what this
+ * function's predecessor did -- makes that branch dead code on every iteration,
+ * so the core's program-space writes silently went nowhere while the loop still
+ * looked busy. Same trap as the 40-byte bus-event stride: a plausible loop that
+ * cannot be doing the thing its name says. */
+static void step_one(bool *cycle_pending)
+{
+    if (*cycle_pending) {
+        const unsigned kind = s_top->cycle_kind_o & 0xf;
+        const uint32_t a = static_cast<uint32_t>(s_top->cycle_addr_o);
+        if (kind == 1) {  /* KIND_WORD_WRITE */
+            gsp_board_write16(s_board, a,
+                              static_cast<uint16_t>(s_top->cycle_wdata_o));
+        } else if (kind == 0) {  /* KIND_WORD_READ */
+            s_top->cycle_rdata_i = gsp_board_read16(s_board, a);
+        }
+        s_top->cycle_ack_i = 1;
+        *cycle_pending = false;
+    } else {
+        s_top->cycle_ack_i = 0;
+    }
+    if (!*cycle_pending && s_top->cycle_req_o) *cycle_pending = true;
+
+    s_top->clk = 1;
+    s_top->eval();
+
+    /* Track GSP display-register writes from the I/O bus. */
+    if (*cycle_pending && s_top->cycle_kind_o == 6) {
+        uint32_t addr = static_cast<uint32_t>(s_top->cycle_addr_o);
+        uint16_t wdata = static_cast<uint16_t>(s_top->cycle_wdata_o);
+        if (addr == 0xF6000010u)       s_dpy_regs[3] = wdata;  /* DPYCTL */
+        else if (addr == 0xF6000012u) s_dpy_regs[0] = wdata;  /* DPYSTRT */
+        else if (addr == 0xF6000014u) s_dpy_regs[2] = wdata;  /* DPYTAP */
+        else if (addr == 0xF6000016u) s_dpy_regs[1] = wdata;  /* DPYADR */
+    }
+
+    s_top->clk = 0;
+    s_top->eval();
+}
+
 static uint64_t run_gsp(uint64_t gsp_cycles)
 {
     uint64_t ticked = 0;
     bool idle_line = true;
+    bool cycle_pending = false;   /* persists across cycles -- see step_one */
+    /* Declared here so the seeding copy in sync_and_step can see it. */
 
     for (uint64_t i = 0; i < gsp_cycles; i++) {
         bool had_req = (s_top->host_req_i != 0);
-        bool cycle_pending = false;
 
-        /* Service any request the core raised on the previous cycle.
-         * The bus arbiter holds cycle_req_o until it sees cycle_ack_i. */
-        if (cycle_pending) {
-            const unsigned kind = s_top->cycle_kind_o & 0xf;
-            const uint32_t a = static_cast<uint32_t>(s_top->cycle_addr_o);
-
-            if (kind == 1) {  /* KIND_WORD_WRITE */
-                gsp_board_write16(s_board, a,
-                                  static_cast<uint16_t>(s_top->cycle_wdata_o));
-            }
-            s_top->cycle_ack_i = 1;
-            cycle_pending = false;
-        } else {
-            s_top->cycle_ack_i = 0;
-        }
-
-        if (!cycle_pending && s_top->cycle_req_o) {
-            cycle_pending = true;
-        }
-
-        /* Rising edge */
-        s_top->clk = 1;
-        s_top->eval();
-
-        /* Track GSP display-register writes from the I/O bus.
-         * LOCAL_CYCLE_IO_WRITE (kind==6) to 0xF6000010-0xF6000017 updates
-         * the shadow display-register state. */
-        if (cycle_pending && s_top->cycle_kind_o == 6) {
-            uint32_t addr = static_cast<uint32_t>(s_top->cycle_addr_o);
-            uint16_t wdata = static_cast<uint16_t>(s_top->cycle_wdata_o);
-            if (addr == 0xF6000010u)       s_dpy_regs[3] = wdata;  /* DPYCTL */
-            else if (addr == 0xF6000012u) s_dpy_regs[0] = wdata;  /* DPYSTRT */
-            else if (addr == 0xF6000014u) s_dpy_regs[2] = wdata;  /* DPYTAP */
-            else if (addr == 0xF6000016u) s_dpy_regs[1] = wdata;  /* DPYADR */
-        }
-
-        /* Falling edge */
-        s_top->clk = 0;
-        s_top->eval();
+        step_one(&cycle_pending);
 
         ticked++;
         if (s_top->host_ack_o || had_req) {
             idle_line = false;
             s_gsp_halted = false;
         }
+        if (i > 64) s_core_ran = true;   /* real work, not an idle handshake */
         /* If we've been idle for a full scanline (2535 cycles), assume
          * the GSP has hit a STOP and is waiting. */
         if (idle_line && ticked >= 2535) {
@@ -201,30 +212,67 @@ void gsp_rtl_driver_init(gsp_board_t *board,
     printf("gsp_rtl_driver: init done, halted=%d\n", s_gsp_halted ? 1 : 0);
 }
 
-/* Full per-frame sync: copy musashi VRAM → shared board, step GSP, copy back.
- * musashi_gsp_vram: musashi_cpu's gsp_vram (uint16_t packed).
- * word_count: number of uint16_t words. */
+/* Step the GSP for one frame's worth of cycles.
+ *
+ * NOTE the deliberate absence of a musashi-VRAM -> board copy.
+ *
+ * The board is the single source of truth, and both writers already reach it
+ * directly:
+ *   - the MC68010's host-port writes, via gsp_rtl_driver_host_write() ->
+ *     gsp_board_host_write(s_board, ...);
+ *   - the GSP core's own program-space traffic, via step_one() ->
+ *     gsp_board_read16/write16(s_board, ...).
+ *
+ * Copying musashi's share in on EVERY frame is destructive: musashi's share
+ * holds the 68010's upload plus whatever the native C slices wrote directly,
+ * so a per-frame copy overwrites the core's output with the bare upload on any
+ * frame where the core was halted (and so was not stepped) -- and the scanout
+ * then read back exactly what had just been erased. That is why the live
+ * window stayed unchanged however much the core ran.
+ *
+ * But dropping the copy entirely is ALSO wrong, and measurably so: some VRAM
+ * writes never touch the host port at all (the native display-list and
+ * vram-clear slices write musashi's share directly), so a board that only ever
+ * sees host traffic ends up empty -- 0 nonzero words against musashi's 1617.
+ *
+ * So: seed once, then leave the board authoritative. After the first call the
+ * two sides agree, and from then on the board accumulates the 68010's host
+ * writes AND the core's output, which is what the scanout should read. */
 void gsp_rtl_driver_sync_and_step(const uint16_t *musashi_gsp_vram,
                                   size_t word_count)
 {
     if (!s_init_done || !s_board) return;
 
-    /* Copy musashi VRAM → shared board VRAM.
-     * The MC68010 writes pixel data to musashi's gsp_vram via the host port.
-     * We need that data in s_board->vram so the GSP RTL can see it. */
-    if (musashi_gsp_vram && word_count > 0) {
-        size_t limit = word_count < GSP_BOARD_VRAM_BYTES / 2
-                           ? word_count : GSP_BOARD_VRAM_BYTES / 2;
-        for (size_t i = 0; i < limit; i++) {
-            uint32_t off = (uint32_t)i * 2;
-            uint16_t w = musashi_gsp_vram[i];
-            s_board->vram[off + 0] = (uint8_t)(w & 0xFFu);
-            s_board->vram[off + 1] = (uint8_t)(w >> 8);
+    /* Seed from musashi EXACTLY ONCE, and only once musashi actually holds
+     * something.
+     *
+     * Three wrong versions came first, all of which wiped the board:
+     *   - copying every frame destroyed the core's output (the original bug);
+     *   - copying once, at the first frame edge, captured an EMPTY share,
+     *     because the 68010 has not uploaded anything that early;
+     *   - copying every frame until the core first stepped, wiped it again on
+     *     every frame in between -- and the core steps early, on a share with
+     *     no program in it.
+     *
+     * The predicate is "musashi is non-empty", checked per word, and the flag
+     * latches so it can never happen twice. After this the board owns the
+     * truth: the 68010's host writes and the core's own writes both land
+     * directly in it, and the scanout reads it back out. */
+    static bool s_seeded = false;
+    if (!s_seeded && musashi_gsp_vram && word_count > 0) {
+        size_t n = word_count < GSP_BOARD_VRAM_BYTES / 2
+                       ? word_count : GSP_BOARD_VRAM_BYTES / 2;
+        for (size_t i = 0; i < n; i++) {
+            if (musashi_gsp_vram[i]) { s_seeded = true; break; }
+        }
+        if (s_seeded) {
+            size_t bytes = n * 2u;
+            if (bytes > GSP_BOARD_VRAM_BYTES) bytes = GSP_BOARD_VRAM_BYTES;
+            memcpy(s_board->vram, musashi_gsp_vram, bytes);
         }
     }
 
-    /* Step the GSP for one frame's worth of cycles.
-     * MC68010 frame = 132886 cycles × 5 = 664430 GSP cycles. */
+    /* MC68010 frame = 132886 cycles × 5 = 664430 GSP cycles. */
     if (!s_gsp_halted) {
         uint64_t gsp_frame_cycles = 132886ULL * GSP_CYCLE_RATIO;
         run_gsp(gsp_frame_cycles);
@@ -237,14 +285,9 @@ void gsp_rtl_driver_sync_to_musashi(uint16_t *musashi_gsp_vram,
 {
     if (!s_init_done || !s_board || !musashi_gsp_vram) return;
 
-    size_t limit = word_count < GSP_BOARD_VRAM_BYTES / 2
-                       ? word_count : GSP_BOARD_VRAM_BYTES / 2;
-    for (size_t i = 0; i < limit; i++) {
-        uint32_t off = (uint32_t)i * 2;
-        uint16_t w = (uint16_t)(s_board->vram[off + 0]) |
-                    ((uint16_t)(s_board->vram[off + 1]) << 8);
-        musashi_gsp_vram[i] = w;
-    }
+    size_t bytes = word_count * 2u;
+    if (bytes > GSP_BOARD_VRAM_BYTES) bytes = GSP_BOARD_VRAM_BYTES;
+    memcpy(musashi_gsp_vram, s_board->vram, bytes);
 }
 
 int gsp_rtl_driver_is_halted(void)
@@ -272,6 +315,34 @@ int gsp_rtl_driver_host_write(unsigned reg, uint16_t data)
     uint32_t offsets[4] = { 0x04, 0x00, 0x0C, 0x08 };
     if (reg > 3) return -1;
     gsp_board_host_write(s_board, offsets[reg], data);
+
+    /* ALSO present the transaction to the core's own host port pins.
+     *
+     * This was missing, and it is the whole reason the core never ran when the
+     * driver was wired into the shell: updating the board alone leaves the
+     * core's HSTADR/HSTDATA/HSTCTL registers and its HLT line untouched, so it
+     * stays in reset for the whole session and the window shows only the
+     * 68010's upload. gsp_rtl_main.cpp has always done this via its host_txn
+     * lambda; the driver had the board half and not the core half.
+     *
+     * The requester holds req and payload stable until ack, then deasserts req
+     * before the next transaction (tms34010_host_if.sv). The wait is bounded:
+     * a transaction that never acks must not hang the shell's frame loop. */
+    s_top->hcs_n_i = 0;
+    s_top->host_req_i = 1;
+    s_top->host_we_i = 1;
+    s_top->host_reg_i = reg & 3u;
+    s_top->host_wdata_i = data;
+    unsigned guard = 4096;
+    bool pending = false;
+    while (!s_top->host_ack_o && guard-- > 0) step_one(&pending);
+    if (guard == 0) return -2;            /* no acknowledge: caller may report */
+    s_top->host_req_i = 0;
+    s_top->hcs_n_i = 1;
+    step_one(&pending);
+    /* An acknowledged host transaction is proof the core is not stuck in
+     * reset, which is what s_gsp_halted tracks. */
+    s_gsp_halted = false;
     return 0;
 }
 

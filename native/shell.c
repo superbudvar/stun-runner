@@ -102,8 +102,82 @@ static void mkpath(const char *path, mode_t mode)
 /*** GSP RTL driver: only available when Verilator was found at configure time. ***/
 #ifdef STUNRUN_GSP_RTL
 #include "gsp_rtl_driver.h"
+/* The driver needs a gsp_board_t to carry VRAM between the MC68010 and the
+ * core. The shell does not use one otherwise, so it keeps a private one: the
+ * driver only ever touches s_board->vram, and the scanout reads the core's
+ * output back out through sync_to_musashi, so this board is a transport buffer
+ * and not a second model. It is 512 KiB, so it is static, not on the stack. */
+static gsp_board_t g_gsp_rtl_board;
+static int g_gsp_rtl_ready = 0;
+
+/* Bind the core to that board and hand it a zeroed share. Must run before the
+ * first GSP_RTL_SYNC_AND_STEP: the driver silently returns from every entry
+ * point until it is initialised, so a missing call here shows up as a live
+ * window showing only the 68010's upload and nothing else. */
+static void gsp_rtl_ensure_init(void)
+{
+    if (g_gsp_rtl_ready) return;
+    gsp_board_reset(&g_gsp_rtl_board);
+    gsp_rtl_driver_init(&g_gsp_rtl_board, NULL, 0);
+    g_gsp_rtl_ready = 1;
+    printf("shell: gsp-rtl=bound (Verilated TMS34010 core; scanout reads the "
+           "core's own output)\n");
+}
+
+#ifdef STUNRUN_GSP_RTL
+/* Forward the MC68010's host-window writes into the core.
+ *
+ * This is the link that actually starts the machine. The 68010's HSTADR/HSTDAT
+ * writes reach native/musashi_cpu.c, which stores them into its own share --
+ * but the CORE has its own HSTADR/HSTDATA/HSTCTL registers and its own HLT line,
+ * and nothing told it. Without this the core sits in reset forever
+ * (`halted=1`), which presents as a live window showing only the upload and
+ * never a pixel from the GSP. The release is the 68010 clearing HSTCTL bit 15,
+ * so that write in particular has to arrive.
+ *
+ * The driver takes the decoded register index directly, so this forwards the
+ * bus event's data without re-deriving the register: re-decoding here is how
+ * the HSTADRL/HSTADRH pair got transposed once already (findings section 13). */
+static unsigned long g_gsp_rtl_obs_seen, g_gsp_rtl_obs_fwd, g_gsp_rtl_obs_noack;
+static unsigned long g_gsp_rtl_obs_hstdat, g_gsp_rtl_obs_hstdat_nz, g_gsp_rtl_obs_hstadr_nz;
+static unsigned long g_gsp_rtl_obs_hstctl_nz, g_gsp_rtl_obs_hstctl_rel;
+static uint32_t g_gsp_rtl_obs_last_adr = 0;
+static void gsp_rtl_bus_observer(void *ctx,
+                                 const musashi_gsp_bus_event_t *ev)
+{
+    (void)ctx;
+    if (!g_gsp_rtl_ready) return;
+    g_gsp_rtl_obs_seen++;
+    if (ev->kind != MUSASHI_GSP_BUS_HOST_WINDOW) return;
+    /* ev->address is the absolute 68010 address in the 0xC00000 host window;
+     * reg is the same (byte_offset >> 2) ^ 1 decode the board model uses. */
+    {
+        unsigned r0 = gsp_board_host_reg(ev->address - 0xC00000u);
+        if (r0 == GSP_BOARD_HSTDAT) {
+            g_gsp_rtl_obs_hstdat++;
+            if (ev->data) g_gsp_rtl_obs_hstdat_nz++;
+        } else if (r0 == GSP_BOARD_HSTADRL || r0 == GSP_BOARD_HSTADRH) {
+            if (ev->data) g_gsp_rtl_obs_hstadr_nz++;
+        } else if (r0 == GSP_BOARD_HSTCTL) {
+            if (ev->data) g_gsp_rtl_obs_hstctl_nz++;
+            if (!(ev->data & 0x8000u)) g_gsp_rtl_obs_hstctl_rel++;
+        }
+        g_gsp_rtl_obs_last_adr = ev->address;
+        (void)g_gsp_rtl_obs_last_adr;
+        int rc = gsp_rtl_driver_host_write(r0, ev->data);
+        if (rc == 0) g_gsp_rtl_obs_fwd++;
+        else if (rc == -2) g_gsp_rtl_obs_noack++;
+    }
+}
+#endif
+
 #define GSP_RTL_SYNC_AND_STEP(mem) do { \
-    if ((mem).vram) gsp_rtl_driver_sync_and_step((mem).vram, MUSASHI_GSP_VRAM_WORDS); \
+    gsp_rtl_ensure_init(); \
+    if ((mem).vram) { \
+        gsp_rtl_driver_sync_and_step((mem).vram, MUSASHI_GSP_VRAM_WORDS); \
+        gsp_rtl_driver_sync_to_musashi((uint16_t *)(mem).vram, \
+                                       MUSASHI_GSP_VRAM_WORDS); \
+    } \
 } while (0)
 #else
 #define GSP_RTL_SYNC_AND_STEP(mem) do { } while (0)
@@ -513,23 +587,48 @@ static int get_live_gsp_state(musashi_gsp_memory_t *mem,
         musashi_cpu_gsp_memory(g_cpu, mem) != 0)
         return -1;
 
-    /* Read display registers from the GSP RTL.  When the GSP is halted (service
-     * mode, or before it has been uploaded a program), fall back to the
-     * frame-600 constants so the rasterizer still shows something.
-     * Only available when STUNRUN_GSP_RTL is defined (Verilator build). */
+    /* Read display registers from the GSP RTL.
+     *
+     * The test is "has the core written them", NOT "is the core running right
+     * now". The GSP halts on STOP whenever it finishes a display-list pass, so
+     * gating on is_halted() means the registers are used only in the brief
+     * windows between passes and the frame-600 fallback wins almost always --
+     * which is why the live window kept showing frame-600 geometry no matter
+     * what the core was doing. DPYCTL is non-zero once the core has set up
+     * scanout, so it is the honest "have we ever run" flag.
+     *
+     * These are the RTL's OWN registers, tracked from its I/O bus, not
+     * constants: DPYSTRT/DPYADR/DPYTAP/DPYCTL below are read back from the
+     * core rather than assumed. */
 #ifdef STUNRUN_GSP_RTL
-    if (!gsp_rtl_driver_is_halted()) {
-        gsp_rtl_driver_get_display_regs(&dregs->dpystrt, &dregs->dpyadr,
-                                       &dregs->dpytap, &dregs->dpyctl);
-        /* Fill in the timing constants that the RTL does not track. */
-        dregs->heblnk   = 110;
-        dregs->hsblnk   = 622;
-        dregs->veblnk   = 19;
-        dregs->vsblnk   = 19;
-        dregs->finescroll = 7;
-        dregs->palbank    = 0;
-    } else {
-        stunrun_gsp_display_frame600_regs(dregs);
+    {
+        uint16_t dpystrt = 0, dpyadr = 0, dpytap = 0, dpyctl = 0;
+        gsp_rtl_driver_get_display_regs(&dpystrt, &dpyadr, &dpytap, &dpyctl);
+        if (dpyctl != 0u) {
+            dregs->dpystrt = dpystrt;
+            dregs->dpyadr  = dpyadr;
+            dregs->dpytap  = dpytap;
+            dregs->dpyctl  = dpyctl;
+            /* Timing constants the RTL does not track.
+             *
+             * vsblnk MUST differ from veblnk. DPYADR only advances while
+             * veblnk <= v < vsblnk (findings section 12), so setting both to
+             * 19 makes the visible window ZERO ROWS TALL: rasterise returns
+             * -1 and the shell reports live-video=unavailable. That, not the
+             * address units, is what `mode=blank-scaffold` was.
+             *
+             * 0x0103 is the board's measured value: findings section 12
+             * records `vcount=0013 vsblnk=0103 veblnk=0013 palbank=0
+             * finescroll=7` for STUN Runner, i.e. 259 against 19. */
+            dregs->heblnk   = 110;
+            dregs->hsblnk   = 622;
+            dregs->veblnk   = 19;
+            dregs->vsblnk   = 0x0103;
+            dregs->finescroll = 7;
+            dregs->palbank    = 0;
+        } else {
+            stunrun_gsp_display_frame600_regs(dregs);
+        }
     }
 #else
     stunrun_gsp_display_frame600_regs(dregs);
@@ -1354,6 +1453,13 @@ static int run_walk(void)
                  * instruction hook is registered before the first instruction. */
                 cpu_override_init();
                 musashi_cpu_set_ports(g_cpu, &ports);
+#ifdef STUNRUN_GSP_RTL
+                /* Give the core the 68010's host-port traffic. Without this it
+                 * never sees the HSTCTL write that clears HLT, so it never
+                 * leaves reset and never draws anything. */
+                gsp_rtl_ensure_init();
+                musashi_cpu_set_gsp_bus_observer(g_cpu, gsp_rtl_bus_observer, NULL);
+#endif
                 /* Bind the LIVE JSA latch block, not a local: a 68010 store
                  * into $600000-$603FFF reaches stunrun_jsa_main_command_write()
                  * and is consumed by sound_dispatch_frame() below.  With no
@@ -2006,6 +2112,32 @@ static int run_walk(void)
                "source=live-gsp-share\n",
                g_live_video_presented, g_live_video_stride);
     }
+#ifdef STUNRUN_GSP_RTL
+    printf("shell: gsp-rtl host-window events seen=%lu forwarded=%lu "
+           "no-ack=%lu  core_halted_now=%d\n",
+           g_gsp_rtl_obs_seen, g_gsp_rtl_obs_fwd, g_gsp_rtl_obs_noack,
+           gsp_rtl_driver_is_halted());
+    printf("shell: gsp-rtl board host_writes=%llu vram_writes=%llu "
+           "unmapped_writes=%llu word_reads=%llu word_writes=%llu\n",
+           (unsigned long long)g_gsp_rtl_board.host_writes,
+           (unsigned long long)g_gsp_rtl_board.vram_writes,
+           (unsigned long long)g_gsp_rtl_board.unmapped_writes,
+           (unsigned long long)g_gsp_rtl_board.word_reads,
+           (unsigned long long)g_gsp_rtl_board.word_writes);
+    printf("shell: gsp-rtl board vram nonzero words=%u\n",
+           gsp_board_vram_nonzero_words(&g_gsp_rtl_board));
+    printf("shell: gsp-rtl host HSTDAT=%lu (nonzero %lu)  HSTADR-nonzero=%lu  "
+           "HSTCTL-nonzero=%lu  HLT-cleared=%lu\n",
+           g_gsp_rtl_obs_hstdat, g_gsp_rtl_obs_hstdat_nz,
+           g_gsp_rtl_obs_hstadr_nz, g_gsp_rtl_obs_hstctl_nz,
+           g_gsp_rtl_obs_hstctl_rel);
+    {
+        uint16_t a=0,b=0,c=0,d=0;
+        gsp_rtl_driver_get_display_regs(&a,&b,&c,&d);
+        printf("shell: gsp-rtl shadow DPYSTRT=0x%04x DPYADR=0x%04x "
+               "DPYTAP=0x%04x DPYCTL=0x%04x\n", a,b,c,d);
+    }
+#endif
 
     printf("render frame=%u width=%u height=%u hash=0x%08X mode=%s\n",
            renderer.frame, STUNRUN_RENDER_WIDTH, STUNRUN_RENDER_HEIGHT,

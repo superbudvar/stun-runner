@@ -50,10 +50,23 @@ void gsp_rtl_driver_init(gsp_board_t *board,
                          size_t vram_image_words);
 
 /* Full per-frame sync: copy musashi VRAM → shared board, step GSP, copy back.
- * musashi_gsp_vram: musashi_cpu's gsp_vram (uint16_t packed).
- * word_count: number of uint16_t words. */
+ * musashi_gsp_vram: musashi_cpu's gsp_vram, exposed as 16-bit words.
+ * word_count: MUSASHI_GSP_VRAM_WORDS, i.e. the whole 512 KiB share.
+ *
+ * Both sides are the same 512 KiB byte array since the unit correction
+ * (findings section 34). The previous de-interleave loop byte-swapped every
+ * word on the way through, which belonged to the refuted 4 MiB packed model:
+ * musashi reinterprets its uint8_t share as uint16_t words, and the board is
+ * byte-addressed, so the words are ALREADY in order and swapping them corrupted
+ * every pixel. A straight memcpy is the correct transfer. */
 void gsp_rtl_driver_sync_and_step(const uint16_t *musashi_gsp_vram,
                                    size_t word_count);
+
+/* Copy the core's VRAM back out, so the rasteriser reads what the GSP produced
+ * rather than what the MC68010 uploaded.  Same convention as sync_and_step,
+ * for the same reason. */
+void gsp_rtl_driver_sync_to_musashi(uint16_t *musashi_gsp_vram,
+                                    size_t word_count);
 
 /* Returns non-zero if the GSP is halted and should not be stepped. */
 int gsp_rtl_driver_is_halted(void);

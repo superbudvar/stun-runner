@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.20)
 project(stunrun_native_smoke LANGUAGES C CXX)
 
+# Link the Verilated TMS34010 core into the shell. Off by default; see the
+# guard below for why the ROM-free build must not require a simulator.
+option(STUNRUN_GSP_RTL
+  "Link the Verilated GSP core into the shell (requires Verilator)" OFF)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -203,6 +208,7 @@ target_include_directories(stunrun-native-shell PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/gsp_rtl)
 set_target_properties(stunrun-native-shell PROPERTIES
   C_STANDARD 99 CXX_STANDARD 14 CXX_STANDARD_REQUIRED ON)
+
 if(STUNRUN_GSP_GL_SCANOUT_ENABLED)
   target_compile_definitions(stunrun-native-shell PRIVATE
     STUNRUN_GSP_GL_SCANOUT=1)
@@ -886,3 +892,34 @@ if(STUNRUN_VERILATOR)
   set_target_properties(stunrun_gsp_rtl_driver PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
 endif()
+
+# NOTE: this block must stay BELOW the driver's add_library above. An
+# `if(TARGET ...)` placed earlier is always false here, because CMake has not
+# reached the definition yet -- which fails silently into the fallback path
+# and looks like "Verilator not found".
+#
+# STUNRUN_GSP_RTL=1 links the Verilated TMS34010 core into the shell so the
+# live scanout reads what the GSP produced rather than what the 68010 uploaded.
+#
+# It is OFF by default and guarded twice over: the option must be set AND
+# Verilator must have been found. The ROM-free build therefore gains no
+# simulator dependency, which is the property the M0 baseline established.
+#
+# See docs/mc68010-boot-findings.md section 38 for what this does and does not
+# make true: the core is byte-accurate against MAME on its first output, but it
+# runs on its own clock here, so the picture is the GSP's work at an unrelated
+# point in the game's timeline.
+if(STUNRUN_GSP_RTL)
+  if(TARGET stunrun_gsp_rtl_driver)
+    target_compile_definitions(stunrun-native-shell PRIVATE STUNRUN_GSP_RTL=1)
+    target_link_libraries(stunrun-native-shell PRIVATE stunrun_gsp_rtl_driver)
+    message(STATUS "GSP RTL core linked into the shell (STUNRUN_GSP_RTL=1)")
+  else()
+    message(WARNING
+      "STUNRUN_GSP_RTL=1 but Verilator was not found; the shell will fall "
+      "back to the native software GSP path. See the STUNRUN_VERILATOR hint "
+      "in CMakeLists.txt for where it is looked for.")
+  endif()
+endif()
+
+

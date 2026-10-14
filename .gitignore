@@ -8,6 +8,7 @@
 
 # Local builds, test output, and emulator state
 build/
+build-rtl/
 Testing/
 capture/
 snap/
