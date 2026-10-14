@@ -8207,3 +8207,396 @@ defects in the 1989 game and in MAME, never ours:
   if a capture showed the game reaching it in normal play.
 - **The native model never asserting IPL2.** That is a gap in *our* machine
   model, which is where it belongs.
+---
+
+## 41. The premise of §40.8 was a contaminated MAME config, and the real halt is the missing IPL2 wire
+
+§40.8 asked a good question with the wrong oracle. It established that our 68010
+never executes `$005000-$005B00` while "MAME's does, at frames 169/263/397/476",
+and inferred that the RAM walk was the thing releasing `$FFDB48`. **That oracle
+run was not a normal boot.** With a clean configuration the same command, the same
+MAME binary and the same ROMs produce a different set of writers, `$0059DE` /
+`$005A12` / `$005A5C` among none of them.
+
+### 41.1 The walk's call path, and who actually reaches it
+
+Disassembled from the correctly-assembled image
+(`tools/build-maincpu-image -o IMAGE` → `reset vector: SP=0xffffc000
+PC=0x00000216`).
+
+`$005000-$005B00` is **not** one routine. It is an Atari System 2 diagnostics
+memory-test subsystem:
+
+```asm
+; $000100-$0001EE: a jump table of `jmp <abs.l>` stubs, 31 six-byte entries.
+000100: jmp $216.l      ; index 0   -- the reset-vector target
+000106: jmp $506c.l     ; index 1   -- DIAGNOSTICS entry list
+000172: jmp $506c.l     ; index 12
+000178: jmp $5b6e.l     ; index 13  -- RAM-verification chain, variant B
+00017e: jmp $5896.l     ; index 14  -- RAM-verification chain, variant A
+0001f0: moveq #-$6,D4
+```
+
+```asm
+; $00506C -- the diagnostics entry list.  Each element ends in `jmp (A0)` and
+; is chained by reloading A0, so the list is a fall-through pipeline.
+00506c: movea.l #$ffffc000, A7
+005072: lea ($6,PC), A0; ($507a)
+005076: bra $53f2        ; GSP register init      -> jmp (A0)
+00507a: lea ($6,PC), A0; ($5082)
+00507e: bra $548e        ; 230400-word VRAM fill  -> jmp (A0)
+005082: lea ($6,PC), A0; ($508a)
+005086: bra $54c2        ; palette init          -> jmp (A0)
+00508a: move.w #$47, D0
+00508e: lea ($8,PC), A2; ($5098)
+005092: jmp $25e8.l      ; text draw, selector $47
+0050a0: move.w #$54, D0
+0050a4: lea ($6,PC), A0; ($50ac)
+0050a8: bra $566a        ; -> jmp (A0) = $50ac
+0050ac: bra $56e6        ; <<< the memory test
+
+; $008FEE is the SAME list with A0/A2 pushed one slot further; it is the
+; non-diagnostic twin of $00506C.
+008fee: move #$2f00, SR
+008ff2: lea ($6,PC), A0; ($8ffa)
+008ff6: bra $53f2
+008ffa: lea ($6,PC), A0; ($9002)
+008ffe: bra $548e
+```
+
+`$56E6` sets up the block bounds and branches to the chain head:
+
+```asm
+0056e6: lea $ffff8000.l, A1          ; block start
+0056ec: lea $fffe.w, A2              ; block end (A2 < A1: the 32-bit compare in
+0056f0: ori.w #$1800, $c00008.l      ;   the walkers wraps, so the walk runs the
+0056f8: move.l #$ff86a600, $c00002.l ;   whole 32-bit space, which is the point)
+005702: movea.w A4, A5
+005704: lea ($6,PC), A4; ($570c)     ; A4 = the "next block / report" link
+005708: bra $5b6e
+```
+
+`$5B6E` is the chain head, and the chain is eleven passes over `A1..A2` in
+different patterns, linked by `A6` and ending `jmp (A4)`:
+
+```asm
+005b6e: clr.l D6
+005b70: clr.l D0
+005b72: clr.l D4
+005b74: lea ($6,PC), A6; ($5b7c)
+005b78: bra $59d8        ; fill A1..A2 with D0            -- $0059DE writes
+...
+005b7c: btst #$5, $60c001.l ; the abort input, checked between every pass
+005b84: beq $5b8c
+005b86: jmp $260.l
+...
+005dfe: clr.w $604000.l / clr.w $604012.l / jmp (A6)
+005dee: jmp (A4)          ; -> $00570C, the next block or the report
+```
+
+The three walkers named by §40.8 are three of the eleven patterns:
+
+```asm
+; $59E6: seed $8000, shift right.  Writes at $0059DE / $005A12 / $005AAA.
+005a10: eor.w D2, D0
+005a12: move.w D0, (A0)
+005a14: lsr.w #1, D2
+
+; $5A32: seed $0001, shift left, walking DOWN from A2-2.  Writes at $005A5C.
+005a5a: eor.w D2, D0
+005a5c: move.w D0, (A0)
+005a5e: lsl.w #1, D2
+
+; $5B2A: the destructive read-back check (eori.w #$ffff, expect zero).
+005b36: eori.w #$ffff, (A0,D0.w)
+```
+
+When the chain returns to `$00570C` with `D4 == 0` it prints selector `$3b` and
+`bra $566a` → `$00572C` → **`jmp $50B0`**, which is the game:
+
+```asm
+005073: lea ($6,PC), A0; ($507a)      $0050b0: movea.l #$ffffc000, A7
+...
+0050b0: movea.l #$ffffc000, A7        0050b6: jsr $570.l
+0050b4: jsr $570.l                    0050bc: bsr $552c
+```
+
+So the memory test is the **diagnostics/menu path, and on a pass it starts the
+game**. It is not background work.
+
+**Confirmed:** the entry path `$00506C` → `$0050A0/$0050AC` → `$00566A` →
+`$0056E6` → `$005B6E` → `$0059D8…$005DEE`, the eleven-pass chain, and the pass
+path into `$0050B0`.
+
+### 41.2 What actually selects that path: `$60C001` bit 5
+
+Nothing calls `$5B6E` directly. The ROM's boot code chooses:
+
+```asm
+000216: lea $0.w, A0
+00021a: movea.l ($0,A0), A7          ; SP = [$00000000] = $FFFFC000
+00021e: movec A0, VBR
+000228: reset
+...
+000254: btst #$5, $60c001.l         ; IN0 bit 5 = PORT_SERVICE, active low
+00025c: beq $2a0
+000260: move #$2f00, SR             ;   SET  -> full init, then jmp (A1)
+...
+000286: lea $20000.l, A0
+00028c: movea.l ($0,A0), A7
+000290: movea.l ($4,A0), A1         ;   A1 = [$00020004] = $000212AE
+000294: movec A0, VBR               ;   VBR = $00020000
+00029e: jmp (A1)                    ;   -> $00212AE, the real game init
+0002a0: btst #$0, $60c001.l         ; IN0 bit 0 = "Diagnostic jumper"
+0002a8: bne $2b2
+0002ac: jmp $8fee.l                 ;   CLEAR -> the normal entry-point list
+0002b2: jmp $506c.l                 ;   SET   -> the DIAGNOSTICS list
+```
+
+`$00020004` is `0x000212AE` in the ROM vector image (`STUNRUN_DISASM=0x020000:
+0x020100`), so the bit-5-SET path lands in `$00212AE`, which does the
+`$00212FA` work-RAM clear, calls `$223F4/$22428/$20702/$24306` and `jmp
+$21286`.
+
+`$60C000-$60CFFF` is `hd68k_port0_r()` (harddriv.cpp:605,
+harddriv_m.cpp:267-280), and stunrun's own port block is
+INPUT_PORTS_START(stunrun) at harddriv.cpp:1084-1096: bit 0 = "Diagnostic
+jumper" (default 0x01), bit 5 = `PORT_SERVICE(0x20)` active low. MAME's default
+therefore reads **bit5 = 1, bit0 = 1**: SET, so `$00260` → `$00212AE`, the game —
+which is what our model does (`port0_status()` returns `in0 = 0xE7`,
+musashi_cpu.c:1829-1889).
+
+**Both emulators take the game path by default. The walk is correctly absent
+from both.**
+
+### 41.3 The contamination, and the control that proves it
+
+`tools/mame-ram-write-trace` hardcodes `-cfg_directory /tmp/stunrun-mame-cfg`
+(tools/mame-ram-write-trace:96). That directory is outside the repository, is
+rewritten by every run, and at the start of this session contained:
+
+```xml
+<port tag=":mainpcb:IN0" type="DIPSWITCH" mask="32" defvalue="32" value="0" />
+```
+
+`mask="32"` is IN0 bit 5 forced to **0**. That is `$00254: btst #$5` taking the
+`beq $2a0` branch, `$002A0: btst #0` taking `bne $2b2`, and `jmp $506c` — the
+diagnostics path. §40.8's oracle ran the memory test because of a DIP override
+left in a scratch directory, not because the game runs one.
+
+Both directions, same command, same MAME binary (`/mnt/build/mame-ref/mame`,
+0.289), same ROMs, `--input none --nothrottle`, frames 10-600:
+
+```text
+clean cfg : events= 2529 writers=['0x21302','0x2143c','0x2c0fe','0x2dad4',
+                                  '0x2dadc','0x2dae4','0x2f206','0x2f23a',
+                                  '0x2f250','0x30000']
+DIP  cfg  : events=  343 writers=['0x59de','0x5a12','0x5a5c']
+```
+
+The clean run reproduces three times with identical frames, writer PCs and
+per-frame counts; the DIP run reproduces §40.8 exactly. `canonical_log_sha256`
+differs between the two only because it covers the output path (AGENTS.md trap 4)
+— the runs used different output directories.
+
+### 41.4 §40.1 was right, and §40.8's refutation of it was wrong
+
+On the clean run, `$FFDB48` is written `$FFFF` by **`$002143C`** — three
+instructions into the level-3 autovector handler — **every three frames from
+frame 131**, alternating with `$02F23A: clr.w $ffdb48.l` (caller 2's
+"clear AFTER", §40.2):
+
+```text
+frame= 37 pc=0x021302 data=0x0000     boot work-RAM clear
+frame=131 pc=0x02143c data=0xFFFF     first IPL3 delivery
+frame=135 pc=0x02f23a data=0x0000     gate cleared AFTER the wait
+frame=136 pc=0x02143c data=0xFFFF
+frame=169 pc=0x02f23a data=0x0000
+frame=170 pc=0x02143c data=0xFFFF
+...    (every third frame, to 599)
+```
+
+`$0002006C -> 0x0002143C` is vector 27 = `24 + level` = level 3 (VBR =
+`$00020000`), and harddriv_m.cpp:97 drives `m_maincpu->set_input_line(3, ...)`
+from `m_gsp_irq_state`. So **§40.1's writer is the real one**; §40.8's "the IRQ3
+handler never runs in MAME either" was an artifact of the same contaminated
+config.
+
+The oracle's PC histogram over frames 150-600 also shows the gate is entered
+**and** left, which our model never does:
+
+```text
+$02FC82 tst.w (A2)   MAME 67040    native 43259
+$02FCB6 (the exit)   MAME 67040    native     0
+```
+
+### 41.5 The divergence point
+
+The last thing our 68010 does that MAME's does not, and the frame it happens on,
+is not an instruction. It is **the absence of an interrupt**, and the frame is
+**131**.
+
+```text
+shell: irq assert_calls=3463 assert_l1..l7=0/0/0/0/2475/0/0 autovector_fetches=985
+       vbr=0x00020000 irq5=985 nmi=0 last_vector=29 last_target=0x000222DA
+```
+
+`assert_l3 == 0` for 600 frames. Nothing in our machine model ever calls
+`musashi_cpu_set_irq(cpu, 3)`; `native/shell.c:1674` is the only call site in
+the whole model and passes level 5. `grep -rn "set_irq" native/` returns three
+hits, all level 0 (drop), plus that one. There is no IPL2 wire, and no path
+from the Verilated core to one.
+
+MAME asserts IPL2 at frame 131 and every third frame thereafter, from the
+TMS34010's own INT pin. That pin is confirmed this time, not inferred:
+
+```text
+tms34010.cpp:1682-1685   /* the TMS34010 can set output interrupt? */
+        if (!(oldreg & 0x0080) && (newreg & 0x0080))
+                m_output_int_cb(1);
+        else if ((oldreg & 0x0080) && !(newreg & 0x0080))
+                m_output_int_cb(0);
+```
+
+`oldreg`/`newreg` there is `REG_INTENB` (the `case REG_INTENB:` arm above it),
+bit 7 is the host-visible output-interrupt enable, and:
+
+```text
+harddriv.cpp:1489   m_gsp->output_int().set(FUNC(harddriv_state::hdgsp_irq_gen));
+harddriv_m.cpp:118-120  hdgsp_irq_gen: m_gsp_irq_state = state; update_interrupts();
+harddriv_m.cpp:97      m_maincpu->set_input_line(3, m_gsp_irq_state ? ASSERT_LINE : CLEAR_LINE);
+```
+
+The vendored RTL has the GSP's **internal** interrupt path
+(`rtl/core/tms34010_int_ctrl.sv:42 assign active = intpend & intenb`, fed by
+`io_intenb` from `rtl/io/tms34010_io_regs.sv:485`) but **no external INT output
+port at all**: `rtl/tms34010_system.sv:17-60` lists `lint1_n_i`, `lint2_n_i`,
+`dpyint_set_i` and `hint_n_o`, and `grep -rn "int_o\|intout\|int_n_o\|ipl"
+third_party/tms34010_sv/rtl/` returns nothing but unrelated hits. So the
+missing wire is a missing pin, not a missing connection between two pins that
+exist.
+
+### 41.6 Controls
+
+**Positive control — the gate opens when IPL2 exists.** A temporary, reverted
+diagnostic in `native/shell.c` pulsed a synthetic IPL2 for one line-slice every
+third frame (`STUNRUN_FAKE_IPL2=3`), 600 frames, RTL core on, compared against
+the unmodified baseline:
+
+```text
+                            baseline     with synthetic IPL2
+$02FC82 tst.w (A2)             43259                        4
+$02FCB6 (the gate exit)            0                        3
+$002143C (IRQ3 entry)             0                       82
+$0021460 rte                     0                    3,808
+$02FC* total                 605,593                       54
+assert_l3                           0                   53,071
+autovector last_vector/target  29/$0222DA      27/$002143C
+$FFDB48 writes                       1                    3,812 (last value $FFFF)
+insn_retired                   7,187,787                25,773,966
+```
+
+The ROM takes vector 27, lands in `$002143C`, writes `$FFFF` to `$FFDB48`, and
+**leaves `$02FC82`** — 4 spins instead of 43,259, and the exit executes 3 times.
+The mechanism, the vector, the handler and the gate all respond. The diagnostic
+was reverted; `git diff --stat` is empty and the baseline run reproduces §39.6
+(`board vram nonzero words=84337`, `hash=0xFA2D16E5 lit=122880/122880
+colours=225`, `assert_l1..l7=0/0/0/0/2475/0/0`, `insn_retired=7187787`).
+
+**Positive control — the oracle's `$FFDB48` tap can fail.** The same
+`tools/mame-ram-write-trace` invocation reports `$0059DE`/`$005A12`/`$005A5C`
+with one config and `$002143C` with the other, 343 vs 2,529 events, from one
+binary and one ROM set. A tap that reported the same answer in both directions
+would prove nothing about either.
+
+**Positive control — `$002143C` really is vector 27.** Not asserted from the
+table: the injected run's autovector counter reports
+`last_vector=27 last_target=0x0002143C` from the CPU side, and the clean oracle
+trace independently shows that PC writing `$FFFF` to `$FFDB48`.
+
+**Negative control — the walk really is unreachable in both emulators.**
+`$0059DE`, `$005A12`, `$005A5C`, `$005896-$0058A0` (chain A head) and
+`$005B6E-$005B7C` (chain B head) are absent from our 600-frame PC histogram
+(1,679 distinct PCs, 7,187,787 instructions retired) **and** from MAME's, when
+MAME is run with a clean configuration. The positive control for the histogram
+itself is the boot fill at `$00069A`: exactly 230,400 executions on both sides,
+which is the strongest available evidence that the two histograms are counting
+the same thing.
+
+### 41.7 Instruments that had to be thrown away, and why
+
+Three MAME-side instruments produced a confident wrong answer before the right
+one was found. Each is recorded because each would be re-invented.
+
+- **`emu.register_periodic` fires zero times in this MAME build.** Measured
+  directly with a self-counting callback over 60 frames: `periodic_fires=0`.
+  Anything built on it reports "nothing happened".
+- **A ROM read tap installed at machine init dies after the boot.** It sees the
+  `$00069A` boot fill exactly 230,400 times and then nothing for the remaining
+  ~560 frames. The identical tap installed at frame 160 over the same window
+  records hundreds of thousands of fetches. "The tap did not fire" there means
+  "the instrument died", and it looks exactly like "the CPU never ran there".
+- **Several read taps in one install: only the first survives.** Six windows
+  installed at once gave a firing count for `$00069A` and a confident zero for
+  the other five, two of which the per-frame PC log independently proved were
+  executing. One tap per run.
+
+With the tap installed late and one at a time, it is a usable oracle PC
+histogram — but note the remaining gap: from frame 150 the MAME tap records
+**zero** fetches in `$000000-$01FFFF` while recording 384 in
+`$050000-$05FFFF` and 6.1M in `$020000-$02FFFF`. I did not resolve why, and no
+claim here rests on the histogram's coverage below `$020000`.
+
+### 41.8 Reproduce
+
+```bash
+export PATH="$HOME/.local/share/verilator-5.052/bin:$PATH"
+cmake -S native -B build-rtl -DSTUNRUN_GSP_RTL=1 && cmake --build build-rtl -j"$(nproc)"
+
+# Native side: the gate, and the level that never fires.
+NATIVE_BUILD_DIR=$PWD/build-rtl SDL_VIDEODRIVER=dummy \
+STUNRUN_LIVE_VIDEO=1 STUNRUN_FRAMES=600 \
+STUNRUN_PC_HIST=/tmp/nat_pchist.txt \
+STUNRUN_WATCH_WRITE=0xFFDB48,0x608000 ./run.sh
+
+# Static disassembly of the call path.
+for r in 0x000000:0x000400 0x4D00:0x5C00 0x5C00:0x6200 0x020000:0x020100 \
+         0x212a0:0x21440 0x8f00:0x9100; do
+  NATIVE_BUILD_DIR=$PWD/build-rtl SDL_VIDEODRIVER=dummy STUNRUN_LIVE_VIDEO=1 \
+  STUNRUN_FRAMES=1 STUNRUN_DISASM=$r:/tmp/dis.txt ./run.sh >/dev/null 2>&1
+  echo "== $r"; cat /tmp/dis.txt
+done
+
+# Oracle side.  THE cfg_directory MUST be clean; the tool's hardcoded
+# /tmp/stunrun-mame-cfg is what produced §40.8.
+grep 'port tag' /tmp/stunrun-mame-cfg/stunrun.cfg   # must print nothing
+python3 tools/mame-ram-write-trace roms OUT \
+  --device :mainpcb:maincpu --space program --base 0xffdb40 --end 0xffdb4c \
+  --frames 600 --start-frame 10 --end-frame 600 --max-events 200000 --nothrottle \
+  --mame /mnt/build/mame-ref/mame
+# -> 2529 events, writer_pcs includes 0x2143c, does NOT include 0x59de/0x5a12/0x5a5c
+```
+
+```text
+python3 -m unittest discover -s tests   249 tests OK
+```
+
+### 41.9 Where the fix goes (not implemented here)
+
+Three separable pieces, in dependency order:
+
+1. **A pin.** `tms34010_system` / `tms34010_pin_system` need an output that
+   reproduces `tms34010.cpp:1682-1685`: high while INTENB bit 7 is set. It is
+   the host-visible output interrupt, distinct from the internal vector the core
+   already takes.
+2. **A connection.** `native/gsp_rtl_driver.cpp` must read that pin and call
+   `musashi_cpu_set_irq(cpu, 3)` on the 0→1 edge and `..._set_irq(cpu, 0)` on
+   the 1→0 edge, the way `shell.c:1674` does for IRQ5.
+3. **A cadence check.** MAME's `$002143C` fires every third frame from frame
+   131 on a clean boot. If the RTL core's INTENB bit 7 is set at a different
+   point in the GSP's execution, the cadence will differ and `$FF9BAA` (the
+   elapsed-tick stamp the handler writes at `$021458`) will not match either.
+   That stamp is the measurement to close the loop on.
+
+The gate itself needs nothing: `$02FC60` already returns correctly the moment
+`$FFDB48` is non-zero, as the injection control in 41.6 shows.
