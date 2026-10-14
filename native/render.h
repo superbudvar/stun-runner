@@ -81,6 +81,21 @@ int stunrun_render_gsp_visible(stunrun_renderer_t *renderer,
                                size_t vram_word_count,
                                const uint8_t *palette_rgb);
 uint32_t stunrun_render_hash(const stunrun_renderer_t *renderer);
+
+/* Content summary of the rendered frame, for distinguishing "shows something"
+ * from "shows a different nothing".
+ *
+ * A frame hash cannot tell those apart: a scanout pointed at a zero region
+ * hashes perfectly reproducibly, so every wrong-origin bug in this project
+ * produced a stable, plausible hash. That is exactly how the blank window and
+ * the cleared-buffer hash both survived review. These counters can: a blank
+ * frame has lit == 0 whatever its origin.
+ *
+ *   *lit_pixels  pixels that are not the background (0,0,0)
+ *   *distinct    distinct RGB triples present
+ * Pass NULL for either output to skip it. */
+void stunrun_render_content_stats(const stunrun_renderer_t *renderer,
+                                  unsigned *lit_pixels, unsigned *distinct);
 int stunrun_render_write_ppm(const stunrun_renderer_t *renderer,
                              const char *path);
 int stunrun_render_write_png(const stunrun_renderer_t *renderer,

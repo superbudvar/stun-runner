@@ -7660,3 +7660,162 @@ also surfaces a **pre-existing** failure that is not this section's doing:
 self-test screen. Pointed at it the test reports 1 distinct colour. It was
 already failing that way before these edits and is left untouched: weakening it
 would hide that the two numbers belong to different screens.
+
+## 39. The GSP core runs to completion, and its output reaches the screen
+
+Section 38.4 listed the display-register shadow as never having been written by
+the core. That was correct, and it was also the visible symptom of three
+separate defects. All three are now fixed and the core's output is on screen.
+This section records what each one actually was.
+
+### 39.1 The I/O bus trace was decoding an address the core never emits
+
+`gsp_rtl_driver.cpp` traced the core's local bus and captured writes to
+`0xF6000010 / 0xF6000012 / 0xF6000014 / 0xF6000016` into
+`DPYCTL / DPYSTRT / DPYTAP / DPYADR`.
+
+The core's on-chip register file is **not** there. From the vendored RTL:
+
+```text
+tms34010_pkg.sv:363   parameter logic [ADDR_WIDTH-1:0] IO_BASE_ADDR = 32'hC000_0000;
+tms34010_pkg.sv:366   // Register indices (= address[8:4] = (addr - IO_BASE) >> 4).
+tms34010_io_regs.sv:154  assign is_io = (addr[31:30] == 2'b11)
+                                    && (addr[29:9]  == '0);
+tms34010_pkg.sv:376   IO_IDX_DPYCTL  = 5'h08
+tms34010_pkg.sv:377   IO_IDX_DPYSTRT = 5'h09
+tms34010_pkg.sv:395   IO_IDX_DPYTAP  = 5'h1B
+tms34010_pkg.sv:398   IO_IDX_DPYADR  = 5'h1E
+```
+
+So the space is `0xC0000000-0xC00001FF` with the register index in `addr[8:4]`.
+Not one of the four comparisons could ever be true, on any run. It was a
+decoder for a CPU that does not exist, comparing against constants that looked
+authoritative because they sat in the right file and were spelled with the
+right register names in comments.
+
+It is not a typo. `0xF600` appears in `tms34010_decode.sv:228` as an
+*instruction encoding* (`1111 011S SSSS DDDD`), a register-to-register move --
+the same `0xF600` a reader would find first when looking for this register, and
+the one this decoder appears to have been built from.
+
+**Measured, after the fix** (600 frames, `./run.sh`):
+
+```text
+shadow DPYSTRT=0xFFFC DPYADR=0xFFC3 DPYTAP=0x0200 DPYCTL=0xF010
+core-set=[DPYSTRT DPYCTL]
+```
+
+The two registers the core set match §30.4's MAME reading of the GSP's
+power-on state (`DPYSTRT=0xFFFF`, `DPYTAP=0`, `DPYCTL=0xF010`) exactly. That is
+independent corroboration: the core is not just writing *something* to the
+right address, it is writing what the oracle says is there.
+
+### 39.2 A false halt froze the core for the rest of the run
+
+`run_gsp()` gave up after 2535 cycles with no host traffic, "assuming the GSP
+has hit a STOP and is waiting", set the sticky `s_gsp_halted`, and
+`sync_and_step()` then skipped the core entirely whenever that flag was set.
+
+The premise is wrong. A display-list pass is mostly VRAM writes and touches
+the host port rarely if at all, so 2535 silent cycles is an ordinary moment in
+the middle of *running* a list. One quiet spell stopped the GSP permanently,
+which is why its display registers read back as power-on values however long
+the run continued -- §38.4 attributed that to "the core has not issued one
+write", and it had; the writes were after the freeze.
+
+Two independent mistakes, both required removing:
+
+* the halt was inferred from host-port silence, which does not mean halted;
+* and once inferred it **latched**, turning a per-frame cost decision into a
+  decision about the whole run.
+
+MAME's own model for when the core waits is `s_gsp_halted`-free: it simply
+keeps clocking (`harddriv.cpp`, `tms34010.cpp` scanline timer). Clocking on is
+correct; the only question is how long.
+
+**Measured.** With the limit at 20000 host-silent cycles and with it disabled
+entirely, at 600 frames, all three of `board vram nonzero words`, `DPYSTRT`, and
+the rendered pixel/colour counts are **identical** -- 84337 / `0xFFFC` /
+`lit=30235 colours=217` -- at **70 s against 26 min**. The core really is idle
+for most of a frame's 664430-cycle budget. This is the same plateau §37 found
+standalone (20k-300k cycles, constant whole-share residual), reappearing through
+the shell. Default is now 20000; `STUNRUN_GSP_IDLE_CYCLES=0` disables it.
+
+### 39.3 DPYADR is never written, and must not be reported as if it were
+
+With 39.2 fixed, `DPYADR` and `DPYTAP` remain unwritten after 600 frames. That
+is correct behaviour, not a gap: `DPYCTL=0xF010` has `SRE` (bit 12) set, so the
+timing generator owns DPYADR, and the GSP program has no reason to touch it.
+MAME's model agrees, and says what happens at frame start:
+
+```text
+tms34010.cpp:1322  /* 34010 loads DPYADR with DPYSTRT, and inverts if the origin is 0 */
+tms34010.cpp:1327      IOREG(REG_DPYADR) = IOREG(REG_DPYSTRT);
+tms34010.cpp:1444      params->rowaddr = dpyadr >> 4;
+```
+
+So at the top of a frame `DPYADR == DPYSTRT`, and both scanouts already read a
+zero DPYADR as "start at DPYSTRT" (`gsp_display.c:191`,
+`backend/gsp_scanout_gl.c:104`). The shell now passes 0 for any register the
+core has not written, guarded by the new provenance mask, which engages that
+fallback on both windows at once and so leaves `gsp-scanout-gl-parity`
+untouched. It also means the fabricated `DPYADR=0xFFC3` (rowaddr 63, share byte
+`0x7E00`, zero) is no longer substituted for a value the hardware would supply.
+
+### 39.4 The palette was never copied out of the board
+
+The colour planes are at `0xF5000000-0xF50007FF`, **not** in the VRAM share, so
+neither VRAM sync function ever carried them. The MC68010's palette writes
+landed in `gsp_board_t::pal_lo/pal_hi` and were read by nobody; the scanout
+rendered musashi's own planes, which nothing on the RTL path populates. The
+picture was being drawn through an all-zero palette.
+
+Symptom before the fix: `lit=30235/122880 colours=217`, with magenta/cyan
+fringing. After: the gold/white palette. Same geometry, correct colour source.
+
+### 39.5 The instrument this needed: a hash cannot tell "content" from "a different nothing"
+
+Every wrong-origin defect in this project produced a **stable, reproducible**
+hash. That is why the cleared-buffer hash (§38.4.3) survived review, and why the
+fix in `33c83a3` -- which made the hash change -- proved nothing: a scanout
+pointed at a zero region of the share hashes just as reproducibly as a correct
+one. The hash went from `0x7D611DC5` to `0x859B609D` while the frame was still
+99.7% black.
+
+`stunrun_render_content_stats()` reports lit pixels and distinct colours, and
+the shell prints `lit=`/`colours=` beside the hash and says outright when the
+frame is entirely black. Measured on this work: `lit=0` (blank),
+`lit=30235` (content, palette missing), `lit=122880` (content, palette present
+-- the background is palette entry 255, not black). The instrument distinguishes
+all three; the hash distinguished none of them.
+
+### 39.6 What is on screen, and what is NOT established
+
+Normal boot, 600 and 900 frames, `./run.sh`:
+
+```text
+board vram nonzero words = 84337
+shadow DPYSTRT=0xFFFC DPYCTL=0xF010 core-set=[DPYSTRT DPYCTL]
+render frame=900 lit=122880/122880 colours=225
+```
+
+Captured PNGs show the game's screen -- a logo band and text rows -- and frames
+500/700/900 are identical, so the core reaches a steady state rather than
+drifting.
+
+**Not established:**
+
+1. **The colours are unvalidated.** The background renders as gold where the
+   MAME capture of the service screen shows black, but that capture is the
+   service path, which never releases the GSP, so the two are not yet
+   comparable. The obvious next check is service-mode palette equality against
+   `reference/experiments/stunrun/gsp-direct-share-frame600-service/`
+   (`gsp_pal_lo.bin`, `gsp_pal_hi.bin`), since in service mode the MC68010
+   *does* write the palette and the GSP is not needed to produce it.
+2. **The image is sheared.** The horizontal bands are skewed, which is
+   geometric, not a palette problem. Row-to-row advance follows
+   `dpyadr_advance()`, which matches `tms34010.cpp:1391-1402`, so the suspect is
+   the starting `rowaddr`/trajectory rather than the advance.
+3. **Still a different trajectory point from MAME.** §37's offset is untouched;
+   the core is not cycle-locked to a video frame. Expect "the same game, not the
+   same frame".

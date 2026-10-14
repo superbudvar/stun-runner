@@ -177,6 +177,8 @@ static void gsp_rtl_bus_observer(void *ctx,
         gsp_rtl_driver_sync_and_step((mem).vram, MUSASHI_GSP_VRAM_WORDS); \
         gsp_rtl_driver_sync_to_musashi((uint16_t *)(mem).vram, \
                                        MUSASHI_GSP_VRAM_WORDS); \
+        gsp_rtl_driver_sync_palette_to_musashi((uint16_t *)(mem).pal_lo, \
+                                               (uint16_t *)(mem).pal_hi); \
     } \
 } while (0)
 #else
@@ -599,15 +601,34 @@ static int get_live_gsp_state(musashi_gsp_memory_t *mem,
      *
      * These are the RTL's OWN registers, tracked from its I/O bus, not
      * constants: DPYSTRT/DPYADR/DPYTAP/DPYCTL below are read back from the
-     * core rather than assumed. */
+     * core rather than assumed -- and, since the decode at
+     * gsp_rtl_driver.cpp's I/O bus trace was fixed, actually observed to
+     * change. Which of them the CORE has written is reported by
+     * gsp_rtl_driver_display_regs_seen(); a register the core never set must
+     * not be presented as if it had. */
 #ifdef STUNRUN_GSP_RTL
     {
         uint16_t dpystrt = 0, dpyadr = 0, dpytap = 0, dpyctl = 0;
+        uint32_t seen = gsp_rtl_driver_display_regs_seen();
         gsp_rtl_driver_get_display_regs(&dpystrt, &dpyadr, &dpytap, &dpyctl);
         if (dpyctl != 0u) {
             dregs->dpystrt = dpystrt;
-            dregs->dpyadr  = dpyadr;
-            dregs->dpytap  = dpytap;
+            /* Report DPYADR as 0 -- meaning "the core has not written it" --
+             * unless it really has. Both scanouts already read a zero DPYADR
+             * as "start the frame at DPYSTRT", which is what the hardware
+             * does: DPYCTL.SRE=1 means the timing generator owns DPYADR and
+             * reloads it from DPYSTRT at the top of each frame, so the GSP
+             * PROGRAM has no reason to write it.
+             *
+             * Measured, 600 frames: the core writes DPYSTRT and DPYCTL and
+             * never once writes DPYADR or DPYTAP. Reporting the initialiser
+             * here would feed the scanout a rowaddr of 63 (share byte
+             * 0x7E00, zero) in place of the rowaddr the hardware would be
+             * at. Passing 0 engages the existing shared fallback in both
+             * gsp_display.c and gsp_scanout_gl.c, so the two windows stay in
+             * step and gsp-scanout-gl-parity is unaffected. */
+            dregs->dpyadr  = (seen & 0x2u) ? dpyadr : 0u;
+            dregs->dpytap  = (seen & 0x4u) ? dpytap : 0u;
             dregs->dpyctl  = dpyctl;
             /* Timing constants the RTL does not track.
              *
@@ -2149,15 +2170,35 @@ static int run_walk(void)
            g_gsp_rtl_obs_hstctl_rel);
     {
         uint16_t a=0,b=0,c=0,d=0;
+        uint32_t seen;
         gsp_rtl_driver_get_display_regs(&a,&b,&c,&d);
+        seen = gsp_rtl_driver_display_regs_seen();
         printf("shell: gsp-rtl shadow DPYSTRT=0x%04x DPYADR=0x%04x "
-               "DPYTAP=0x%04x DPYCTL=0x%04x\n", a,b,c,d);
+               "DPYTAP=0x%04x DPYCTL=0x%04x core-set=[%s%s%s%s]\n", a,b,c,d,
+               (seen & 0x1u) ? "DPYSTRT " : "",
+               (seen & 0x2u) ? "DPYADR " : "",
+               (seen & 0x4u) ? "DPYTAP " : "",
+               (seen & 0x8u) ? "DPYCTL" : "");
+        if (seen == 0u)
+            printf("shell: gsp-rtl note: the core has set NO display register; "
+                   "every value above is this driver's initialiser, not evidence.\n");
     }
 #endif
 
-    printf("render frame=%u width=%u height=%u hash=0x%08X mode=%s\n",
-           renderer.frame, STUNRUN_RENDER_WIDTH, STUNRUN_RENDER_HEIGHT,
-           (unsigned)stunrun_render_hash(&renderer), render_mode);
+    {
+        unsigned lit = 0u, colours = 0u;
+        stunrun_render_content_stats(&renderer, &lit, &colours);
+        printf("render frame=%u width=%u height=%u hash=0x%08X mode=%s "
+               "lit=%u/%u colours=%u\n",
+               renderer.frame, STUNRUN_RENDER_WIDTH, STUNRUN_RENDER_HEIGHT,
+               (unsigned)stunrun_render_hash(&renderer), render_mode,
+               lit, STUNRUN_RENDER_WIDTH * STUNRUN_RENDER_HEIGHT, colours);
+        if (lit == 0u)
+            printf("render note: the frame is ENTIRELY BLACK. A stable hash "
+                   "here does not mean the scanout is working -- a scanout "
+                   "pointed at a zero region of the share hashes just as "
+                   "reproducibly as a correct one.\n");
+    }
 
     /* Screenshot capture for g_capture_all: dump every rendered frame.
      * Per-frame capture (STUNRUN_CAPTURE_FRAME=N) is handled inside the

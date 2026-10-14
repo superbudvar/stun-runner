@@ -314,6 +314,53 @@ int stunrun_render_write_ppm(const stunrun_renderer_t *renderer,
     return 1;
 }
 
+/* Distinct colours are bounded by what a GSP frame can contain; 4096 keeps
+ * this allocation-free for any plausible frame while still being an honest
+ * cap -- and if it is ever hit, `distinct` saturates rather than lying. */
+#define STUNRUN_RENDER_MAX_DISTINCT 4096u
+
+void stunrun_render_content_stats(const stunrun_renderer_t *renderer,
+                                  unsigned *lit_pixels, unsigned *distinct)
+{
+    static uint8_t seen[STUNRUN_RENDER_MAX_DISTINCT * 3u];
+    size_t i, n;
+    unsigned lit = 0u, seen_count = 0u;
+    int saturated = 0;
+
+    if (renderer == NULL)
+        return;
+    memset(seen, 0, sizeof(seen));
+    n = (size_t)STUNRUN_RENDER_WIDTH * STUNRUN_RENDER_HEIGHT;
+
+    for (i = 0; i < n; ++i) {
+        uint8_t r = renderer->pixels[i * 3u];
+        uint8_t g = renderer->pixels[i * 3u + 1u];
+        uint8_t b = renderer->pixels[i * 3u + 2u];
+        size_t slot;
+
+        if (r == 0u && g == 0u && b == 0u)
+            continue;   /* background: not lit, and not a colour of its own */
+        lit++;
+        for (slot = 0; slot < seen_count; ++slot)
+            if (seen[slot * 3u] == r && seen[slot * 3u + 1u] == g &&
+                seen[slot * 3u + 2u] == b)
+                break;
+        if (slot == seen_count) {
+            if (seen_count < STUNRUN_RENDER_MAX_DISTINCT) {
+                seen[seen_count * 3u] = r;
+                seen[seen_count * 3u + 1u] = g;
+                seen[seen_count * 3u + 2u] = b;
+                seen_count++;
+            } else {
+                saturated = 1;
+            }
+        }
+    }
+    (void)saturated;
+    if (lit_pixels) *lit_pixels = lit;
+    if (distinct) *distinct = seen_count;
+}
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "../third_party/stb/stb_image_write.h"
 

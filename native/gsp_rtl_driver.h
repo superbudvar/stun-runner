@@ -68,6 +68,21 @@ void gsp_rtl_driver_sync_and_step(const uint16_t *musashi_gsp_vram,
 void gsp_rtl_driver_sync_to_musashi(uint16_t *musashi_gsp_vram,
                                     size_t word_count);
 
+/* Copy the BOARD's colour planes back into musashi's, for the same reason as
+ * the VRAM above and with the same history.
+ *
+ * The palette lives at 0xF5000000-0xF50007FF, which is NOT the VRAM share, so
+ * neither of the VRAM sync functions ever touched it: the MC68010's palette
+ * writes went into gsp_board_t::pal_lo/pal_hi and were then read by nobody.
+ * The scanout kept rendering musashi's own planes, which no RTL-path writer
+ * ever populated -- so every pixel came out through an all-zero palette.
+ *
+ * Both are 0x800 bytes of packed little-endian 16-bit entries (8 bits of
+ * intensity plus 3 bits of entry select); there is nothing to convert, so
+ * this is a plain memcpy like its VRAM counterpart. */
+void gsp_rtl_driver_sync_palette_to_musashi(uint16_t *musashi_pal_lo,
+                                            uint16_t *musashi_pal_hi);;
+
 /* Returns non-zero if the GSP is halted and should not be stepped. */
 int gsp_rtl_driver_is_halted(void);
 
@@ -92,6 +107,12 @@ void gsp_rtl_driver_get_display_regs(uint16_t *dpystrt,
                                      uint16_t *dpyadr,
                                      uint16_t *dpytap,
                                      uint16_t *dpyctl);
+
+/* Provenance for the values above: bit n set (bit 0 DPYSTRT, 1 DPYADR,
+ * 2 DPYTAP, 3 DPYCTL) means that register is the CORE's own value. A clear bit
+ * means it is still the initialiser this driver was built with. Print it
+ * next to the values -- an unmarked register is a guess wearing a number. */
+uint32_t gsp_rtl_driver_display_regs_seen(void);
 
 /* Shutdown and free the RTL. */
 void gsp_rtl_driver_shutdown(void);

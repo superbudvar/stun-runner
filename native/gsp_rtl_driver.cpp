@@ -60,6 +60,23 @@ static uint16_t s_dpy_regs[4] = {  /* [0]=DPYSTRT, [1]=DPYADR, [2]=DPYTAP, [3]=D
     0x8201u    /* dpyctl:   ENV=1(display enable), SRE=1, ORG=0, DUDATE=0x004 */
 };
 
+/* Which of the four the CORE has actually written. Bit n set == s_dpy_regs[n]
+ * is the core's own value, not the initialiser above.
+ *
+ * This exists because the initialisers look exactly like live data. The
+ * comments beside them say where each number came from ("from frame-600
+ * capture"), which is true and is also exactly what you would write beside a
+ * value the core produced. A reader -- including me, for most of a session --
+ * took them for live values and built a diagnosis on DPYCTL=0x8201 being "a
+ * genuine TMS34010 value". They were not: see the decode below. Reporting the
+ * mask makes the difference between "the core set this" and "we guessed this"
+ * observable instead of a matter of belief. */
+static uint32_t s_dpy_seen = 0;
+
+/* Index of each shadow slot, so the decode below names the register the way
+ * the package does rather than the way an address happens to be spelled. */
+enum { S_DPYSTRT = 0, S_DPYADR = 1, S_DPYTAP = 2, S_DPYCTL = 3 };
+
 /* 5:1 GSP:MC68010 cycle ratio (40 MHz / 8 MHz) */
 static constexpr unsigned GSP_CYCLE_RATIO = 5;
 
@@ -97,14 +114,37 @@ static void step_one(bool *cycle_pending)
     s_top->clk = 1;
     s_top->eval();
 
-    /* Track GSP display-register writes from the I/O bus. */
+    /* Track GSP display-register writes from the I/O bus.
+     *
+     * The core's on-chip I/O space is the bit-address range
+     * 0xC0000000-0xC00001FF, with the register index in addr[8:4]
+     * (tms34010_pkg.sv:363-366; the decode is
+     * addr[31:30]==2'b11 && addr[29:9]==0, tms34010_io_regs.sv:154-156).
+     *
+     * The previous decode compared the whole address against 0xF6000010 /
+     * 0xF6000012 / 0xF6000014 / 0xF6000016. The core never presents that
+     * base, and those low nibbles are not the indices either -- DPYCTL is
+     * index 0x08, not 0x10. So not one comparison could ever be true, on any
+     * run, and the shadow stayed at its initialiser for the whole life of
+     * this feature. It was a decoder for a CPU that does not exist, testing
+     * against constants that looked authoritative because they were in the
+     * right file.
+     *
+     * Decoding by index rather than by literal address is also what makes a
+     * future core change a compile-time concern instead of a silent one. */
     if (*cycle_pending && s_top->cycle_kind_o == 6) {
         uint32_t addr = static_cast<uint32_t>(s_top->cycle_addr_o);
         uint16_t wdata = static_cast<uint16_t>(s_top->cycle_wdata_o);
-        if (addr == 0xF6000010u)       s_dpy_regs[3] = wdata;  /* DPYCTL */
-        else if (addr == 0xF6000012u) s_dpy_regs[0] = wdata;  /* DPYSTRT */
-        else if (addr == 0xF6000014u) s_dpy_regs[2] = wdata;  /* DPYTAP */
-        else if (addr == 0xF6000016u) s_dpy_regs[1] = wdata;  /* DPYADR */
+        if ((addr & 0xC0000000u) == 0xC0000000u &&
+            (addr & 0x3FFFFE00u) == 0u) {
+            switch ((addr >> 4) & 0x1Fu) {
+            case 0x08: s_dpy_regs[S_DPYCTL]  = wdata; s_dpy_seen |= 1u << S_DPYCTL;  break;
+            case 0x09: s_dpy_regs[S_DPYSTRT] = wdata; s_dpy_seen |= 1u << S_DPYSTRT; break;
+            case 0x1B: s_dpy_regs[S_DPYTAP]  = wdata; s_dpy_seen |= 1u << S_DPYTAP;  break;
+            case 0x1E: s_dpy_regs[S_DPYADR]  = wdata; s_dpy_seen |= 1u << S_DPYADR;  break;
+            default: break;
+            }
+        }
     }
 
     s_top->clk = 0;
@@ -129,11 +169,51 @@ static uint64_t run_gsp(uint64_t gsp_cycles)
             s_gsp_halted = false;
         }
         if (i > 64) s_core_ran = true;   /* real work, not an idle handshake */
-        /* If we've been idle for a full scanline (2535 cycles), assume
-         * the GSP has hit a STOP and is waiting. */
-        if (idle_line && ticked >= 2535) {
-            s_gsp_halted = true;
-            break;
+        /* STUNRUN_GSP_IDLE_CYCLES is DIAGNOSTIC ONLY and exists to test the
+         * assumption below, not because the assumption is sound.
+         *
+         * The old fixed threshold was 2535 cycles ("a full scanline") with no
+         * host traffic, on the reasoning that the GSP must have executed STOP
+         * and be waiting for the 68010. That reasoning does not hold: a
+         * display-list pass is mostly VRAM writes and touches the host port
+         * rarely if at all, so 2535 silent cycles is an ordinary moment in
+         * the middle of running a list, not a halt. The consequence was that
+         * run_gsp() returned early AND left s_gsp_halted set, and
+         * sync_and_step() then skips the core entirely for the rest of the
+         * run -- so the GSP froze at whatever point it first went quiet and
+         * its display registers stayed at their power-on values.
+         *
+         * Default 0 = never exit early (correct, but slow: 600 frames takes
+         * 26 minutes, because a core that is genuinely working must be
+         * clocked for all of them).
+         *
+         * Default 20000. Measured equivalent to never exiting early: at 600
+         * frames, nonzero words, DPYSTRT and the rendered pixel/colour counts
+         * are all IDENTICAL between this limit and unlimited, at 70 s against
+         * 26 min. The core really is waiting for most of a frame's cycle
+         * budget. This is the same plateau section 37 found at the standalone
+         * level -- 20k to 300k cycles give a constant whole-share residual --
+         * showing up through the shell.
+         *
+         * The exit is deliberately NOT latched. The previous version set the
+         * sticky s_gsp_halted here, and sync_and_step() skips the core
+         * entirely when that is set -- so one quiet moment stopped the GSP for
+         * the rest of the run and left its display registers at power-on
+         * values forever. Exiting early for THIS frame costs nothing: the core
+         * resumes at the top of the next one, which is all it needed to make
+         * progress. The two mistakes were independent and both had to go. */
+        {
+            static unsigned idle_limit = 20000u;
+            static int idle_limit_read = 0;
+            if (!idle_limit_read) {
+                const char *e = getenv("STUNRUN_GSP_IDLE_CYCLES");
+                idle_limit = (e != NULL) ? (unsigned)strtoul(e, NULL, 0) : 20000u;
+                idle_limit_read = 1;
+            }
+            if (idle_limit != 0u && idle_line && ticked >= idle_limit) {
+                s_gsp_halted = true;
+                break;
+            }
         }
     }
     return ticked;
@@ -272,8 +352,17 @@ void gsp_rtl_driver_sync_and_step(const uint16_t *musashi_gsp_vram,
         }
     }
 
-    /* MC68010 frame = 132886 cycles × 5 = 664430 GSP cycles. */
-    if (!s_gsp_halted) {
+    /* MC68010 frame = 132886 cycles × 5 = 664430 GSP cycles.
+     *
+     * s_gsp_halted is deliberately NOT consulted here. It used to be, and that
+     * turned a momentary quiet spell into a permanent one: run_gsp() set it on
+     * 2535 host-silent cycles, and this guard then skipped the core for every
+     * remaining frame. The GSP froze at the point it first went quiet, which
+     * is why its display registers read back as power-on values
+     * (DPYSTRT=0xFFFF, DPYCTL=0xF010) no matter how long the run continued.
+     * An early exit is a per-frame cost decision; latching it is a decision
+     * about the whole run, and only this code can make the second one. */
+    {
         uint64_t gsp_frame_cycles = 132886ULL * GSP_CYCLE_RATIO;
         run_gsp(gsp_frame_cycles);
     }
@@ -288,6 +377,30 @@ void gsp_rtl_driver_sync_to_musashi(uint16_t *musashi_gsp_vram,
     size_t bytes = word_count * 2u;
     if (bytes > GSP_BOARD_VRAM_BYTES) bytes = GSP_BOARD_VRAM_BYTES;
     memcpy(musashi_gsp_vram, s_board->vram, bytes);
+}
+
+/* Copy the board's colour planes back into musashi's.
+ *
+ * These live at 0xF5000000-0xF50007FF, outside the VRAM share, so
+ * sync_and_step() and sync_to_musashi() never carried them: the MC68010's
+ * palette writes landed in gsp_board_t::pal_lo/pal_hi and stayed there,
+ * while the scanout read musashi's own planes -- which nothing on this path
+ * ever writes, because musashi_cpu.c only sees the 68010's writes, and the
+ * RTL path is the one consuming them. The visible result was a correct
+ * picture through an all-zero palette.
+ *
+ * Same convention as the VRAM sync: the board is the source of truth, both
+ * writers already reach it, so copy straight out. No conversion -- the layout
+ * is identical, which is why a memcpy is right rather than tempting. */
+void gsp_rtl_driver_sync_palette_to_musashi(uint16_t *musashi_pal_lo,
+                                            uint16_t *musashi_pal_hi)
+{
+    if (!s_init_done || !s_board)
+        return;
+    if (musashi_pal_lo)
+        memcpy(musashi_pal_lo, s_board->pal_lo, GSP_BOARD_PAL_BYTES);
+    if (musashi_pal_hi)
+        memcpy(musashi_pal_hi, s_board->pal_hi, GSP_BOARD_PAL_BYTES);
 }
 
 int gsp_rtl_driver_is_halted(void)
@@ -365,10 +478,18 @@ void gsp_rtl_driver_get_display_regs(uint16_t *dpystrt,
         if (dpyctl)   *dpyctl  = 0x8201u;
         return;
     }
-    if (dpystrt) *dpystrt = s_dpy_regs[0];
-    if (dpyadr)  *dpyadr  = s_dpy_regs[1];
-    if (dpytap)  *dpytap  = s_dpy_regs[2];
-    if (dpyctl)   *dpyctl  = s_dpy_regs[3];
+    if (dpystrt) *dpystrt = s_dpy_regs[S_DPYSTRT];
+    if (dpyadr)  *dpyadr  = s_dpy_regs[S_DPYADR];
+    if (dpytap)  *dpytap  = s_dpy_regs[S_DPYTAP];
+    if (dpyctl)  *dpyctl  = s_dpy_regs[S_DPYCTL];
+}
+
+/* Bit n set means s_dpy_regs[n] is the core's own value rather than the
+ * initialiser. Callers that report display registers must print this beside
+ * them: a register value with no provenance is a guess wearing a number. */
+uint32_t gsp_rtl_driver_display_regs_seen(void)
+{
+    return s_dpy_seen;
 }
 
 void gsp_rtl_driver_shutdown(void)
