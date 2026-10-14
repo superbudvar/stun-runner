@@ -7089,13 +7089,16 @@ separate, unseen renderer author for `PRESS START TO BYPASS SELFTEST`.
 
 The normal native live scanout still uses the frame-600 fallback registers when
 the GSP RTL is halted. At frame 48 those are not the self-test screen's
-scanout-origin registers, so the screenshot remains a flat background. With
-diagnostic override `STUNRUN_FORCE_FRAMEBUF=12C08`, the text becomes visible in
-the native screenshot, proving the stored pattern is readable. **It is not yet
-pixel-equivalent:** the forced test currently places a 148×8 approximation at
-the top of the frame, while MAME's frame-48 prompt is 237×7 at y=150. The
-remaining issue is the early-frame scanout origin/stride and the exact pixel
-expansion, not the 68010 text source or its VRAM storage.
+scanout-origin registers. `STUNRUN_CAPTURE_FRAME` writes the CPU renderer's
+internal pixel buffer (`stunrun_render_write_png(&renderer)`); **it is not a
+screenshot of either SDL/OpenGL window and does not prove what the user sees.**
+With diagnostic override `STUNRUN_FORCE_FRAMEBUF=12C08`, that internal buffer
+contains a 148×8 text approximation at the top, while MAME's frame-48 prompt is
+237×7 at y=150. A separate X11 capture of both live SDL windows in this session
+returned black frames. **There is not yet a trustworthy capture of the app's
+actual on-screen output.** The remaining issue is early-frame scanout
+origin/stride, pixel expansion, and verifying the actual window output, not the
+68010 text source or its VRAM storage.
 
 ### 34.5 Retractions and remaining scope
 
