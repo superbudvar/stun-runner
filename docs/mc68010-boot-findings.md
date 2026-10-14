@@ -7325,3 +7325,72 @@ halted core from passing: zero writes trivially matches the pre-release image,
 and only "by MAME only: 1295" catches it. It refuses a 4194304-byte input
 loudly, naming the bit-address confusion, because that exact file has been
 committed here once already.
+
+## 37. Past the first fill: the core converges, and the residual is a trajectory offset
+
+Section 36 established the first output. The obvious next question is whether
+the core keeps going, and whether it converges on MAME's share. Both answers
+are yes, and the residual has a shape rather than being noise.
+
+### 37.1 Convergence on written content
+
+Same replay, cycle budget swept, whole share compared against MAME's frame-405
+image:
+
+| GSP cycles | core nonzero words | PC range | distinct low-16 | board writes | whole-share agree |
+|---|---|---|---|---|---|
+| 200,000 | 81,536 | `..FFF59A90` | 24 | 11,948 | 99.09% |
+| 2,000,000 | 83,141 | `..FFF59DD0` | 370 | 577,344 | 98.48% |
+| 20,000,000 | 83,153 | `..FFF59DD0` | 542 | 1,009,480 | 98.47% |
+
+MAME's frame 405 has **83,194** nonzero words. The core reaches **83,153** — 41
+words of 83,194, i.e. **99.95% of the content MAME has written**. The PC range
+widens to `..FFF59DD0` and the distinct-low-16 count goes 24 -> 542, so this is
+a program running, not a loop: it is fetching and executing across the uploaded
+range rather than spinning on a few words.
+
+Whole-share agreement *falls* slightly with more cycles, and that is expected
+rather than bad: MAME's frame 405 is one frame after the release, so a core
+running 100 frames is a different point on the same trajectory. 200,000 cycles
+sitting closest is the useful calibration — **200k GSP cycles is about one MAME
+frame after release.**
+
+### 37.2 The residual is a trajectory offset, not model error
+
+At 200,000 cycles the whole-share residual is **2,388 words**. Sweeping 20k ->
+300k cycles it does not move at all (2,388 at every budget), so it is not an
+artefact of the cycle budget. Decomposing it:
+
+```text
+2,023 words   core wrote 0x0000 over MAME's 0xFFFF boot fill
+  365 words   core wrote a ramp: 0505 0a0a 0f0f 1414 1919 1919 1e1e 2323 ...
+              concentrated in 0x060000-0x06FFFF (330) and 0x070000-0x07FFFF (35)
+```
+
+Both are the GSP doing the next thing after the uniform fill: a clear, then a
+blit. Neither is in a region MAME leaves alone — against MAME's frame-600
+service capture only 117 of the 2,023 zero-fill words are still nonzero, so
+MAME clears that region too, just later. The core is **ahead on the same
+trajectory**, not wrong about it.
+
+So the honest statement is: the core's share agrees with MAME's frame-405 image
+on 259,756 of 262,144 words, and every one of the 2,388 disagreements is the
+core having already performed a clear and a ramp that MAME performs after that
+frame edge. That is a different claim from the section 36 one, and it is a
+weaker one: it says the two are on the same path, not that they are at the same
+point.
+
+### 37.3 What still follows from this
+
+Not whole-share parity at a stated frame, and not display-list semantics. To get
+either, the comparison has to be pinned to a common emulated time rather than a
+common event — which needs the 68010 cycle at which MAME reaches each frame and
+an equivalent bound on the core's run, and that pairing is not established here.
+
+Reproduce:
+
+```text
+tools/capture-gsp-program-upload roms <dir> --frames 600 --mame <mame>
+build/gsp_rtl/stunrun-gsp-rtl-harness --boot <stream> --cycles N --vram-out <core>.bin
+tools/check-gsp-first-output <core>.bin <pre>.bin <post>.bin
+```
