@@ -8,6 +8,25 @@ The project aims to incrementally produce both a reproduction build for the orig
 
 See `PROCESS.md` for the workflow and `PROJECT.md` / `STATUS.md` / `MILESTONES.md` for current project state.
 
+## Credits
+
+S.T.U.N. Runner was made by 25 people at Atari Games in 1989 — Ed Rotberg,
+Andrew Burgess, Sam Comstock, Jed Margolin, Rick Moncrief and the rest. The
+game ships its own credits table in its program ROM, so the names and roles are
+read out of the original program rather than from a flyer.
+
+See [`CREDITS.md`](CREDITS.md) for the full table, the decoded job titles behind
+each in-game pun, and the third-party components we build on.
+
+S.T.U.N. Runner and its assets remain the property of their rights holders. This
+is an independent reverse-engineering effort, with no affiliation to or
+endorsement by Atari Games, Atari Corporation, Midway, or anyone credited above.
+
+## Sources
+
+Claims are cited by source number. The register — ROM, operator manual, pinned
+MAME, and external references — is in [`docs/sources.md`](docs/sources.md).
+
 ## Quick start
 
 With the local STUN Runner ROM chips in `roms/stunrun/`, build and launch the

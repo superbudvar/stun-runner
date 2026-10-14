@@ -1,6 +1,6 @@
 # Hardware contract: the 1989 manual against our machine model
 
-Every claim here is sourced to one of three places, and the source is named:
+Every claim here is sourced to one of four places, and the source is named:
 
 * **[MANUAL]** — `reference/manuals/stunrunner.pdf`, Atari Games TM 238 / SP-338,
   1st printing 1989. Read from the rendered page images in
@@ -11,6 +11,13 @@ Every claim here is sourced to one of three places, and the source is named:
 * **[MAME]** — the pinned source at `/mnt/build/mame-ref/src/mame/atari/harddriv.cpp`
   and `harddriv_m.cpp`, build `0.289`, sha256 `75b09ee4…`.
 * **[ROM]** — our own measurements against the pinned ROM set.
+* **[MARGOLIN]** — Jed Margolin's published schematics and engineering notes for
+  the Hard Drivin'/Race Drivin' boards that share our silicon
+  (`analysis/hardware-lineage.md`). Primary, because he designed the hardware,
+  but about a sibling board, so it corroborates rather than settles.
+
+Source numbers `S1`…`S8` and the full register live in
+[`sources.md`](sources.md).
 
 Status values: `CONFIRMED`, `GAP` (the manual says hardware exists that our
 model does not carry), `REFUTED` (we say something the manual contradicts).
@@ -178,7 +185,10 @@ frame-48 text run; vendor pin-level confirmation remains open. See findings
 
 **VRAM size is 512 KiB physical backing.** [MANUAL] Page 10 lists `VRAM Array
 (16)` and the BOM `64K x 4`; [MAME]'s direct `memory_share` dump reports exactly
-524,288 bytes / 262,144 words. The GSP program map spans 4 Mi
+524,288 bytes / 262,144 words. [MARGOLIN] corroborates it independently from the
+chip count — the MultiSync GSP board, which is ours, used *"8 banks of 64Kx8 (16
+64Kx4 VRAMs)"*, and 16 × 64K × 4 bits is exactly 512 KiB. See
+`analysis/hardware-lineage.md`. The GSP program map spans 4 Mi
 **bit-address units**, not 4 MiB: with TMS34010 `addrshift=3`,
 `byte_offset=((addr-base)>>3) & 0x7ffff`. HSTADR `$FF896040` therefore targets
 physical byte offset `$12C08`. The old 4 MiB interpretation treated TMS bit
@@ -201,6 +211,11 @@ video; the Pixel Scanner shifts VRAM out and **Color RAM** produces RGB. So the
 palette is a distinct device fed by an 8-bit pixel index, not "two 1024-entry
 16-bit planes" inside GSP memory as `docs/gsp-display-scanout-contract.md` models
 it. That is inference in our contract and should be relabelled as such.
+
+[MARGOLIN] adds provenance for the `34012` name itself: it is an Atari gate
+array built by engineer Don Paauw and deliberately called a Texas Instruments
+part, so that anyone ordering it would be told no such part exists. It is the
+Atari part number, not a mistake.
 
 Also from Page 10: `XO-SCH 40MHZ` pixel oscillator, `16 MHz` 68010 clock, jumpers
 `Speed A,B` / `BCLK QB` / `VCLK QB/2`. Directly relevant to `stun-runner-bzq`,
