@@ -42,6 +42,7 @@ __pycache__/
 # One-off local comparison images and compiled helper binaries
 diff.png
 tools/diff.png
+glyph-font.png
 tools/test_frames/
 native/debug_bytes
 native/musashi_loader

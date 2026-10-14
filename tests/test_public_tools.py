@@ -5,6 +5,7 @@ import struct
 import subprocess
 import tempfile
 import unittest
+import zlib
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -19,6 +20,92 @@ class PublicToolTests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_dump_glyph_font_decodes_big_endian_nibble_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            even = bytearray(0x2000)
+            odd = bytearray(0x2000)
+            # A is at 0x212C. Values are words (big-endian), eight rows;
+            # the rendered pixels are the low four nibbles, low-first.
+            glyph = [0x0005, 0x0041, 0x0555, 0, 0, 0, 0, 0]
+            base = 0x1FBC + 16 * (ord("A") - 0x2A)
+            for row, word in enumerate(glyph):
+                address = base + 2 * row
+                even[address // 2] = word >> 8
+                odd[address // 2] = word & 0xFF
+            (roms / "even.bin").write_bytes(even)
+            (roms / "odd.bin").write_bytes(odd)
+            manifest = temp / "manifest.json"
+            manifest.write_text(json.dumps({
+                "schema": "stunrun-rom-manifest/v1",
+                "roms": [
+                    {"filename": "even.bin", "region": "mainpcb:maincpu",
+                     "size": len(even), "offset": 0},
+                    {"filename": "odd.bin", "region": "mainpcb:maincpu",
+                     "size": len(odd), "offset": 1},
+                ],
+            }), encoding="utf-8")
+            png = temp / "font.png"
+            result = subprocess.run(
+                [str(ROOT / "tools/dump-glyph-font"), "--roms", str(roms),
+                 "--manifest", str(manifest), "--chars", "A", "--pixel-size", "1",
+                 "--output", str(png), "--json"],
+                cwd=ROOT, capture_output=True, text=True, check=True,
+            )
+            report = json.loads(result.stdout)
+            self.assertEqual(report["schema"], "stunrun-glyph-font-v1")
+            self.assertEqual(report["glyphs"][0]["rom_address"], 0x212C)
+            self.assertEqual(report["glyphs"][0]["row_words"], glyph)
+            self.assertEqual(report["glyphs"][0]["pixels"][1], [1, 4, 0, 0])
+
+            data = png.read_bytes()
+            self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+            offset = 8
+            idat = bytearray()
+            while offset < len(data):
+                size = struct.unpack_from(">I", data, offset)[0]
+                kind = data[offset + 4:offset + 8]
+                payload = data[offset + 8:offset + 8 + size]
+                if kind == b"IHDR":
+                    width, height = struct.unpack_from(">II", payload)
+                if kind == b"IDAT":
+                    idat.extend(payload)
+                offset += size + 12
+            self.assertEqual((width, height), (60, 14))
+            raw = zlib.decompress(idat)
+            # Filter byte 0; glyph starts at x=1,y=6. Nibble 5 lights pixel 0.
+            pixel_offset = 6 * (1 + width * 3) + 1 + 1 * 3
+            self.assertEqual(raw[pixel_offset:pixel_offset + 3], b"\xff\xff\xff")
+            self.assertEqual(raw[pixel_offset + 3:pixel_offset + 6], b"\x00\x00\x00")
+
+    def test_dump_glyph_font_rejects_wrong_sized_rom(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "even.bin").write_bytes(b"\0" * 4)
+            (roms / "odd.bin").write_bytes(b"\0" * 4)
+            manifest = temp / "manifest.json"
+            manifest.write_text(json.dumps({
+                "schema": "stunrun-rom-manifest/v1",
+                "roms": [
+                    {"filename": "even.bin", "region": "mainpcb:maincpu",
+                     "size": 8, "offset": 0},
+                    {"filename": "odd.bin", "region": "mainpcb:maincpu",
+                     "size": 8, "offset": 1},
+                ],
+            }), encoding="utf-8")
+            result = subprocess.run(
+                [str(ROOT / "tools/dump-glyph-font"), "--roms", str(roms),
+                 "--manifest", str(manifest), "--chars", "A", "--output",
+                 str(temp / "font.png")],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ROM size mismatch", result.stderr)
 
     def test_manifest_parser_without_roms(self):
         with tempfile.TemporaryDirectory() as temp:
