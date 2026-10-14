@@ -1,8 +1,9 @@
 # MAME local modifications
 
 The pinned oracle at `/mnt/build/mame-ref/mame` is **not stock MAME**. It carries
-six local modifications across four files, none of which this repository records
-in machine-readable form. This file is that record.
+seven observation hooks across four files, plus one behavioural fix, none of
+which this repository records in machine-readable form. This file is that
+record.
 
 ## Why the distinction matters
 
@@ -12,17 +13,17 @@ worth being precise about which binary that means, because there are now two:
 | | path | sha256 | role |
 |---|---|---|---|
 | **Oracle** | `/mnt/build/mame-oracle/mame` | `75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06` | frozen. Never rebuilt. Measurements recorded in `reference/experiments/` were taken against this. |
-| **Observer** | `/mnt/build/mame-ref/build/linux_gcc/bin/x64/Release/mame` | rebuilds | `stunrun-observe` branch. Carries the same six hooks plus `STUNRUN-FETCH`. Used only to produce new observations. |
+| **Observer** | `/mnt/build/mame-ref/mame` | rebuilds | `stunrun-observe` branch. Carries the same hooks plus `STUNRUN-FETCH`. Used only to produce new observations. |
 
 The distinction is not cosmetic. Every hook below is env-gated and disabled by
 default, but *disabled* is a behavioural claim that has to be tested rather than
 assumed — see "Verifying the observer matches the oracle".
 
-## The six modifications
+## The seven observation hooks
 
-All are observation-only: each reads state and appends to a file or stderr, and
-none alters emulation. Every one is gated on an environment variable and is a
-no-op when it is unset.
+All of these are observation-only: each reads state and appends to a file or
+stderr, and none alters emulation. Every one is gated on an environment variable
+and is a no-op when it is unset.
 
 ### 1. `STUNRUN-DEBUG` — GSP register dump
 
@@ -112,8 +113,43 @@ binary's hash has moved.
 `analysis/mame-local-patches.json` lists every hook, the file and function it
 lives in, its environment variables, and whether it is observation-only. A test
 diffs it against `git diff` in `/mnt/build/mame-ref`, so a hook added to the
-source tree without being recorded here — or a *behavioural* edit smuggled in
-among the observation hooks — fails rather than passing unnoticed.
+source tree without being recorded here fails rather than passing unnoticed.
+
+It holds **two** lists, and the split matters:
+
+- `patches` — observation-only, and the test requires every entry to say so.
+- `behaviour_changes` — edits that alter emulation. Each must state
+  `observation_only: false`, give a reason, and cite the `BUGS.md` finding it
+  answers.
+
+The split is not bookkeeping. `STUNRUN-IOB` and the MD-12 fix touch the same two
+files, so a *behavioural* change can ride inside a file already listed for an
+unrelated observation hook and never show up in a file-level diff. Filing it as
+an observation hook would have been the easy way to make the suite green and the
+wrong one; `behaviour_changes` exists so the honest option is also the easy one.
+
+## The one behavioural change: MD-12
+
+`src/devices/cpu/tms34010/34010ops.h` and `tms34010.h`, in
+`tms340x0_device::execute_run()`.
+
+`internal_regs_map` maps `map(0xc0000000, 0xc00001ff)`, so the TMS34010's I/O
+offsets run to `0x1ff`. The backing store was `uint16_t m_IOregs[64]` and
+`IOREG(reg)` was `m_IOregs[reg]` with no mask. S.T.U.N. Runner's GSP program
+stores at offsets `0x110`–`0x160` — 208 entries past the end of the array — and
+those fetches were traced executing, so this is not a theoretical overrun.
+
+The fix grows the array to `0x200` entries and masks `IOREG()` to `0x1ff`.
+Access below `0x40` is byte-for-byte unchanged, and every register MAME's `REG_`
+enum and the Atari driver actually use is below `0x40`, so nothing the model
+depends on moves.
+
+**This changes emulation behaviour**, which is why it is not in `patches`. Any
+measurement that depends on GSP internal register state at an offset of `0x40` or
+above is suspect until this is settled either way. See `BUGS.md` MD-12 for the
+full finding, including the unresolved question of whether the register file
+should be 128 four-byte-spaced registers rather than 512 bytes at two-byte
+spacing.
 
 ## What has not been upstreamed
 

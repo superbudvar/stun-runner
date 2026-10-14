@@ -1,14 +1,16 @@
 """The MAME oracle is not stock MAME, and nothing keeps that honest except this.
 
 `/mnt/build/mame-ref` carries local modifications to the emulator. Six are
-recorded observation hooks; a seventh would be someone editing emulation
-behaviour and hoping it goes unnoticed. The repository's evidence rule treats the
-game under pinned MAME as the behavioural oracle, so a behavioural edit smuggled
-in among the observation hooks would quietly invalidate every measurement ever
-recorded -- and there is no way to tell from the outside, because a hook and a
-behaviour change look identical in a diff.
+recorded observation hooks in `patches`; a seventh is a behavioural fix, which
+is recorded separately in `behaviour_changes` precisely so that it cannot hide
+among the hooks. An eighth would be someone editing emulation behaviour and
+hoping it goes unnoticed. The repository's evidence rule treats the game under
+pinned MAME as the behavioural oracle, so a behavioural edit smuggled in among
+the observation hooks would quietly invalidate every measurement ever recorded
+-- and there is no way to tell from the outside, because a hook and a behaviour
+change look identical in a diff.
 
-This compares the inventory in `analysis/mame-local-patches.json` against the
+This compares both lists in `analysis/mame-local-patches.json` against the
 actual working-tree diff and fails when they disagree.
 
 Skipped, not passed, when the MAME tree is absent: an absent tree cannot vouch
@@ -57,6 +59,16 @@ class MameLocalPatchInventoryTests(unittest.TestCase):
         cls.known_tags = {p["tag"] for p in cls.inventory["patches"]}
         cls.known_env = {e for p in cls.inventory["patches"] for e in p["env"]}
 
+    def changed_files(self) -> set[str]:
+        """Source files the MAME working tree has actually modified."""
+        changed = set()
+        for line in self.diff.splitlines():
+            if line.startswith("+++ b/"):
+                path = line[6:]
+                if path.endswith(SOURCE_SUFFIXES):
+                    changed.add(path)
+        return changed
+
     def added_lines(self) -> list[str]:
         return [ln[1:] for ln in self.diff.splitlines()
                 if ln.startswith("+") and not ln.startswith("+++")]
@@ -92,15 +104,15 @@ class MameLocalPatchInventoryTests(unittest.TestCase):
         File-level, because a diff can touch a file the inventory lists for one
         hook while changing something unrelated -- and this is the coarsest net
         that still catches a wholly unrecorded edit.
+
+        Both lists count. A behavioural change recorded only under
+        `behaviour_changes` is recorded; what it is does not change whether the
+        file is accounted for.
         """
         recorded = {f for p in self.inventory["patches"] for f in p["files"]}
-        changed = set()
-        for line in self.diff.splitlines():
-            if line.startswith("+++ b/"):
-                path = line[6:]
-                if path.endswith(SOURCE_SUFFIXES):
-                    changed.add(path)
-        unrecorded = changed - recorded
+        recorded |= {f for p in self.inventory.get("behaviour_changes", [])
+                     for f in p["files"]}
+        unrecorded = self.changed_files() - recorded
         self.assertEqual(
             unrecorded, set(),
             f"source files modified in the MAME tree but absent from "
@@ -124,6 +136,79 @@ class MameLocalPatchInventoryTests(unittest.TestCase):
                     f"{patch['tag']} is recorded as NOT observation-only. That "
                     f"is a behavioural change to the oracle and must be called "
                     f"out, not listed alongside the observation hooks.")
+
+    # --- behavioural changes -------------------------------------------------
+    #
+    # `patches` is the observation-only list, and the test above holds it to
+    # that. A change that alters the emulator's behaviour cannot honestly go
+    # there, so it lives in `behaviour_changes` instead, where it is visible and
+    # has to justify itself. The failure mode these guard against is the one the
+    # file-level check cannot see: a behavioural edit riding inside a file that
+    # is already listed for an unrelated observation hook.
+
+    def behaviour_changes(self) -> list[dict]:
+        return self.inventory.get("behaviour_changes", [])
+
+    def test_behaviour_changes_are_explicit_and_self_describing(self):
+        """A behavioural edit to the oracle gets a rationale and a bug record.
+
+        A behavioural change is the one thing that can invalidate every
+        measurement in reference/ while still looking like a clean diff, so it
+        has to say what it changes, why, and which finding it belongs to.
+        """
+        for change in self.behaviour_changes():
+            with self.subTest(tag=change.get("tag")):
+                self.assertIn(
+                    "observation_only", change,
+                    f"{change.get('tag')} does not state whether it is "
+                    f"observation-only")
+                self.assertIs(
+                    change["observation_only"], False,
+                    f"{change.get('tag')} is filed under behaviour_changes but "
+                    f"claims to be observation-only. If that is true it belongs "
+                    f"under patches; if it is false, this entry is lying about "
+                    f"which list it is in.")
+                self.assertTrue(
+                    str(change.get("reason", "")).strip(),
+                    f"{change.get('tag')} records no reason, so a reader cannot "
+                    f"tell whether the oracle's behaviour moved.")
+                self.assertTrue(
+                    str(change.get("bugs_md", "")).strip(),
+                    f"{change.get('tag')} records no BUGS.md reference, so the "
+                    f"finding that justifies editing the oracle is untraceable.")
+
+    def test_behaviour_change_references_resolve(self):
+        """The BUGS.md entry a behavioural change cites has to exist."""
+        bugs = (REPO / "BUGS.md").read_text(encoding="utf-8")
+        for change in self.behaviour_changes():
+            ref = str(change.get("bugs_md", "")).strip()
+            if not ref:
+                continue  # absence is already a failure in the test above
+            with self.subTest(tag=change.get("tag"), reference=ref):
+                self.assertIn(
+                    ref, bugs,
+                    f"{change.get('tag')} cites {ref} in BUGS.md, but no such "
+                    f"entry exists. A behavioural oracle change has to be "
+                    f"traceable to the finding it answers.")
+
+    def test_behaviour_changes_actually_modify_the_tree(self):
+        """No phantom entries.
+
+        The list is not a wish list. A behavioural change that touches no
+        modified file is either stale (already upstreamed, or reverted) and
+        should be deleted, or wrong about which files it touches.
+        """
+        changed = self.changed_files()
+        for change in self.behaviour_changes():
+            with self.subTest(tag=change.get("tag")):
+                touched = set(change.get("files", []))
+                self.assertTrue(
+                    touched <= changed,
+                    f"{change.get('tag')} claims to change "
+                    f"{sorted(touched - changed)}, which the MAME working tree "
+                    f"has not modified. Either the fix was reverted or has been "
+                    f"upstreamed; delete the entry rather than leave it claiming "
+                    f"a change that is not there.")
 
     def test_oracle_hash_is_recorded_and_well_formed(self):
         digest = self.inventory["oracle_sha256"]
