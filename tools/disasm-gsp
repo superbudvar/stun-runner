@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Disassemble the S.T.U.N. Runner GSP program out of a captured VRAM image.
+
+Answers: "what is the TMS34010 code the 68010 uploaded into the GSP's VRAM?"
+The program is TMS34010 native machine code -- 16-bit instruction words, each
+carrying two 10-bit operand fields -- plus a separate graphics instruction set.
+It is not assembly and not a high-level language; nothing in this repository
+reconstructs what Atari wrote it in, and nothing here guesses.
+
+Uses MAME's own disassembler (src/devices/cpu/tms34010/34010dsm.cpp) compiled
+standalone against a small shim, so the decoding is MAME's and not a
+reimplementation that could disagree with it. The shim supplies only what that
+file references. It is built on first use and cached.
+
+WHAT IT GETS WRONG -- read this before trusting a decode:
+
+  * The GSP address space is BIT-addressed. `ROPCODE()` advances the PC by
+    `2 << 3` and MAME's disassembler advances its read position by 16 units per
+    word. Those 16 units are BYTES in the captured share: one instruction word
+    occupies one 16-byte cell, replicated 8x, so a fetch at any alignment inside
+    the cell returns the same word. This mapping was derived empirically from
+    the STUNRUN-FETCH trace, where `pc & 0x3fffff` lands exactly on the cell
+    holding that fetch's opcode. A first version of this tool divided the
+    position by 8 instead and produced confidently wrong output, so the
+    derivation is what makes the tool usable rather than merely plausible.
+
+  * MAME's TMS34010 disassembler has NO mnemonic for the repeat instructions
+    RS, RS1, RS2, RI and RPT. Those decode as `MOVE`. If you are looking at a
+    power-on delay loop, that is why it does not look like one.
+
+  * MAME has no GSP ROM region for stunrun, so everything disassembled here
+    came out of VRAM. Nothing here verifies that the bytes came from the game
+    rather than from a capture artifact; that check lives upstream, in the
+    fetch trace.
+
+Requires a C++ compiler and the MAME source tree.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+MAME_TREE = pathlib.Path(os.environ.get("MAME_SRC", "/mnt/build/mame-ref"))
+
+# From harddriv.cpp: stunrun -> multisync_nomsp -> multisync_gsp_map, which maps
+# map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram"). So the
+# share is 4 MiB mirrored every 4 MiB, and a share offset is (addr - 0xff800000)
+# mod 0x400000.
+SHARE_BASE = 0xFF800000
+SHARE_PERIOD = 0x400000
+
+# One instruction word per 16-byte cell, replicated 8x.
+WORD_STRIDE = 16
+
+SHIM = r'''
+#ifndef STUNRUN_EMU_SHIM_H
+#define STUNRUN_EMU_SHIM_H
+#include <cstdint>
+#include <cstdio>
+#include <ostream>
+namespace osd {
+using u8=std::uint8_t; using u16=std::uint16_t; using u32=std::uint32_t;
+using u64=std::uint64_t; using s8=std::int8_t;  using s16=std::int16_t;
+using s32=std::int32_t;  using s64=std::int64_t;
+}
+namespace util {
+template <typename... Args>
+std::ostream &stream_format(std::ostream &stream, const char *fmt, Args... args)
+{
+    const auto fill=stream.fill(); const auto flags=stream.flags();
+    const auto prec=stream.precision(); const auto width=stream.width();
+    char buffer[512];
+    const int n=std::snprintf(buffer,sizeof buffer,fmt,args...);
+    if(n>0) stream.write(buffer,(n<(int)sizeof buffer)?n:(int)sizeof buffer-1);
+    stream.width(width); stream.precision(prec); stream.flags(flags); stream.fill(fill);
+    return stream;
+}
+class disasm_interface {
+public:
+    virtual ~disasm_interface()=default;
+    using u8=osd::u8; using u16=osd::u16; using u32=osd::u32; using u64=osd::u64;
+    using s8=osd::s8; using s16=osd::s16; using s32=osd::s32; using s64=osd::s64;
+    using offs_t=u32;
+    static constexpr u32 SUPPORTED=0x80000000, STEP_OUT=0x40000000,
+        STEP_OVER=0x20000000, STEP_COND=0x10000000,
+        OVERINSTMASK=0x0c000000, OVERINSTSHIFT=26, LENGTHMASK=0x0000ffff;
+    static inline u32 step_over_extra(u32 x){return x<<OVERINSTSHIFT;}
+    class data_buffer {
+    public:
+        virtual ~data_buffer()=default;
+        virtual u8 r8(offs_t pc) const=0;
+        virtual u16 r16(offs_t pc) const=0;
+        virtual u32 r32(offs_t pc) const=0;
+        virtual u64 r64(offs_t pc) const=0;
+    };
+    virtual u32 interface_flags() const {return 0;}
+    virtual u32 page_address_bits() const {return 0;}
+    virtual u32 page2_address_bits() const {return 0;}
+    virtual offs_t pc_linear_to_real(offs_t pc) const {return pc;}
+    virtual offs_t pc_real_to_linear(offs_t pc) const {return pc;}
+    virtual u8 decrypt8(u8 v,offs_t,bool) const {return v;}
+    virtual u16 decrypt16(u16 v,offs_t,bool) const {return v;}
+    virtual u32 decrypt32(u32 v,offs_t,bool) const {return v;}
+    virtual u64 decrypt64(u64 v,offs_t,bool) const {return v;}
+    virtual u32 opcode_alignment() const=0;
+    virtual offs_t disassemble(std::ostream&,offs_t,const data_buffer&,const data_buffer&)=0;
+};
+}
+using u8=osd::u8; using u16=osd::u16; using u32=osd::u32; using u64=osd::u64;
+using s8=osd::s8; using s16=osd::s16; using s32=osd::s32; using s64=osd::s64;
+using offs_t=util::disasm_interface::offs_t;
+#endif
+'''
+
+DRIVER = r'''
+#include "emu.h"
+#include "34010dsm.h"
+#include <cstdio>
+#include <cstdlib>
+#include <vector>
+#include <sstream>
+#include <iostream>
+#include <iomanip>
+struct membuf : util::disasm_interface::data_buffer {
+    std::vector<u8> b;
+    explicit membuf(std::vector<u8> v) : b(std::move(v)) {}
+    // Position is a BYTE offset into the share. The disassembler steps 16 units
+    // per word, and one word occupies one 16-byte cell, so the units are
+    // already bytes. Dividing by 8 here was the first version's bug.
+    u8  r8 (offs_t pc) const override { return pc<b.size()?b[pc]:0; }
+    u16 r16(offs_t pc) const override { return (pc+1<b.size())?(u16)(b[pc]|(b[pc+1]<<8)):0; }
+    u32 r32(offs_t pc) const override { return (u32)r16(pc)|((u32)r16(pc+16)<<16); }
+    u64 r64(offs_t pc) const override { return (u64)r32(pc)|((u64)r32(pc+32)<<32); }
+};
+int main(int argc,char**argv){
+    if(argc<4){std::fprintf(stderr,"usage: dsm <offset> <count> <binary>\n");return 2;}
+    offs_t off=strtoul(argv[1],nullptr,0); unsigned n=strtoul(argv[2],nullptr,0);
+    FILE*f=fopen(argv[3],"rb"); if(!f){std::perror("open");return 1;}
+    std::vector<u8> all; u8 buf[65536]; size_t g;
+    while((g=fread(buf,1,sizeof buf,f))>0) all.insert(all.end(),buf,buf+g);
+    fclose(f);
+    membuf ops(all),parm(all);
+    tms34010_disassembler d(false);
+    for(unsigned i=0;i<n&&off<all.size();i++){
+        std::ostringstream os;
+        offs_t raw=d.disassemble(os,off,ops,parm);
+        offs_t len=raw&util::disasm_interface::LENGTHMASK;
+        size_t bo=off;
+        std::cout<<std::hex<<std::setfill('0')<<"  "<<std::setw(8)<<off<<": "
+                 <<std::setw(4)<<(int)(bo+1<all.size()?all[bo+1]:0)
+                 <<std::setw(4)<<(int)all[bo]<<"  "<<os.str()
+                 <<"   ["<<std::dec<<(len/WORD_STRIDE_B)<<" word(s)]"<<std::hex<<"\n";
+        off+=len;
+    }
+    return 0;
+}
+'''.replace("WORD_STRIDE_B", str(WORD_STRIDE))
+
+
+def build(workdir: pathlib.Path) -> pathlib.Path:
+    """Compile MAME's disassembler against the shim. Cached by source hash."""
+    dsm_src = MAME_TREE / "src/devices/cpu/tms34010/34010dsm.cpp"
+    hdr = MAME_TREE / "src/devices/cpu/tms34010/34010dsm.h"
+    if not dsm_src.is_file():
+        raise SystemExit(
+            f"no MAME source at {dsm_src}\n"
+            f"set MAME_SRC to a MAME checkout (needs src/devices/cpu/tms34010/)")
+    cxx = os.environ.get("CXX", "g++")
+    if shutil.which(cxx) is None:
+        raise SystemExit(f"no C++ compiler: {cxx} (set CXX)")
+
+    key = hashlib.sha256(
+        (dsm_src.read_bytes() + hdr.read_bytes() + SHIM.encode() + DRIVER.encode())
+    ).hexdigest()[:16]
+    cached = workdir / f"tms34010-dsm-{key}"
+    if cached.is_file():
+        return cached
+
+    inc = workdir / f"inc-{key}"
+    inc.mkdir(parents=True, exist_ok=True)
+    (inc / "emu.h").write_text('#include "emu_shim.h"\n')
+    (workdir / "emu_shim.h").write_text(SHIM)
+    (workdir / "driver.cpp").write_text(DRIVER)
+
+    cmd = [cxx, "-O2", "-std=c++17", "-Wno-format-security",
+           "-I", str(inc), "-I", str(workdir), "-I", str(dsm_src.parent),
+           str(workdir / "driver.cpp"), str(dsm_src), "-o", str(cached)]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise SystemExit(f"failed to build MAME's TMS34010 disassembler:\n{proc.stderr[:4000]}")
+    return cached
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Disassemble the GSP program from a captured VRAM image.")
+    parser.add_argument("image", type=pathlib.Path,
+                        help="gsp_vram.bin, as written by tools/mame-gsp-vram-dump")
+    parser.add_argument("--at", default="0x340000",
+                        help="start, as a share byte offset (default 0x340000)")
+    parser.add_argument("--count", type=int, default=32,
+                        help="instructions to disassemble (default 32)")
+    parser.add_argument("--json", action="store_true",
+                        help="emit a stunrun-gsp-disasm/v1 document")
+    args = parser.parse_args()
+
+    if not args.image.is_file():
+        print(f"no image at {args.image}", file=sys.stderr)
+        return 2
+    size = args.image.stat().st_size
+    if size != SHARE_PERIOD:
+        # Guard loudly. This reader assumes the dump is the whole 4 MiB share.
+        # A 512 KiB capture is not a smaller view of it, it is a different
+        # region, and decoding it silently would place every address wrongly.
+        print(f"expected a {SHARE_PERIOD}-byte share, got {size} bytes.\n"
+              f"This is not a smaller view of the share; it is a different\n"
+              f"region, so every decoded address would be wrong.", file=sys.stderr)
+        return 2
+
+    workdir = pathlib.Path(os.environ.get(
+        "STUNRUN_DSM_CACHE", pathlib.Path(tempfile.gettempdir()) / "stunrun-dsm"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    binary = build(workdir)
+
+    start = int(args.at, 0)
+    proc = subprocess.run([str(binary), str(start), str(args.count), str(args.image)],
+                          capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+        return proc.returncode
+
+    if args.json:
+        instructions = []
+        for line in proc.stdout.splitlines():
+            if ":" not in line:
+                continue
+            head, _, rest = line.partition(":")
+            try:
+                offset = int(head.strip(), 16)
+            except ValueError:
+                continue
+            # " <opcode> <mnemonic> <operands>   [N word(s)]"
+            words = rest.split()
+            if len(words) < 2:
+                continue
+            opcode, mnemonic = words[0], words[1]
+            operands = " ".join(words[2:])
+            # Drop the driver's own "[N word(s)]" annotation from the operand
+            # text; it is our metadata, not part of the instruction.
+            operands = re.sub(r"\s*\[\d+ word\(s\)\]\s*$", "", operands).strip()
+            instructions.append({
+                "offset": offset,
+                "vram": SHARE_BASE + (offset % SHARE_PERIOD),
+                "opcode": opcode,
+                "mnemonic": mnemonic,
+                "operands": operands,
+                "text": mnemonic + ((" " + operands) if operands else ""),
+            })
+        print(json.dumps({
+            "schema": "stunrun-gsp-disasm/v1",
+            "image": str(args.image),
+            "start": start,
+            "start_vram": SHARE_BASE + (start % SHARE_PERIOD),
+            "word_stride": WORD_STRIDE,
+            "instructions": instructions,
+        }, indent=2))
+    else:
+        sys.stdout.write(proc.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
