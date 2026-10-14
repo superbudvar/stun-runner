@@ -1,0 +1,106 @@
+{
+  "schema": "stunrun-mame-local-patches/v1",
+  "mame_source_tree": "/mnt/build/mame-ref",
+  "mame_git_branch": "stunrun-observe",
+  "mame_git_base_commit": "e4c1c2b5102c032ce93216bc5ce5bae2b6a1f23e",
+  "oracle_binary": "/mnt/build/mame-oracle/mame",
+  "oracle_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+  "patches": [
+    {
+      "tag": "STUNRUN-DEBUG",
+      "function": "tms340x0_device::execute_run",
+      "env": [],
+      "observation_only": true,
+      "purpose": "Dump the GSP display register file and PC, which Lua cannot read (BUGS.md MD-04) and which -video none prevents the scanline callback from dumping.",
+      "added": "pre-existing",
+      "files": [
+        "src/devices/cpu/tms34010/tms34010.cpp",
+        "src/devices/cpu/tms34010/tms34010.h"
+      ]
+    },
+    {
+      "tag": "STUNRUN-DUMP",
+      "function": null,
+      "env": [
+        "STUNRUN_DUMP_DIR"
+      ],
+      "observation_only": true,
+      "purpose": "Dump GSP VRAM and display parameters to a directory.",
+      "added": "pre-existing",
+      "files": [
+        "src/mame/atari/harddriv_v.cpp"
+      ]
+    },
+    {
+      "tag": "STUNRUN-DPY",
+      "function": null,
+      "env": [
+        "STUNRUN_DUMP_DIR"
+      ],
+      "observation_only": true,
+      "purpose": "Dump display parameters alongside the VRAM dump.",
+      "added": "pre-existing",
+      "files": [
+        "src/mame/atari/harddriv_v.cpp"
+      ]
+    },
+    {
+      "tag": "STUNRUN-HOSTPROBE",
+      "function": "stunrun_hostprobe",
+      "env": [
+        "STUNRUN_GSP_HOSTPROBE"
+      ],
+      "observation_only": true,
+      "purpose": "Record raw offset and post-transform register index for 68010 stores into the TMS34010 host interface, to settle whether hd68k_gsp_io_w sees a byte offset or a word index.",
+      "added": "pre-existing",
+      "files": [
+        "src/mame/atari/harddriv_m.cpp"
+      ]
+    },
+    {
+      "tag": "STUNRUN-OPLOG",
+      "function": "tms34010_device::stunrun_oplog",
+      "env": [
+        "STUNRUN_GSP_OPLOG_OUT",
+        "STUNRUN_GSP_OPLOG_EVERY",
+        "STUNRUN_GSP_OPLOG_FROM",
+        "STUNRUN_GSP_OPLOG_TO",
+        "STUNRUN_GSP_OPLOG_DETAIL"
+      ],
+      "observation_only": true,
+      "purpose": "Executed-opcode profiler: which TMS34010 ops the game uses and in what proportion.",
+      "added": "pre-existing",
+      "files": [
+        "src/devices/cpu/tms34010/tms34010.cpp",
+        "src/devices/cpu/tms34010/tms34010.h"
+      ]
+    },
+    {
+      "tag": "STUNRUN-FETCH",
+      "function": "tms34010_device::stunrun_fetch",
+      "env": [
+        "STUNRUN_GSP_FETCH_OUT",
+        "STUNRUN_GSP_FETCH_SKIP",
+        "STUNRUN_GSP_FETCH_MAX"
+      ],
+      "observation_only": true,
+      "purpose": "Instruction-fetch trace from ROPCODE(), the only choke point every executed instruction passes through. Answers whether the GSP fetches instructions at all and from where, which no existing instrumentation can.",
+      "added": "2026-10-14",
+      "files": [
+        "src/devices/cpu/tms34010/tms34010.cpp",
+        "src/devices/cpu/tms34010/tms34010.h"
+      ]
+    },
+    {
+      "tag": "VERSION",
+      "function": null,
+      "env": [],
+      "observation_only": true,
+      "purpose": "Build stamp. The frozen oracle reads '(Local Build)'; stunrun-observe reads the commit.",
+      "added": "pre-existing",
+      "files": [
+        "3rdparty/genie/src/host/version.h"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""Answer: is the MAME binary I am about to record evidence against the same
+binary that produced the evidence already recorded?
+
+The S.T.U.N. Runner oracle is not a stock MAME. `/mnt/build/mame-oracle/mame`
+carries six local, env-gated observation hooks, and nothing in the tree keeps
+that binary from being rebuilt by accident -- which would leave every recorded
+measurement still citing a sha256 that no longer describes the binary in use.
+This compares the binary's actual hash against the one committed in
+`analysis/mame-local-patches.json` and fails loudly on a mismatch.
+
+WHAT THIS GETS WRONG, stated plainly because the failure mode is silent:
+
+  * It is a hash check, not a behavioural one. It cannot tell you whether the
+    hooks in the oracle are genuinely inert -- only that the file is unchanged
+    since the hash was recorded. A behavioural edit made *before* the hash was
+    taken would pass forever.
+  * It does not check the observer. The `stunrun-observe` branch rebuilds to a
+    different path on purpose and is expected to differ; this tool is only about
+    the frozen oracle.
+  * It cannot distinguish "someone rebuilt with identical source" from "nobody
+    touched it". Those are the same outcome for our purposes, so that is
+    deliberate rather than a limitation we can engineer around.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import pathlib
+import sys
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+INVENTORY = REPO / "analysis" / "mame-local-patches.json"
+
+CHUNK = 1 << 20
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(CHUNK), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def parse_int(value: str) -> int:
+    return int(value, 0)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Verify the frozen MAME oracle still matches its recorded hash.")
+    parser.add_argument("--mame", type=pathlib.Path,
+                        help="path to check (default: the inventory's oracle_binary)")
+    parser.add_argument("--inventory", type=pathlib.Path, default=INVENTORY,
+                        help="patch inventory to read the expected hash from")
+    parser.add_argument("--json", action="store_true",
+                        help="emit a stunrun-mame-oracle-result/v1 document")
+    args = parser.parse_args()
+
+    if not args.inventory.is_file():
+        print(f"no patch inventory at {args.inventory}", file=sys.stderr)
+        return 2
+    inventory = json.loads(args.inventory.read_text(encoding="utf-8"))
+
+    target = args.mame or pathlib.Path(inventory["oracle_binary"])
+    expected = inventory["oracle_sha256"]
+
+    if not target.is_file():
+        print(f"no MAME binary at {target}", file=sys.stderr)
+        return 2
+
+    actual = sha256_file(target)
+    ok = actual == expected
+
+    result = {
+        "schema": "stunrun-mame-oracle-result/v1",
+        "binary": str(target),
+        "expected_sha256": expected,
+        "actual_sha256": actual,
+        "matches": ok,
+        "patches_recorded": len(inventory["patches"]),
+        "source_branch": inventory["mame_git_branch"],
+        "base_commit": inventory["mame_git_base_commit"],
+    }
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+    elif ok:
+        print(f"oracle matches: {target}")
+        print(f"  sha256 {actual}")
+        print(f"  {result['patches_recorded']} local patches recorded "
+              f"(see analysis/mame-local-patches.md)")
+    else:
+        print(f"ORACLE HAS CHANGED: {target}", file=sys.stderr)
+        print(f"  recorded {expected}", file=sys.stderr)
+        print(f"  actual   {actual}", file=sys.stderr)
+        print("  Evidence recorded against the old binary cannot be reproduced "
+              "with this one. See analysis/mame-local-patches.md.", file=sys.stderr)
+
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
