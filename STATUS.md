@@ -316,10 +316,20 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
   replay comparisons are not physical-board parity evidence. Keep gsvp.3/.4
   open until that model consumes the corrected units and is checked against the
   direct-share artifact.
-- **The old `fixtures/oracle/frame_600/frame_600_gsp_vram.bin` and related 4 MiB
-  captures are TMS program-address-space samples, not physical VRAM.** They stay
-  as historical artifacts but must not be used as VRAM goldens. The direct
-  512 KiB service-mode capture is in `reference/experiments/stunrun/`.
+- **The frame-600 VRAM fixture is now the physical 512 KiB share.** The 4 MiB
+  program-address-space sample has been removed from
+  `fixtures/oracle/frame_600/frame_600_gsp_vram.bin` and replaced with MAME's
+  direct `m_gsp_vram` pointer dump (524,288 bytes, sha256 `04cebed17bccd9c2...`,
+  5058 nonzero). `tools/verify-oracle-fixture` now pins **512 KiB**, not 4 MiB:
+  the program space is `datawidth 16, addrshift 3`, so one address unit is one
+  bit and a 4 MiB address span is 512 KiB of physical bytes. Its negative
+  controls cover the 1 MiB main-RAM file, a 4 MiB sample, a tampered blob, an
+  all-zero capture, and a missing metadata record. Provenance and the
+  bit-to-byte conversion are in `fixtures/oracle/frame_600/metadata.json`;
+  source capture in
+  `reference/experiments/stunrun/gsp-direct-share-frame600-service/`. The
+  other 4 MiB captures under `reference/` stay as historical address-space
+  traces and are still not VRAM goldens.
 - M0 is complete; the installed package's unavailable upstream source commit remains documented in `analysis/m0-audit.md`.
 - Installed MAME reports `0.289 (mame0289-dirty)` and exposes no source commit; its binary hash is recorded in `mame/system-baseline.json`.
 - Static-listing generation recipe works for all four active programmable processors; generated listings remain local and are hash-recorded in `reference/listings/stunrun.metadata.json`.

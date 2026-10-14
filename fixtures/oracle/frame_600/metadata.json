@@ -1,44 +1,65 @@
 {
   "schema": "stunrun-oracle-fixture/v1",
   "fixture": "frame_600_gsp_vram",
-  "description": "The GSP VRAM share (MAME's gsp_vram memory_share, declared by harddriv.cpp:628 as map(0xff800000,0xffbfffff).mirror(0x0400000).ram().share(\"gsp_vram\")), captured from MAME at frame 600 and written consecutively from 0xff800000, little-endian, so it is directly comparable with the native paths' own dumps.",
-  "replaces": {
-    "note": "The previous file at this path was NOT VRAM. It is superseded, not corrected in place. See docs/mc68010-boot-findings.md section 19.5 and 27.",
-    "size_bytes": 1048576,
-    "first_8_bytes": "ffffc000 00000216",
-    "why_not_vram": "Those first two words are the MC68010's reset stack pointer and reset PC, which live in main CPU RAM at address 0, so the file is main RAM under a VRAM name.",
-    "provenance": "none; added in 5b9b13b with no metadata recording how it was produced",
-    "byte_agreement_with_this_capture": "1876 / 1048576 = 0.18%"
+  "description": "The physical GSP VRAM share as MAME's own m_gsp_vram memory_share, written straight from the share pointer. This is the physical backing store, not a view of it.",
+  "size_bytes": 524288,
+  "share": {
+    "bytes": 524288,
+    "words": 262144,
+    "vram_mask_words": "0x003ffff",
+    "nonzero_bytes": 5058,
+    "nonzero_words": 2881,
+    "sha256": "04cebed17bccd9c2140948f2a5e03ef32365e59a31d094c2df046b5480170d89",
+    "authority": "MAME memory_share pointer: the harddriv_v.cpp STUNRUN-DUMP hook writes from (const uint8_t *)m_gsp_vram.begin() for exactly m_gsp_vram.bytes()"
   },
+  "backing_size_proof": [
+    "SP-338 page 10 labels the silicon 'VRAM Array (16) 64K x 4'; sixteen 64Kx4 chips are 16 x 256 Kbit = 4 Mbit = 512 KiB.",
+    "MAME's own share reports share bytes=524288 words=262144 vram_mask=0x003ffff (gsp_share.txt).",
+    "The Lua program-space reader that previously produced a 4 MiB image was reading an address-space view; its file size was the span of GSP BIT addresses sampled, not the number of physical bytes behind them."
+  ],
   "capture": {
     "rom_set": "stunrun rev 6",
-    "frames": 600,
-    "target": 600,
-    "words": 2097152,
-    "command": "./tools/mame-gsp-vram-dump roms <out> --mame /mnt/build/mame-ref/mame --frames 600 --target 600 --words 2097152 --nothrottle",
-    "mame_binary_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
-    "nonzero_bytes": 3307200,
-    "nonzero_words": 1664200
+    "rom_manifest": "roms/stunrun.manifest.json",
+    "rom_manifest_sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d",
+    "input": "service",
+    "frames": 700,
+    "target_frame": 600,
+    "command": "tools/mame-gsp-state-snapshot roms /tmp/opencode/mame-direct-service --mame /mnt/build/mame-ref/mame --input service --frames 700 --targets 600 --screen-dir /tmp/opencode/mame-direct-service/screens --nothrottle",
+    "mame_path": "/mnt/build/mame-ref/mame",
+    "mame_version": "0.289 (unknown)",
+    "mame_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+    "source_experiment": "reference/experiments/stunrun/gsp-direct-share-frame600-service/"
   },
-  "artifact": {
-    "path": "frame_600_gsp_vram.bin",
-    "bytes": 4194304,
-    "sha256": "35c9262190d8ec85183af255ba1962429897dec157a95793d61d06feee2210ba"
+  "addressing": {
+    "note": "TMS34010 program-space addresses are BIT addresses, and the space is configured datawidth 16, addrshift 3. One program-space address unit is one bit.",
+    "conversion": "byte_offset = ((addr - 0xFF800000) >> 3) & 0x7FFFF;  word_index = byte_offset >> 1",
+    "consequence": "A host HSTADR of $FF896040 lands at physical share byte $12C08, NOT $96040. The & 0xFFFFFFF0 aligns to a 16-bit word (two physical bytes); each HSTADR INCW step of 0x10 advances one word, two bytes.",
+    "why_this_fixture_exists": "Because of that conversion, an image sampled across GSP bit addresses is not a VRAM image. Any comparison against this file must convert its addresses first."
+  },
+  "supersedes": {
+    "note": "Two earlier files lived at this path. Both are program-address-space samples, not physical VRAM, and both are superseded rather than corrected in place.",
+    "first": {
+      "size_bytes": 1048576,
+      "first_8_bytes": "ffffc000 00000216",
+      "why_not_vram": "Those words are the MC68010's reset stack pointer and reset PC, which live in main CPU RAM at address 0, so the file is main RAM under a VRAM name.",
+      "provenance": "none; added in 5b9b13b with no metadata recording how it was produced"
+    },
+    "second": {
+      "size_bytes": 4194304,
+      "sha256": "35c9262190d8ec85183af255ba1962429897dec157a95793d61d06feee2210ba",
+      "why_not_vram": "A 4194304-byte read of GSP program addresses 0xff800000-0xffffffff is 4 MiB of BIT-address span, and the share behind it is 512 KiB of physical bytes.",
+      "history": "Committed as the '4 MiB share' in 2439e54, on the 4 MiB claim in docs/mc68010-boot-findings.md section 19. That claim is superseded by section 34."
+    }
   },
   "how_to_verify": [
-    "sha256sum frame_600_gsp_vram.bin  # must equal artifact.sha256",
-    "size must be 4194304 -- the whole 4 MiB share. A 512 KiB file is not a small view of this share, it is its first page only, which is the exact mistake this file previously existed as.",
+    "sha256sum frame_600_gsp_vram.bin  # must equal share.sha256",
+    "size must be 524288. The share is 512 KiB; SP-338 and MAME's memory_share both say so independently.",
     "first 8 bytes must NOT be ffffc000 00000216; that is main RAM's reset vector.",
     "cells/tools/verify-oracle-fixture.py checks all of the above."
   ],
-  "structure": {
-    "512KiB_page_twins": "page 0 is byte-identical to page 4, delta 0x200000; pages 1,2,3,5,6,7 have no twin",
-    "interpretation": "a 2 MiB CONTENT period in what the ROM wrote, NOT a mirror period. The share itself is 4 MiB and its mirror period is 0x4000000 (bit 22). Do not re-derive the mirror formula from page twins."
-  },
-  "contamination_warning": "This capture is the share's state at frame 600, which includes writes made by the GSP core executing its own program, not only the MC68010 host-port stream. 87.5% of its nonzero 16-byte cells are uniform and hold framebuffer data (0x82, 0xb8, 0xaa, ...); a host-port replay produces 82,720 nonzero cells against this capture's 208,025. So a whole-array diff against a host-port-only model cannot decide storage semantics. For that, capture at a frame where the GSP is still in reset: frame 390 works (gsp PC=0, 429,504 nonzero words) while the share is still entirely zero at frame 360 and the GSP is running by 420. See docs/mc68010-boot-findings.md section 27.",
-  "verification_window": {
-    "frame": 390,
-    "gsp_pc": 0,
-    "note": "Host-port-only capture point. Used to measure the HSTDAT store width; see BUGS.md SR-20 and findings section 27. Not stored here because it is 4 MiB and fully regenerable from tools/mame-gsp-vram-dump."
-  }
+  "limitations": [
+    "This is service-mode frame 600 and includes whatever the GSP has written by then; it is not a frame-48 snapshot.",
+    "It is sparse by design: 5058 nonzero bytes of 524288, because the share is mostly untouched self-test area at this point. A dense capture here is a sign of a misconfigured read, not a better one.",
+    "The MAME binary is a local instrumented build; the direct-share hook is not a stock-MAME Lua capability."
+  ]
 }

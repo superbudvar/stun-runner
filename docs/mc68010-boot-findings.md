@@ -3325,19 +3325,29 @@ claim did **not** compare against this fixture -- 15.4's reference was a 512 KiB
 model already had wrong. Two different references, two different extents, one
 file committed under a name that suggests it is the oracle.
 
-**The replacement has LANDED** (2026-10-13). `fixtures/oracle/frame_600/frame_600_gsp_vram.bin`
-is now the 4194304-byte capture (sha256 `35c9262190d8ec85...`) with provenance in
-`metadata.json` beside it, and `tools/verify-oracle-fixture` checks size, the
-reset-vector tell, sha256 against the record, and the all-zero case. Five public
-tests in `tests/test_public_tools.py::OracleFixtureTests` pin it; three are
-negative controls, because the failure this file already had was invisible to a
-green suite and a test that cannot fail would repeat that.
+**The replacement landed, and was then replaced again** (2026-10-13, then
+2026-10-14). The first replacement put a 4194304-byte capture at this path with
+`tools/verify-oracle-fixture` pinning that size. It was wrong in the same way
+§19 was: `tools/mame-gsp-vram-dump` reads GSP **program addresses**, and one
+program-space address unit is one bit, so its 4194304-byte file is 4 MiB of
+*address span* over a 512 KiB share — eight times too large, and a file that
+looks exactly like a successful capture. §34 supersedes both.
 
-**`tools/mame-gsp-vram-dump` captures the**
-share consecutively from 0xff800000 with a per-run `-nvram_directory`. At frame
-600 with `--words 2097152` it yields a 4194304-byte image with 1664200 of
-2097152 words nonzero -- a genuinely 4 MiB share. That cross-check is what
-confirms section 19 from the oracle side rather than only from the probe side.
+The fixture is now MAME's direct `m_gsp_vram` pointer dump: 524,288 bytes,
+sha256 `04cebed17bccd9c2...`, 5058 nonzero, from
+`reference/experiments/stunrun/gsp-direct-share-frame600-service/`. The checker
+pins **512 KiB**, and its negative controls now include a 4 MiB file specifically
+— a checker that blesses a wrong unit conversion is worse than no checker, since
+it makes the wrong file look certified. Six public tests in
+`tests/test_public_tools.py::OracleFixtureTests` pin this, four of them negative
+controls. The lesson is recorded rather than smoothed over: the *second* failure
+at this path shipped with its own checker already enforcing it.
+
+**`tools/mame-gsp-vram-dump` reads program addresses**, consecutively from
+0xff800000 with a per-run `-nvram_directory`. Its output is a valid
+**address-space trace** and remains useful as one. It is not a VRAM image, and
+its `1664200 of 2097152 words nonzero` is not a share-fill measurement. It has
+since been corrected to read one word per `0x10` address units; see §34.1.
 
 **One finding from the other agent survives here, correctly.** Their page
 comparison, redone on the 4 MiB dump:

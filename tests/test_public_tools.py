@@ -1217,17 +1217,24 @@ M1_RAM_WRITE_DONE frames=12 events=4 truncated=false output=/dev/null
 class OracleFixtureTests(unittest.TestCase):
     """The committed oracle fixture must be the thing its name claims.
 
-    fixtures/oracle/frame_600/frame_600_gsp_vram.bin was committed at 1 MiB,
-    named VRAM, starting with the MC68010's reset SP/PC -- so it is main RAM.
-    It went unnoticed because nothing read it. These tests pin the replacement
-    and, more importantly, prove the checker rejects the failure modes.
+    This path has held two wrong files. The first was 1 MiB, named VRAM, and
+    started with the MC68010's reset SP/PC -- so it was main RAM. The second was
+    4 MiB and read MAME's GSP program address space, which is a span of BIT
+    addresses, not physical bytes; the share behind it is 512 KiB.
+
+    The second failure is the one that matters here, because it was committed
+    WITH this checker already enforcing its size. A checker that blesses the
+    wrong unit conversion is worse than no checker, so these tests pin 512 KiB
+    and keep a negative control on the 4 MiB shape specifically.
     """
 
     FIXTURE = ROOT / "fixtures" / "oracle" / "frame_600" / "frame_600_gsp_vram.bin"
     META = ROOT / "fixtures" / "oracle" / "frame_600" / "metadata.json"
-    VRAM_BYTES = 0x400000
+    # SP-338 page 10: 'VRAM Array (16) 64K x 4' = 16 x 256 Kbit = 512 KiB.
+    # MAME's memory_share reports the same: share bytes=524288.
+    VRAM_BYTES = 0x80000
 
-    def test_committed_gsp_vram_fixture_is_a_real_4mib_share(self):
+    def test_committed_gsp_vram_fixture_is_the_512kib_physical_share(self):
         """The shipped fixture passes its own check, with no ROM and no MAME."""
         r = subprocess.run(
             [str(ROOT / "tools" / "verify-oracle-fixture"), str(self.FIXTURE)],
@@ -1239,8 +1246,39 @@ class OracleFixtureTests(unittest.TestCase):
         self.assertEqual(len(blob), self.VRAM_BYTES)
         # The specific tell: a file claiming to be the GSP VRAM share must not
         # begin with the MC68010 reset vector, which lives in main RAM.
-        self.assertNotEqual(blob[:8], bytes.fromhex("ffffc00000000216"))
+        self.assertNotEqual(blob[:8], bytes.fromhex("ffffc000 00000216"))
         self.assertTrue(any(blob), "an all-zero capture looks successful but is not")
+
+    def test_checker_rejects_the_4mib_program_space_sample(self):
+        """Negative control for the unit error, which is the one that recurred.
+
+        A 4194304-byte file of GSP program addresses is not a VRAM image: the
+        program space is configured datawidth 16, addrshift 3, so one address
+        unit is one BIT and 4 MiB of addresses is 512 KiB of physical bytes.
+        This control is what stops the checker being relaxed back to 4 MiB to
+        accommodate a capture that was never VRAM.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            too_big = temp / "gsp_vram.bin"
+            too_big.write_bytes(bytes(0x400000))
+            r = subprocess.run(
+                [str(ROOT / "tools" / "verify-oracle-fixture"), str(too_big),
+                 "--metadata", str(self.META)],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 1, "a 4 MiB program-space sample must fail")
+            self.assertIn("524288", r.stderr)
+
+    def test_metadata_records_the_address_conversion(self):
+        """The conversion is the trap; it belongs in the provenance, not in prose."""
+        meta = json.loads(self.META.read_text(encoding="utf-8"))
+        self.assertEqual(meta["share"]["bytes"], self.VRAM_BYTES)
+        self.assertIn(">> 3", meta["addressing"]["conversion"])
+        # Both superseded files must stay on the record.
+        self.assertEqual(meta["supersedes"]["first"]["first_8_bytes"],
+                         "ffffc000 00000216")
+        self.assertEqual(meta["supersedes"]["second"]["size_bytes"], 0x400000)
 
     def test_checker_rejects_the_old_main_ram_fixture(self):
         """Negative control: the superseded file must fail, loudly.
@@ -1302,15 +1340,24 @@ class OracleFixtureTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1, "all-zero capture must fail")
             self.assertIn("zero", r.stderr)
 
-    def test_metadata_records_the_command_and_the_superseded_file(self):
-        """Provenance is the part that was missing, so it is pinned too."""
+    def test_metadata_records_the_command_and_the_superseded_files(self):
+        """Provenance is the part that was missing, so it is pinned too.
+
+        The command must be the DIRECT-SHARE capture, not mame-gsp-vram-dump.
+        The latter reads GSP program addresses and produced the 4 MiB
+        address-space sample; naming it here would quietly re-license the unit
+        error this fixture was re-pointed to escape.
+        """
         meta = json.loads(self.META.read_text(encoding="utf-8"))
         self.assertEqual(meta["schema"], "stunrun-oracle-fixture/v1")
         self.assertTrue(meta["capture"]["command"])
-        self.assertIn("mame-gsp-vram-dump", meta["capture"]["command"])
-        self.assertEqual(meta["artifact"]["bytes"], self.VRAM_BYTES)
-        # The superseded file's mislabel must stay on the record.
-        self.assertEqual(meta["replaces"]["first_8_bytes"], "ffffc000 00000216")
+        self.assertIn("mame-gsp-state-snapshot", meta["capture"]["command"])
+        self.assertNotIn("mame-gsp-vram-dump", meta["capture"]["command"])
+        self.assertEqual(meta["share"]["bytes"], self.VRAM_BYTES)
+        # Both superseded files' mislabels must stay on the record.
+        self.assertEqual(meta["supersedes"]["first"]["first_8_bytes"],
+                         "ffffc000 00000216")
+        self.assertEqual(meta["supersedes"]["second"]["size_bytes"], 0x400000)
 
 
 if __name__ == "__main__":

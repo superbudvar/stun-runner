@@ -1,23 +1,34 @@
 #!/usr/bin/env python3
 """Check that a committed oracle fixture is the thing its name claims.
 
-The trap this exists to avoid: fixtures/oracle/frame_600/frame_600_gsp_vram.bin
-was committed at 1048576 bytes, under a VRAM name, with no provenance. It is not
-VRAM -- its first two words are the MC68010's reset stack pointer and reset PC
-(ffffc000 00000216), which live in main CPU RAM at address 0. Nothing failed,
-because nothing read the file: no CTest and no python test referenced
-fixtures/oracle/, so a mislabelled blob sat in the tree for its whole life with
-a green suite behind it. A fixture nobody checks is a comment with a checksum.
+Two traps, both of which have already been committed here at least once.
 
-Two lessons are built in rather than left to the reader:
+TRAP 1 -- it might not be the device at all.
+fixtures/oracle/frame_600/frame_600_gsp_vram.bin was committed at 1048576 bytes,
+under a VRAM name, with no provenance. It is not VRAM: its first two words are the
+MC68010's reset stack pointer and reset PC (ffffc000 00000216), which live in main
+CPU RAM at address 0. Nothing failed, because nothing read the file -- no CTest and
+no python test referenced fixtures/oracle/, so a mislabelled blob sat in the tree
+with a green suite behind it. A fixture nobody checks is a comment with a checksum.
 
-  * Size is the first thing to check, because it is the one that catches a
-    truncated capture. This share is 4 MiB. A 512 KiB capture is NOT a small
-    view of it, it is the first page only -- which is exactly what the bad file
-    effectively was, one MiB of main RAM instead.
-  * The MC68010 reset vector is the specific tell. If a file claiming to be a
-    GSP VRAM share starts with ffffc000 00000216, it is main RAM, whatever its
-    length.
+TRAP 2 -- the size may be right while the units are wrong, and this checker is
+the reason to care about that.
+The same fixture was later replaced by a 4194304-byte file, captured by reading
+GSP program addresses 0xff800000-0xffffffff. That is 4 MiB of *bit*-address span.
+The share behind it is 512 KiB: SP-338 page 10 labels the silicon 'VRAM Array (16)
+64K x 4' (16 x 256 Kbit = 4 Mbit = 512 KiB) and MAME's own memory_share reports
+share bytes=524288. The program space is configured datawidth 16, addrshift 3, so
+one program-space address unit is one BIT:
+
+    byte_offset = ((addr - 0xFF800000) >> 3) & 0x7FFFF
+
+So a host HSTADR of $FF896040 lands at physical byte $12C08, not $96040. Sizing a
+"VRAM capture" from the address range instead of from the share gets a file 8x
+too large that still looks like a successful capture. See
+docs/mc68010-boot-findings.md section 34.
+
+That is why the expected size here is 524288 and not 4194304, and why the
+reset-vector check is not enough on its own.
 
 Provenance is checked against metadata.json rather than trusted: the fixture's
 sha256 must be the one the metadata records, and the metadata must name the
@@ -34,9 +45,12 @@ import sys
 
 SCHEMA = "stunrun-oracle-fixture/v1"
 
-# The GSP VRAM share, per harddriv.cpp:628:
-#   map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram")
-GSP_VRAM_BYTES = 0x400000
+# The physical GSP VRAM share. SP-338 page 10: 'VRAM Array (16) 64K x 4' =
+# 16 x 256 Kbit = 512 KiB. MAME's memory_share independently reports the same:
+#   share bytes=524288 words=262144 vram_mask=0x003ffff
+# NOT 4 MiB. A 4 MiB capture of GSP program addresses is 8x too large and spans
+# bit addresses, not physical bytes -- see the docstring.
+GSP_VRAM_BYTES = 0x80000
 
 # The MC68010's reset SP and PC, which live in main RAM at address 0 and must
 # never appear at the start of a file claiming to be the GSP VRAM share.
@@ -55,9 +69,8 @@ def check(path: pathlib.Path, meta_path: pathlib.Path, json_out, verify_sha: boo
     size_ok = len(blob) == GSP_VRAM_BYTES
     if not size_ok:
         problems.append(
-            f"size {len(blob)} != {GSP_VRAM_BYTES} (the 4 MiB share); "
-            f"a {GSP_VRAM_BYTES // 8}-byte file would be the first page only, "
-            f"not a smaller view"
+            f"size {len(blob)} != {GSP_VRAM_BYTES} (the 512 KiB physical share); "
+            f"4194304 bytes is 4 MiB of GSP bit-address span, not physical VRAM"
         )
 
     # --- not main RAM ----------------------------------------------------
@@ -83,9 +96,12 @@ def check(path: pathlib.Path, meta_path: pathlib.Path, json_out, verify_sha: boo
             if meta.get("schema") != SCHEMA:
                 problems.append(f"{meta_path}: schema is "
                                 f"{meta.get('schema')!r}, expected {SCHEMA!r}")
-            art = meta.get("artifact") or {}
+            # The descriptor block may be called `artifact` (a generic fixture)
+            # or `share` (a device share that has sub-parts). Accept either so
+            # this checker is not tied to one fixture's naming.
+            art = meta.get("artifact") or meta.get("share") or {}
             if art.get("bytes") != len(blob):
-                problems.append(f"metadata artifact.bytes {art.get('bytes')!r} "
+                problems.append(f"metadata size {art.get('bytes')!r} "
                                 f"!= actual {len(blob)}")
             if verify_sha and art.get("sha256") and art["sha256"] != sha:
                 problems.append(f"sha256 {sha} != metadata {art['sha256']}; "
