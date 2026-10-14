@@ -32,6 +32,11 @@ Environment:
   NATIVE_BUILD_DIR   Where the shell was built (default: build/native)
   STUNRUN_LIVE_VIDEO=0  Headless; same run, no window.
   STUNRUN_IN0        Overrides the port value chosen by --service.
+  STUNRUN_FRAME_LOG=N   Print lit=/colours= every N frames. Use this to see
+                      when a screen appears or vanishes -- the terminal
+                      summary only reports the LAST frame, and the thing worth
+                      watching here is the MC68010 -> GSP handoff, which are
+                      two different authors drawing the same window.
 
 Examples:
   ./run.sh                      # normal boot, GSP core running

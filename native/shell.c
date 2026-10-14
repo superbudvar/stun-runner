@@ -265,6 +265,8 @@ static bool g_gsp_indexed_backend_frame = false;
  * STUNRUN_CAPTURE_ALL=1 captures every frame. STUNRUN_CAPTURE_DIR sets
  * the output directory (default: "capture/"). PNG over PPM via stb_image_write.h. */
 static unsigned g_capture_frame = UINT32_MAX;  /* UINT32_MAX = disabled */
+/* STUNRUN_FRAME_LOG=N: print lit=/colours= every N frames. 0 disables. */
+static unsigned g_frame_log = 0u;
 static bool g_capture_all = false;
 static char g_capture_dir[256] = "capture";
 static char g_dump_dir[256] = {0};
@@ -1042,6 +1044,12 @@ static int run_walk(void)
 
     /* Screenshot capture env vars: STUNRUN_CAPTURE_FRAME=N, STUNRUN_CAPTURE_ALL=1, STUNRUN_CAPTURE_DIR=path */
     {
+        const char *flog = getenv("STUNRUN_FRAME_LOG");
+        if (flog && flog[0]) {
+            g_frame_log = (unsigned)strtoul(flog, NULL, 0);
+            printf("DEBUG: STUNRUN_FRAME_LOG='%s' -> every %u frames\n",
+                   flog, g_frame_log);
+        }
         const char *cf = getenv("STUNRUN_CAPTURE_FRAME");
         if (cf && cf[0]) {
             g_capture_frame = (unsigned)atoi(cf);
@@ -1756,6 +1764,25 @@ static int run_walk(void)
                 g_live_video_presented++;
                 render_mode = "live-gsp-share";
                 present_to_backend();
+                /* Per-frame content log (STUNRUN_FRAME_LOG=N).
+                 *
+                 * The terminal summary prints lit=/colours= for the LAST frame
+                 * only, which cannot show when a screen appeared or vanished --
+                 * and the thing worth watching here is precisely the
+                 * transition: the MC68010 draws the title screen itself until
+                 * the GSP is released, after which the core owns the frame.
+                 * Those are different authors producing the same window, and
+                 * one line per frame is the cheapest way to see which is which.
+                 *
+                 * lit=0 is the only honest "this frame is empty" signal; see
+                 * render.c's content_stats for why a hash cannot tell. */
+                if (g_frame_log != 0u && (frame % g_frame_log) == 0u) {
+                    unsigned lit = 0u, colours = 0u;
+                    stunrun_render_content_stats(&renderer, &lit, &colours);
+                    printf("frame-log f=%u lit=%u colours=%u\n",
+                           frame, lit, colours);
+                    fflush(stdout);
+                }
 #ifdef STUNRUN_GSP_GL_SCANOUT
                 if (g_gl_scanout) {
                     musashi_gsp_memory_t mem;
