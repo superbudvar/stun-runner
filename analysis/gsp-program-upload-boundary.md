@@ -258,3 +258,60 @@ non-zero rather than publishing an empty `execution_landmarks`.
 
 Do not call this range a program, in these or any other words, until
 execution evidence says so.
+
+---
+
+## CORRECTION (2026-10-14): the share does contain the program
+
+The section above is **wrong**. `$FFF40000`–`$FFFFFFE0` does hold an instruction
+stream, and the GSP executes it. This was refuted by direct fetch evidence, not
+by argument — see `analysis/gsp-program-upload.md`.
+
+### What the refutation got wrong
+
+The observation was correct and the inference was not: **all 262,144 sixteen-byte
+cells of the share hold one word replicated eight times**. I read that as a data
+fill and concluded there could be no code.
+
+But `m_pc` on this part is a **bit** address — `ROPCODE()` advances it by
+`2 << 3`, and MAME's own `34010dsm.cpp` advances its read position by 16 units
+per word. A bit-addressed PC walking a byte-array sees each word through a 16-unit
+stride, and the share presents its words that way. **The 16-byte replication is
+how MAME presents memory to a bit-addressed program counter. It is a property of
+the address space, not evidence about what the data is.**
+
+I had this warning twice already — in `tools/check-gsp-replay`, and in the
+`gsp-vram-dump.lua` header about stride-sampled readers — and still drew the
+conclusion from structure alone instead of waiting for execution evidence.
+
+### What the fetch trace shows
+
+`STUNRUN-FETCH`, 400,000 fetches, observer build:
+
+```text
+fetches: 400000   distinct pc: 656   distinct opcodes: 309
+traced opcodes present in the share image: 400000/400000 (100.00%)
+pc(bit) range: 0xfff40000 .. 0xfff59dc0
+most-fetched pcs: 0xfff40f50 (78994), 0xfff40f80 (78994), 0xfff40f90 (78994)
+consecutive pc deltas: {+48: 136487, +16: 116900, -64: 84283, -48: 54803, -16: 2653}
+```
+
+656 distinct addresses, 309 distinct opcodes, real control flow in both
+directions, every traced opcode present in the share. That is an instruction
+stream, and it is the uploaded block.
+
+`0xfff40f90` and `0xfff414c0` appear in the most-fetched list. Those are the
+"sentinel dispatch" PCs recorded before any of this — they were real execution
+sites all along, sampled correctly and interpreted wrongly.
+
+### Status of the claims in this document
+
+| Claim | Status |
+|---|---|
+| Upload boundary is HSTCTL bit 15 (HLT), release at frame 405 | **stands** |
+| `$02FE68`/`$02FE6E` cover `$FFF40000`–`$FFFFFFE0`, 32-byte stride | **stands** |
+| Post-release PC samples lie inside that range | **stands**, now explained |
+| "The share contains no instruction stream" | **REFUTED** — see above |
+| "The share is 16-byte-replicated" | **stands** — but it is the address space, not the content |
+| "10,360 words of first output, each a single repeated constant" | **stands** — a constant across a cell is expected for any host write; it measures writes, not drawing |
+| "`$0FFFFFFE0` holds a `$0x9920` reset vector" | **withdrawn** — a 32-bit read composes `$9920` with the next cell's `$0FFF5`; both come from the table |
