@@ -13,11 +13,18 @@
  * policy, and is not reachable from any render loop.  It sits below the
  * toolkit-free seam in the same category as the Musashi 68010 core.
  *
- * Addresses here are 32-bit BYTE addresses as MAME's program space sees
- * them.  The RTL core presents a bit-addressed architectural field bus and
- * performs the bit-to-physical-word narrowing itself inside
- * tms34010_field_sequencer, so the harness converts to byte address before
- * calling into this model. */
+ * Addresses here are 32-bit GSP PROGRAM-SPACE addresses, which are BIT
+ * addresses: the TMS34010 program space is configured `datawidth 16,
+ * addrshift 3`, so one address unit is one bit. Converting one to a physical
+ * byte offset is `((addr - 0xFF800000) >> 3) & 0x7FFFF`, and every VRAM path
+ * in gsp_board.c goes through gsp_board_vram_offset() to do it. The RTL core
+ * presents a bit-addressed architectural field bus, so nothing downstream has
+ * to guess the unit.
+ *
+ * Do not "simplify" a VRAM offset back to `addr & mask`. That byte-addressed
+ * form is what this file carried until 2026-10-14, and it is the single cause
+ * of the superseded sections 19, 27 and 30-33 of the findings doc. See
+ * docs/mc68010-boot-findings.md section 34. */
 
 #include <stdint.h>
 
@@ -25,8 +32,26 @@
 extern "C" {
 #endif
 
-/* Region sizes, shared with native/musashi_cpu.h so the two cannot drift. */
-#define GSP_BOARD_VRAM_BYTES      0x400000u /* 4 MiB share, 0x200000 words     */
+/* Region sizes, shared with native/musashi_cpu.h so the two cannot drift.
+ *
+ * GSP_BOARD_VRAM_BYTES is the PHYSICAL share: 512 KiB. SP-338 page 10 labels
+ * the silicon 'VRAM Array (16) 64K x 4' -- sixteen 64Kx4 chips are 16 x 256
+ * Kbit = 4 Mbit = 512 KiB -- and MAME's own m_gsp_vram reports
+ * `share bytes=524288 words=262144 vram_mask=0x003ffff`.
+ *
+ * It was 0x400000 (4 MiB) until 2026-10-14, which was wrong by a factor of 8
+ * and produced three superseded sections of the findings doc. The cause is the
+ * same in all of them: the TMS34010 program space is configured `datawidth 16,
+ * addrshift 3`, so ONE PROGRAM-SPACE ADDRESS UNIT IS ONE BIT. A 4 MiB read
+ * across 0xff800000-0xffffffff is 4 MiB of address span, not of physical bytes.
+ *
+ *     byte_offset = ((addr - 0xFF800000) >> 3) & 0x7FFFF
+ *     word_index  = byte_offset >> 1
+ *
+ * The ADDRESS range in the map is unchanged -- MAME still maps
+ * 0xff800000-0xffffffff -- it is the share behind it that is 512 KiB.
+ * See docs/mc68010-boot-findings.md section 34. */
+#define GSP_BOARD_VRAM_BYTES      0x80000u  /* 512 KiB share, 0x20000 words */
 #define GSP_BOARD_VRAM2BPP_BYTES  0x100000u /* 0x02000000-0x020FFFFF (1 MiB, no mirroring) */
 #define GSP_BOARD_PAL_BYTES       0x800u   /* 1024 entries * 2 bytes, per plane */
 #define GSP_BOARD_CTRL_BYTES      0x100u   /* one 256-byte share per plane     */

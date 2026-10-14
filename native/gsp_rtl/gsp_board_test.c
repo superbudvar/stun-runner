@@ -135,23 +135,24 @@ static void test_vram_mirroring_is_one_share(void)
  * docs/mc68010-boot-findings.md section 15.4. */
 static void test_2bpp_window_writes_main_vram(void)
 {
-    static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
+    static gsp_board_t b;   /* 512 KiB model: static, never on the stack */
     gsp_board_reset(&b);
 
-    /* Colour byte 0 comes from the low control share. */
-    gsp_board_write16(&b, 0xf4000000u, 0x00u);
-    b.ctrl_lo[0] = 0x5a;
+    /* The 2bpp colour source is the low control WORD, byte 1.  This model
+     * used ctrl_lo[0]; native/musashi_cpu.c uses ctrl_lo[1] and is the copy
+     * validated against MAME's direct palette-share capture (findings 34.3). */
+    b.ctrl_lo[1] = 0x5a;
 
-    /* Data 0x0001 selects one 2-bit pixel in the low halfword only.
-     * The masked word is assembled big-endian (MAME casts uint16_t* to
-     * uint32_t*), so vram[o] is the most significant byte: the 2-bit field
-     * lands in vram[3], not vram[0]. */
+    /* Data 0x0001 selects MASK(0), a full BYTE lane, in the low halfword only.
+     * The share is little-endian, so lane 0 is vram[0] and the colour byte
+     * lands whole -- not folded into two bits of vram[3].  HSTADR 0x02000000
+     * is a bit address: window offset (0 >> 4) = 0, share byte 0. */
     gsp_board_write16(&b, 0x02000000u, 0x0001u);
 
-    CHECK_EQ(b.vram[3] & 0x03u, 0x02u); /* colour 0x5a, low 2 bits = 0b10 */
-    CHECK_EQ(b.vram[0], 0x00u);         /* untouched by the low-half mask */
+    CHECK_EQ(b.vram[0], 0x5au);         /* whole colour byte in lane 0 */
     CHECK_EQ(b.vram[1], 0x00u);
     CHECK_EQ(b.vram[2], 0x00u);
+    CHECK_EQ(b.vram[3], 0x00u);
 
     /* An all-zero data word writes nothing at all. */
     uint64_t before = b.vram_writes;
@@ -221,24 +222,29 @@ static void test_host_register_decode(void)
 /* HSTDAT expands to a 16-byte cell: eight low-byte copies then eight
  * high-byte copies.  This is the board's observed expansion, recorded in
  * docs/mc68010-boot-findings.md section 12.2. */
-/* HSTDAT to the VRAM share FILLS a 16-byte cell: 8 copies of the low byte then
- * 8 of the high byte.  Not a packed 2-byte store.
+/* HSTDAT to the VRAM share stores a PACKED 16-bit word at a physical offset
+ * CONVERTED from the GSP bit address.
  *
- * Measured against the pinned MAME at frame 390 with the GSP still in reset
- * (gsp PC=0, so nothing else can touch the cell), driven through the real host
- * port rather than a direct space write:
+ *     byte_offset = ((addr - 0xFF800000) >> 3) & 0x7FFFF
  *
- *   HSTADRL=0xFF801000, HSTDAT=0x1234, read 16 bytes back from 0xff801000:
- *       34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12
+ * Both halves of that are the whole correction. The share is 512 KiB, not the
+ * 4 MiB the address window spans, and the shift is because the TMS34010 program
+ * space is configured `datawidth 16, addrshift 3` -- one address unit is one
+ * BIT. HSTADR $FF801000 is therefore physical byte $200, not $1000.
  *
- * An intermediate version of this test asserted a packed store instead, on the
- * reading that TMS34010_WRMEM_WORD is `m_program.write_word`.  That is the
- * mistake, and it was committed as d91ae6a before being measured.  The
- * assertions below are per-byte across the whole cell precisely so a packed
- * store cannot satisfy them. */
-static void test_hstdat_fills_the_16_byte_cell(void)
+ * Verified end to end against MAME's direct share dump: the 68010's own text
+ * line at HSTADR $FF896040 lands at physical $12C08, and native/musashi_cpu.c
+ * puts `df df df df df df 00 00 ...` there, byte-identical. See
+ * docs/mc68010-boot-findings.md section 34.3.
+ *
+ * This test previously asserted a 16-byte replicated cell. That came from
+ * reading the share through the GSP program space and stepping one address at a
+ * time -- which walks BIT addresses, so sixteen consecutive program-space reads
+ * are not sixteen consecutive physical bytes. The measurement is withdrawn in
+ * section 34.2; the expectations below are the corrected ones. */
+static void test_hstdat_stores_packed_word_at_converted_offset(void)
 {
-    static gsp_board_t b;   /* 4 MiB model: static, never on the stack */
+    static gsp_board_t b;   /* 512 KiB model: static, never on the stack */
     unsigned i;
     gsp_board_reset(&b);
 
@@ -253,41 +259,62 @@ static void test_hstdat_fills_the_16_byte_cell(void)
 
     CHECK_EQ(b.hstadr, 0xff801000u);
 
-    /* All 16 bytes of the cell, and the boundary of it: the cell must not
-     * spill into its neighbour. */
-    for (i = 0; i < 8u; i++) {
-        CHECK_EQ(b.vram[0x1000u + i], 0x7fu);
-        CHECK_EQ(b.vram[0x1008u + i], 0xc3u);
+    /* (0xFF801000 - 0xFF800000) >> 3 == 0x200.  Packed, little-endian. */
+    CHECK_EQ(b.vram[0x0200u], 0x7fu);
+    CHECK_EQ(b.vram[0x0201u], 0xc3u);
+
+    /* Nothing else was written.  A byte-addressed model puts the word at
+     * 0x1000 instead, and a replicating model fills 0x1000-0x100f, so all
+     * three disagree here. */
+    for (i = 0; i < 16u; i++) {
+        CHECK_EQ(b.vram[0x0202u + i], 0x00u);
     }
-    CHECK_EQ(b.vram[0x0ff0u], 0x00u); /* cell is exactly 16 bytes */
-    CHECK_EQ(b.vram[0x1010u], 0x00u);
-    CHECK_EQ(b.vram_writes, 16u);
+    CHECK_EQ(b.vram[0x1000u], 0x00u);
+    CHECK_EQ(b.vram_writes, 2u);
+}
+
+/* The conversion is the whole point, so pin it against a value the ROM
+ * actually uses.  HSTADR $FF896040 is the 68010's first text line; findings
+ * 34.3 records it landing at physical share byte $12C08.  0x96040 >> 3 is
+ * 0x12C08, so this asserts the shift rather than restating the constant. */
+static void test_hstdat_rom_text_address_lands_at_12c08(void)
+{
+    static gsp_board_t b;   /* 512 KiB model: static, never on the stack */
+    gsp_board_reset(&b);
+
+    gsp_board_host_write(&b, 0x00u, 0xff89u);
+    gsp_board_host_write(&b, 0x04u, 0x6040u); /* -> 0xFF896040 */
+    gsp_board_host_write(&b, 0x0cu, 0xdfdfu);
+
+    CHECK_EQ(b.vram[0x12c08u], 0xdfu);
+    CHECK_EQ(b.vram[0x12c09u], 0xdfu);
+    /* And not at the byte-addressed offset the old model would have used. */
+    CHECK_EQ(b.vram[0x096040u & (GSP_BOARD_VRAM_BYTES - 1u)], 0x00u);
 }
 
 /* HSTADR's low four bits are DISCARDED.  MAME masks the assembled address with
- * 0xfffffff0 before the store (tms34010.cpp:1898), so a programmed address
- * ending in 0x8 lands on the 0x0 boundary of its cell.  Measured: HSTADRL =
- * 0xFF802008 with HSTDAT=0x5678 puts the data at 0xff802000, not 0xff802008.
+ * 0xfffffff0 before the store (tms34010.cpp:1898).  That mask aligns to a
+ * 16-bit WORD -- it is not a 16-byte cell size, which is the reading that
+ * produced the withdrawn replication.
  *
- * This is the trap in the store test above: without the mask, a test using
- * 0xFF802008 as HSTADRL would pass against the wrong model. */
+ * HSTADR $FF802008 therefore stores at $FF802000, i.e. physical byte 0x400,
+ * not at 0x408. */
 static void test_hstdat_discards_low_address_bits(void)
 {
-    static gsp_board_t b;   /* 4 MiB model: static, never on the stack */
-    unsigned i;
+    static gsp_board_t b;   /* 512 KiB model: static, never on the stack */
     gsp_board_reset(&b);
 
     gsp_board_host_write(&b, 0x00u, 0xff80u);
     gsp_board_host_write(&b, 0x04u, 0x2008u); /* -> 0xFF802008 */
     gsp_board_host_write(&b, 0x0cu, 0x5678u);
 
-    /* On the masked boundary, not where it was programmed. */
-    for (i = 0; i < 8u; i++) {
-        CHECK_EQ(b.vram[0x2000u + i], 0x78u);
-        CHECK_EQ(b.vram[0x2008u + i], 0x56u);
-    }
-    /* Nothing at the unmasked address -- the mask did not merely round up. */
-    CHECK_EQ(b.vram[0x2000u + 16u], 0x00u);
+    /* (0x2000 >> 3) == 0x400, packed little-endian. */
+    CHECK_EQ(b.vram[0x0400u], 0x78u);
+    CHECK_EQ(b.vram[0x0401u], 0x56u);
+    /* 0xFF802008 unmasked would be 0x401, and the byte-addressed reading would
+     * be 0x2008.  Neither was written. */
+    CHECK_EQ(b.vram[0x0402u], 0x00u);
+    CHECK_EQ(b.vram[0x2008u], 0x00u);
 }
 
 /* HSTCTL bit 0x0800 post-increments the address latches after a host data
@@ -303,19 +330,22 @@ static void test_hstctl_increment(void)
      * the region decode, so an address like 0x0200 would select no region at
      * all and the store would be discarded. */
     gsp_board_host_write(&b, 0x00u, 0xff80u);
-    gsp_board_host_write(&b, 0x04u, 0x0200u); /* -> 0xFF800200 */
+    gsp_board_host_write(&b, 0x04u, 0x0200u); /* -> 0xFF800200, physical 0x40 */
 
     /* Increment clear: address must not move. */
     gsp_board_host_write(&b, 0x08u, 0x0000u); /* HSTCTL = 0 */
     gsp_board_host_write(&b, 0x0cu, 0x1111u);
     CHECK_EQ(b.hstadr, 0xff800200u);
+    CHECK_EQ(b.vram[0x0040u], 0x11u);
+    CHECK_EQ(b.vram[0x0041u], 0x11u);
 
-    /* Increment set: one cell forward, after the store. */
+    /* Increment set: one 16-bit WORD forward (0x10 in GSP address units,
+     * which is TWO physical bytes), after the store. */
     gsp_board_host_write(&b, 0x08u, 0x0800u); /* HSTCTL = 0x0800 */
     gsp_board_host_write(&b, 0x0cu, 0x2222u);
     CHECK_EQ(b.hstadr, 0xff800210u);
-    CHECK_EQ(b.vram[0x0200u], 0x22u); /* stored at the OLD address */
-    CHECK_EQ(b.vram[0x0210u], 0x00u); /* the new address is not yet written */
+    CHECK_EQ(b.vram[0x0040u], 0x22u); /* stored at the OLD address */
+    CHECK_EQ(b.vram[0x0042u], 0x00u); /* the new address is not yet written */
 
     /* HSTADRH/HSTADRL compose into one address without disturbing the other
      * half. */
@@ -340,14 +370,15 @@ static void test_hstdat_dispatches_on_address(void)
 {
     static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
     gsp_board_reset(&b);
-    b.ctrl_lo[0] = 0x5a;   /* the 2bpp colour source */
+    b.ctrl_lo[1] = 0x5a;   /* the 2bpp colour source (low control word, byte 1) */
 
     /* HSTDAT -> palette low, entry 0 of bank 0. */
     gsp_board_host_write(&b, 0x00u, 0xf500u);
     gsp_board_host_write(&b, 0x04u, 0x0000u);
     gsp_board_host_write(&b, 0x0cu, 0x1234u);
-    CHECK_EQ(b.pal_lo[0], 0x12u);
-    CHECK_EQ(b.pal_lo[1], 0x34u);
+    /* Little-endian: the share stores the low byte first. */
+    CHECK_EQ(b.pal_lo[0], 0x34u);
+    CHECK_EQ(b.pal_lo[1], 0x12u);
     /* And nothing landed in VRAM. */
     CHECK_EQ(b.vram_writes, 0u);
 
@@ -356,19 +387,19 @@ static void test_hstdat_dispatches_on_address(void)
     uint64_t pal_before = b.vram_writes;
     gsp_board_host_write(&b, 0x00u, 0x0200u);
     gsp_board_host_write(&b, 0x04u, 0x0010u);
-    gsp_board_host_write(&b, 0x0cu, 0x0001u); /* one 2-bit pixel, low half */
+    gsp_board_host_write(&b, 0x0cu, 0x0001u); /* one byte lane, low half */
     CHECK(b.vram_writes > pal_before);
     /* Bit 0 of the data selects MASK(0), which is a full BYTE lane
-     * (0x000000ff << 0), not a 2-bit pixel.  Assembled big-endian that lane
-     * is the least significant byte of the masked word, so the whole colour
-     * byte must land there.
+     * (0x000000ff << 0), not a 2-bit pixel.
      *
-     * HSTADR 0x02000010 -> offset (0x10 >> 1) = 8, and the stride is
-     * offset * 8, so the first masked word starts at byte 0x40. */
-    CHECK_EQ(b.vram[0x43u], 0x5au);
-    CHECK_EQ(b.vram[0x40u], 0x00u); /* other lanes untouched by this mask */
-    CHECK_EQ(b.vram[0x41u], 0x00u);
-    CHECK_EQ(b.vram[0x42u], 0x00u);
+     * HSTADR 0x02000010 is a BIT address, so the window offset is
+     * (0x10 >> 4) = 1 and the share byte offset is offset * 8 = 8.  The share
+     * is little-endian, so lane 0 is the first byte.  The colour source is
+     * ctrl_lo[1] (validated against MAME's direct palette capture, 34.3). */
+    CHECK_EQ(b.vram[0x08u], 0x5au);
+    CHECK_EQ(b.vram[0x09u], 0x00u); /* other lanes untouched by this mask */
+    CHECK_EQ(b.vram[0x0au], 0x00u);
+    CHECK_EQ(b.vram[0x0bu], 0x00u);
 
     /* HSTDAT -> control low: byte-wide, and it must feed the 2bpp colour. */
     gsp_board_host_write(&b, 0x00u, 0xf400u);
@@ -430,7 +461,8 @@ int main(void)
     test_2bpp_window_writes_main_vram();
     test_unmapped_reads_zero_and_count();
     test_host_register_decode();
-    test_hstdat_fills_the_16_byte_cell();
+    test_hstdat_stores_packed_word_at_converted_offset();
+    test_hstdat_rom_text_address_lands_at_12c08();
     test_hstdat_discards_low_address_bits();
     test_hstctl_increment();
     test_hstdat_dispatches_on_address();

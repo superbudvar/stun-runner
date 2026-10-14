@@ -7148,3 +7148,83 @@ root with `NATIVE_BUILD_DIR=$PWD/native/build`,
 `STUNRUN_STUNRUN_DIR=$PWD/roms/stunrun`, `STUNRUN_IN0=0xC7`,
 `STUNRUN_FRAMES=48`, `STUNRUN_DUMP_DIR=<dir>`, `STUNRUN_CAPTURE_FRAME=48`,
 `STUNRUN_CAPTURE_DIR=<dir>` and `STUNRUN_TEXT_LOG=1`.
+
+## 35. gsp_board.c consumes the corrected units (gsvp.3)
+
+`native/gsp_rtl/gsp_board.c` was the last model still carrying the unit error
+of sections 19/27/30-33. It now converts GSP bit addresses to physical share
+bytes, and is no longer the odd one out against `native/musashi_cpu.c`.
+
+### 35.1 What changed
+
+`GSP_BOARD_VRAM_BYTES` is `0x80000` (512 KiB), not `0x400000`. The whole change
+is one conversion, now funnelled through a single function so no caller can
+reintroduce a byte-addressed read of a bit-addressed space:
+
+```c
+static uint32_t gsp_board_vram_offset(uint32_t gsp_addr)
+{
+    return ((gsp_addr - 0xff800000u) >> 3) & (GSP_BOARD_VRAM_BYTES - 1u);
+}
+```
+
+The mapped *address* range is unchanged - MAME still maps
+0xff800000-0xffffffff, mirrored through bit 22. It is the share behind that
+window that is 512 KiB, and that was the thing 4 MiB got wrong.
+
+Regions fixed alongside it, each because it had absorbed the same error:
+
+| path | was | now |
+|---|---|---|
+| host HSTDAT -> VRAM | 16-byte cell, byte replicated 8x | packed 16-bit word at a 2-byte physical offset |
+| HSTDAT address mask | `& ~0xf` read as a 16-byte cell | `& 0xfffffff0` is a 16-bit-**word** alignment (tms34010.cpp:1898) |
+| 2bpp window offset | `(addr & 0xfffff) >> 1` | `(addr - 0x02000000) >> 4`, stride `offset * 8` |
+| 2bpp colour source | `ctrl_lo[0]` | `ctrl_lo[1]` |
+| 2bpp word assembly | big-endian | little-endian, matching the share |
+| palette entry index | `addr & 0x0fff` | `addr >> 4` |
+| palette word store | big-endian | little-endian |
+
+The 2bpp big-endian form is worth calling out. It was wrong in the host store
+and right in the core store, and the two cancelled - which is exactly why
+`tools/check-gsp-replay` could not see it. A differential check cannot see an
+error that both sides of it share.
+
+### 35.2 What it is checked against
+
+Not a percentage, and not against itself. Three levels:
+
+1. **Unit test.** `test_hstdat_stores_packed_word_at_converted_offset` and
+   `test_hstdat_rom_text_address_lands_at_12c08` pin the conversion against a
+   value the ROM actually uses: HSTADR `$FF896040` -> physical `$12C08`, the
+   68010's first text line. Verified as a negative control: deleting the `>> 3`
+   produces 11 failures.
+2. **Against the native model**, which is the copy validated against MAME.
+   `tools/check-gsp-replay`, service mode, frame 48:
+
+   ```text
+   host-window events=234057  vram_writes=461636  unmapped_writes=11
+     differing bytes : 0 / 524,288
+     byte sum ours=93214 reference=93214
+   RESULT PASS
+   ```
+
+3. **Against MAME, one cell.** The native service-mode frame-48 dump at physical
+   `$12C08` reads
+
+   ```text
+   df df df df df df 00 00 df df df df df df 00 00
+   ```
+
+   byte-identical to MAME's direct share capture, and `$096040` - where the
+   byte-addressed model would have put it - is empty. That reproduces 34.3 from
+   the board model's side rather than restating it.
+
+### 35.3 What is still not shown
+
+`gsp_board.c` agrees with the native model, and the native model agrees with
+MAME on the text cell and the palette. That chain has not been closed across
+the whole 512 KiB share: the comparison above is a differential between two of
+our own models, and the one MAME-anchored point is a single cell. Section 18.2
+is untouched and independent - the display-list capture still ends with the GSP
+halted for 99.61% of its window - and gsvp.4, the core executing the uploaded
+display list, remains the thing that actually produces pixels.

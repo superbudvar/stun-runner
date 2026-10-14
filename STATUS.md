@@ -67,12 +67,30 @@ nothing fills.
   `$HOME/.local/share/verilator-5.052`; the core is an *optional* CMake target
   that skips cleanly when Verilator is absent, so the ROM-free build gains no
   simulator dependency.
-- **`gsvp.3` host harness — open.** `native/gsp_rtl/gsp_board.c` is the
+- **`gsvp.3` host harness — DONE.** `native/gsp_rtl/gsp_board.c` is the
   toolkit-free C99 board model (memory map, host port, reset/clock), testable
-  without Verilator. It is **not yet the physical board model**: it still uses
-  4 MiB byte-addressed VRAM, while SP-338 and the direct MAME `memory_share`
-  dump establish 512 KiB with TMS34010 bit-address conversion. See
-  `docs/mc68010-boot-findings.md` §34.
+  without Verilator, and it now consumes the corrected units.
+  `GSP_BOARD_VRAM_BYTES` is `0x80000` (512 KiB), and every VRAM path converts
+  the GSP **bit** address through one function,
+  `((addr - 0xFF800000) >> 3) & 0x7FFFF`. The host HSTDAT store is a packed
+  16-bit word at a 2-byte physical offset, not a replicated 16-byte cell; the
+  `& 0xfffffff0` is a 16-bit-*word* alignment. The 2bpp window offset,
+  its colour source (`ctrl_lo[1]`), its endianness, and the palette index and
+  word order were fixed with it — each had absorbed the same unit error.
+  Checked three ways: unit tests pinned against the ROM's own
+  `$FF896040 -> $12C08` text address (negative control: removing the `>> 3`
+  gives 11 failures); `tools/check-gsp-replay` byte-identical to the native
+  model at 524,288 bytes, service mode frame 48, `RESULT PASS`; and the native
+  dump reads `df df df df df df 00 00 ...` at `$12C08`, byte-identical to
+  MAME's direct share capture, with the byte-addressed `$096040` empty.
+  Findings section 35.
+  - The mapped **address** range is unchanged (0xff800000-0xffffffff, mirrored
+    through bit 22). It is the share behind it that is 512 KiB, and that is
+    what 4 MiB got wrong.
+  - Not yet shown: agreement with the native model plus a MAME-anchored text
+    cell is a chain, not a whole-share comparison. The 2bpp expander's
+    big-endian store previously cancelled its own big-endian read, so a
+    differential check cannot see an error both sides share.
 - **`gsvp.4` first milestone — open.** The prior byte-identical replay compared
   two software models that shared the same wrong address/size assumptions; it
   is not oracle evidence. The direct 512 KiB share capture is now at
@@ -311,11 +329,14 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
   MAME's 237×7 prompt at y=150. The shell currently falls back to frame-600
   display registers when the GSP RTL is halted; frame-48 scanout origin/stride
   remains the next focused task.
-- **The optional Verilated `native/gsp_rtl/gsp_board.c` model is not yet corrected
-  to the 512 KiB bit-addressed backing.** Its 4 MiB byte-addressed array and
-  replay comparisons are not physical-board parity evidence. Keep gsvp.3/.4
-  open until that model consumes the corrected units and is checked against the
-  direct-share artifact.
+- **CLOSED: the Verilated `native/gsp_rtl/gsp_board.c` model now consumes the
+  512 KiB bit-addressed backing** (gsvp.3, 2026-10-14). It was the last model
+  carrying the unit error; see the gsvp.3 entry above and findings section 35
+  for the conversion, the six regions fixed with it, and the three levels it is
+  checked at. The remaining gap is not the model: it is that the check chain
+  runs through a differential between two of our own models with one
+  MAME-anchored cell, and gsvp.4 — the core executing the uploaded display
+  list — is what actually produces pixels.
 - **The frame-600 VRAM fixture is now the physical 512 KiB share.** The 4 MiB
   program-address-space sample has been removed from
   `fixtures/oracle/frame_600/frame_600_gsp_vram.bin` and replaced with MAME's

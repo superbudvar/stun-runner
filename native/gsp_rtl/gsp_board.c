@@ -31,20 +31,41 @@ static gsp_region_t gsp_region(uint32_t a)
     if (a >= 0xf5800000u && a <= 0xf5800fffu) return GSP_REGION_PAL_HI;
     /* map(0xff800000, 0xffbfffff).mirror(0x0400000)  [harddriv.cpp:628]
      *
-     * The declared window is 0xFF800000-0xFFBFFFFF, which is 0x400000 bytes --
-     * 4 MiB.  Mirror mask bit 22 then makes that whole window reachable a
-     * second time at 0xFFC00000-0xFFFFFFFF, so the measured decode is:
+     * MAME's map DECLARES a 0xff800000-0xffbfffff window, and mirror bit 22
+     * makes that whole window reachable a second time at
+     * 0xffc00000-0xffffffff. So the mapped ADDRESS range is
+     * 0xff800000-0xffffffff, unchanged.
      *
-     *     mapped iff (addr & 0x7f800000) == 0x7f800000
-     *     offset      =  addr & 0x003fffff   (the full 4 MiB formula is
-     *                  ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF, which
-     *                  is equivalent to addr & 0x3FFFFF for VRAM-range addrs)
+     * What that window does NOT tell you is how many physical bytes are behind
+     * it. The program space is configured `datawidth 16, addrshift 3`
+     * (tms34010.cpp:67), so one program-space address unit is one BIT, and the
+     * share behind the window is 512 KiB -- SP-338 page 10 says
+     * 'VRAM Array (16) 64K x 4', and MAME's own m_gsp_vram reports
+     * `share bytes=524288 words=262144`. The 0x400000-byte window is therefore
+     * 8x the share, and reading it end to end yields an 8x-too-large image
+     * that looks exactly like a successful capture.
      *
-     * Measured rather than inferred: tools/mame-gsp-mirror-probe writes markers
-     * into the live machine and reports where they land.  See
-     * docs/mc68010-boot-findings.md section 19. */
+     * This model was 4 MiB byte-addressed until 2026-10-14 and carried that
+     * error into three findings sections. Converting the address is NOT this
+     * function's job -- it decides mapped-ness only; see
+     * gsp_board_vram_offset(). See findings section 34. */
     if ((a & 0x7f800000u) == 0x7f800000u) return GSP_REGION_VRAM;
     return GSP_REGION_UNMAPPED;
+}
+
+/* GSP program-space address -> physical byte offset in the 512 KiB share.
+ *
+ * The conversion that the whole model used to be missing. Verified against
+ * MAME: HSTADR $FF896040 lands at physical share byte $12C08, NOT $96040.
+ * $96040 >> 3 = $12C08, which is the same fact.
+ *
+ * MAME's own expression is `addr2byte(A) = A >> addr_shift`
+ * (address_space_config, emumem.h:2078) with addr_shift 3, composed with the
+ * share's own size mask. Kept in one function so no caller can reintroduce a
+ * byte-addressed read of a bit-addressed space. */
+static uint32_t gsp_board_vram_offset(uint32_t gsp_addr)
+{
+    return ((gsp_addr - 0xff800000u) >> 3) & (GSP_BOARD_VRAM_BYTES - 1u);
 }
 
 int gsp_board_is_mapped(uint32_t byte_addr)
@@ -97,11 +118,15 @@ static uint32_t gsp_2bpp_mask_word(uint16_t data, unsigned half)
 
 /* Palette entry index.  hdgsp_control_hi_w (harddriv_v.cpp:211-256) selects
  * the bank from the low three bits of control_high, and only the first 256
- * entries of each plane are addressable. */
+ * entries of each plane are addressable.
+ *
+ * `addr` is a BIT address, so the within-bank entry index is `addr >> 4` (the
+ * map's offset unit is one 16-bit access per 0x10 address bits), not a byte
+ * offset.  This matches native/musashi_cpu.c's gsp_palette_index. */
 static unsigned gsp_board_palette_index(const gsp_board_t *b, uint32_t addr)
 {
     unsigned bank = (unsigned)(b->ctrl_hi[0] & 0x07u);
-    unsigned off = (unsigned)(addr & 0x0fffu) & 0xffu;
+    unsigned off = (unsigned)(addr >> 4) & 0xffu;
     return bank * 0x100u + off;
 }
 
@@ -128,24 +153,25 @@ uint16_t gsp_board_read16(gsp_board_t *b, uint32_t byte_addr)
         /* .noprw(): reads hit nothing.  MAME returns 0. */
         return 0;
     case GSP_REGION_VRAM: {
-        /* MAME mirror formula: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF */
-        uint32_t off = byte_addr & 0x3FFFFFu;
+        /* Bit address -> physical byte. See gsp_board_vram_offset(). */
+        uint32_t off = gsp_board_vram_offset(byte_addr) & ~1u;
         return (uint16_t)(b->vram[off] | ((uint16_t)b->vram[off + 1] << 8));
     }
     case GSP_REGION_VRAM2BPP:
-        /* REFUTED MODEL, corrected here: the 2bpp window is NOT a separate
-         * store.  hdgsp_vram_2bpp_r (harddriv_v.cpp) reads the MAIN vram share
-         * at `offset * 4`, so writes must land there too or the two views
-         * silently disagree.  Getting this wrong showed up as 23,979 of
-         * 524,288 bytes differing when replaying a captured 901,354-event
-         * bus stream, concentrated in the 2bpp range with the reference
-         * holding data where this model still held its 0xFF fill. */
+        /* The 2bpp window is NOT a separate store. hdgsp_vram_2bpp_r
+         * (harddriv_v.cpp) reads the MAIN vram share, so writes must land there
+         * too or the two views silently disagree.
+         *
+         * The address here is a bit address like every other one: the map's
+         * offset unit is one 16-bit access per 0x10 address bits, so
+         * `offset = (addr - 0x02000000) >> 4`, and the share byte offset is
+         * `offset * 8` (four uint16 words, because MAME casts a uint16_t share
+         * to uint32_t*). The share is little-endian, so the word is assembled
+         * and stored little-endian. */
         {
-            uint32_t off = (byte_addr & 0xffffu) * 4u;
-            off &= (GSP_BOARD_VRAM_BYTES - 1u) & ~3u;
-            return (uint32_t)b->vram[off] | ((uint32_t)b->vram[off + 1] << 8) |
-                   ((uint32_t)b->vram[off + 2] << 16) |
-                   ((uint32_t)b->vram[off + 3] << 24);
+            uint32_t off = (((byte_addr - 0x02000000u) >> 4) * 8u) &
+                           (GSP_BOARD_VRAM_BYTES - 1u) & ~3u;
+            return (uint16_t)(b->vram[off] | ((uint16_t)b->vram[off + 1] << 8));
         }
     case GSP_REGION_CTRL_LO:
         return (uint16_t)(b->ctrl_lo[byte_addr & 0xffu]);
@@ -197,12 +223,13 @@ void gsp_board_write16(gsp_board_t *b, uint32_t byte_addr, uint16_t value)
         /* .noprw(): writes go nowhere.  Counted, not stored. */
         return;
     case GSP_REGION_VRAM: {
-        /* MAME mirror formula: ((addr - 0xFF800000) % 0x400000) & 0x3FFFFF
-         * For VRAM-range addresses this simplifies to addr & 0x3FFFFF */
-        uint32_t off = byte_addr & 0x3FFFFFu;
+        /* Bit address -> physical byte, then a PACKED 16-bit word. See
+         * gsp_board_vram_offset(): one word lands at a 2-byte physical offset,
+         * and the next word is 2 bytes on, not 16. */
+        uint32_t off = gsp_board_vram_offset(byte_addr) & ~1u;
         b->vram[off]     = (uint8_t)(value & 0xffu);
         b->vram[off + 1] = (uint8_t)(value >> 8);
-        b->vram_writes++;
+        b->vram_writes += 2u;
         return;
     }
     case GSP_REGION_VRAM2BPP:
@@ -221,19 +248,23 @@ void gsp_board_write16(gsp_board_t *b, uint32_t byte_addr, uint16_t value)
          *
          *  - The stride is `offset * 8` BYTES, not `offset * 4`.  MAME casts
          *    to `uint32_t*` over a share declared `uint16_t`, so one element
-         *    is two bytes and the cast advances 4 elements = 8 bytes.  See the
-         *    identical note in native/musashi_cpu.c.
-         *  - The masked word is assembled BIG-endian from the share and stored
-         *    back big-endian, again because the share is uint16_t and MAME's
-         *    uint32_t view is the opposite endianness.
+         *    is two bytes and the cast advances 4 elements = 8 bytes.
+         *  - `offset` is a BIT-address-derived word index: the map's offset
+         *    unit is one 16-bit access per 0x10 address bits, so it is
+         *    `(addr - 0x02000000) >> 4`.  Reading the address as bytes is what
+         *    put this expander at the wrong place in the share.
+         *  - The masked word is assembled and stored LITTLE-endian, because the
+         *    share is a little-endian uint16_t array.  The earlier big-endian
+         *    form here was consistent with the big-endian mistake above and
+         *    cancelled it, which is why it survived replay.
          *
          * The mask table (harddriv_v.cpp:43-61, multisync branch) packs bits
          * 0x0001/0x0004/0x0010/0x0040 into the low halfword and the same four
-         * bits shifted by 8 into the high halfword, each driving one 2-bit
-         * pixel. */
+         * bits shifted by 8 into the high halfword, each driving one BYTE lane
+         * (see gsp_2bpp_mask_word). */
         {
-            uint32_t offset = (byte_addr & 0x000fffffu) >> 1;
-            uint32_t colour = b->ctrl_lo[0];
+            uint32_t offset = (byte_addr - 0x02000000u) >> 4;
+            uint32_t colour = b->ctrl_lo[1];
             unsigned half;
             colour |= colour << 16;
             for (half = 0; half < 2u; half++) {
@@ -242,15 +273,15 @@ void gsp_board_write16(gsp_board_t *b, uint32_t byte_addr, uint16_t value)
                 if (mask == 0u) continue;
                 o = (offset * 8u + half * 4u);
                 o &= (GSP_BOARD_VRAM_BYTES - 1u) & ~3u;
-                cur = ((uint32_t)b->vram[o] << 24) |
-                      ((uint32_t)b->vram[o + 1] << 16) |
-                      ((uint32_t)b->vram[o + 2] << 8) |
-                      (uint32_t)b->vram[o + 3];
+                cur = (uint32_t)b->vram[o] |
+                      ((uint32_t)b->vram[o + 1] << 8) |
+                      ((uint32_t)b->vram[o + 2] << 16) |
+                      ((uint32_t)b->vram[o + 3] << 24);
                 cur = (cur & ~mask) | (colour & mask);
-                b->vram[o]     = (uint8_t)(cur >> 24);
-                b->vram[o + 1] = (uint8_t)(cur >> 16);
-                b->vram[o + 2] = (uint8_t)(cur >> 8);
-                b->vram[o + 3] = (uint8_t)cur;
+                b->vram[o]     = (uint8_t)cur;
+                b->vram[o + 1] = (uint8_t)(cur >> 8);
+                b->vram[o + 2] = (uint8_t)(cur >> 16);
+                b->vram[o + 3] = (uint8_t)(cur >> 24);
                 b->vram_writes += 4u;
             }
         }
@@ -299,70 +330,39 @@ static void gsp_board_hstdat_store(gsp_board_t *b, uint16_t data)
 {
     const uint32_t addr = b->hstadr;
 
-    /* 0xFF000000-0xFFFFFFFF: the VRAM share.  A host data write fills a 16-byte
-     * cell with each source byte replicated eight times.
+    /* 0xFF000000-0xFFFFFFFF: the VRAM share.  MAME masks the assembled address
+     * with 0xFFFFFFF0 before the store (tms34010.cpp:1898), which aligns to a
+     * 16-bit WORD; the store itself is a packed 16-bit word at a 2-byte
+     * physical offset, not sixteen bytes.
      *
-     * This is a CORRECTION.  An intermediate version of this file packed two
-     * bytes instead, on the reading that `TMS34010_WRMEM_WORD` is
-     * `m_program.write_word` and `write_word` on a 16-bit-wide space stores two
-     * bytes.  That reading is wrong, and it was adopted here and in
-     * native/musashi_cpu.c (fcf1eab) before either was measured.
+     * The `& 0xFFFFFFF0` and the >>3 are separate facts and both are needed:
+     * the mask is a 16-bit-word alignment, and the shift is the bit-address
+     * conversion from gsp_board_vram_offset(). Reading the mask as a 16-byte
+     * cell size is what produced the replication this replaces -- and a probe
+     * appeared to confirm it, because reading the share through the program
+     * space and stepping one address at a time walks BIT addresses, so
+     * sixteen consecutive program-space reads are not sixteen consecutive
+     * physical bytes. That measurement is withdrawn in findings section 34.2.
      *
-     * MEASURED against the pinned MAME, at frame 390 with the GSP still in
-     * reset (gsp PC=0, so nothing else can touch the cell):
-     *
-     *   HSTADRL=0xFF801000, HSTDAT=0x1234, read 16 bytes back from 0xff801000:
-     *       34 34 34 34 34 34 34 34 12 12 12 12 12 12 12 12
-     *
-     * Driven through the real host port (the 68010 writing $C00000/$C00004/
-     * $C0000C), not a direct space write, so it exercises
-     * hd68k_gsp_io_w -> host_w -> TMS34010_WRMEM_WORD.  The same probe also
-     * confirmed the two adjacent facts the model already relied on:
-     *
-     *   HSTADRL=0xFF802008, HSTDAT=0x5678 -> lands at 0xff802000, not
-     *       0xff802008: the `& 0xfffffff0` mask discards the low four bits.
-     *   HSTCTL=0x0800 then two HSTDAT writes -> cells 0xff803000, 0xff803010:
-     *       the post-increment stride is one 16-byte cell.
-     *
-     * WHY the source misleads: the program space is declared `datawidth 16,
-     * addrshift 3` (tms34010.cpp:67), so alignment() == 16, and the 16-byte
-     * cell is real.  What `write_word` does is NOT a plain 2-byte store into
-     * that cell -- the space's narrower data width against the 16-byte unit is
-     * what expands it.  Reading `write_word` as "2 bytes" is the mistake.
-     *
-     * The share is 4 MiB: MAME's window 0xff800000-0xffbfffff is 0x400000
-     * bytes, mirrored through bit 22, so the measured offset is
-     * `addr & 0x3fffff`.
-     *
-     * HISTORY.  A second defect lived here and hid the first: the offset mask
-     * was (size - 1) = 0x7FFFF, a 512 KiB period, disagreeing with the real
-     * share from 0xff880000 upward -- inside the primary window, not merely in
-     * the alias -- affecting 745,384 of 843,688 0xFFxxxxxx captured writes
-     * (88.4%).  Fixed in cf8587e/bd5b873 (docs section 19).  Because the native
-     * model carried the same wrong constant, tools/check-gsp-replay could not
-     * see it; the same blind spot applies here.  See stun-runner-2ua and
-     * docs section 27. */
+     * Verified end to end instead: the 68010's own text line at HSTADR
+     * $FF896040 lands at physical share byte $12C08, and the native model puts
+     * `df df df df df df 00 00 ...` there, matching MAME's direct share dump
+     * byte for byte. See docs/mc68010-boot-findings.md section 34.3. */
     if ((addr & 0xff000000u) == 0xff000000u) {
-        uint32_t off = ((addr - 0xff800000u) &
-                        (GSP_BOARD_VRAM_BYTES - 1u)) & ~0xfu;
-        uint8_t lo = (uint8_t)(data & 0xffu);
-        uint8_t hi = (uint8_t)(data >> 8);
-        unsigned k;
-        for (k = 0; k < 8u; k++) {
-            b->vram[off + k]      = lo;
-            b->vram[off + 8u + k] = hi;
-        }
-        b->vram_writes += 16u;
+        uint32_t off = gsp_board_vram_offset(addr & 0xfffffff0u) & ~1u;
+        b->vram[off]     = (uint8_t)(data & 0xffu);
+        b->vram[off + 1] = (uint8_t)(data >> 8);
+        b->vram_writes += 2u;
         return;
     }
 
     /* 0x02000000-0x020FFFFF: masked expander over the SAME VRAM share, with
-     * the colour taken from the low control byte.  The loop covers EIGHT
+     * the colour taken from the low control word.  The loop covers EIGHT
      * four-byte words -- 32 bytes -- alternating the low and high halfword
      * mask, not just the two words a first reading suggests. */
     if ((addr & 0xfff00000u) == 0x02000000u) {
-        uint32_t offset = (addr & 0x000fffffu) >> 1;
-        uint32_t colour = b->ctrl_lo[0];
+        uint32_t offset = (addr - 0x02000000u) >> 4;
+        uint32_t colour = b->ctrl_lo[1];
         unsigned w;
         colour |= colour << 16;
         for (w = 0; w < 8u; w++) {
@@ -371,30 +371,41 @@ static void gsp_board_hstdat_store(gsp_board_t *b, uint16_t data)
             if (mask == 0u) continue;
             o = (offset * 8u + w * 4u) &
                 (GSP_BOARD_VRAM_BYTES - 1u) & ~3u;
-            cur = ((uint32_t)b->vram[o] << 24) |
-                  ((uint32_t)b->vram[o + 1] << 16) |
-                  ((uint32_t)b->vram[o + 2] << 8) |
+            cur = (uint32_t)b->vram[o] |
+                  ((uint32_t)b->vram[o + 1] << 8) |
+                  ((uint32_t)b->vram[o + 2] << 16) |
                   (uint32_t)b->vram[o + 3];
             cur = (cur & ~mask) | (colour & mask);
-            b->vram[o]     = (uint8_t)(cur >> 24);
-            b->vram[o + 1] = (uint8_t)(cur >> 16);
-            b->vram[o + 2] = (uint8_t)(cur >> 8);
-            b->vram[o + 3] = (uint8_t)cur;
+            /* Little-endian, like the share and like the core-path expander
+             * above.  This branch kept the old big-endian store and so wrote
+             * lane 0 into vram[o+3]; it cancelled the core path's big-endian
+             * READ, which is why the mismatch survived replay rather than
+             * showing up as a diff. */
+            b->vram[o]     = (uint8_t)cur;
+            b->vram[o + 1] = (uint8_t)(cur >> 8);
+            b->vram[o + 2] = (uint8_t)(cur >> 16);
+            b->vram[o + 3] = (uint8_t)(cur >> 24);
             b->vram_writes += 4u;
         }
         return;
     }
 
     /* Palette and control shares.  The control shares are byte-wide; the
-     * palette planes are indexed by the bank selected through control_high. */
+     * palette planes are indexed by the bank selected through control_high.
+     *
+     * Like every other region here, the palette address is a BIT address, so
+     * the entry index is `off >> 4`, not a byte offset.  And the share is
+     * little-endian, so the word is stored low byte first.  Both corrections
+     * are validated by native/musashi_cpu.c against MAME's direct palette-share
+     * capture (findings 34.3): entry $DF reads DFDF/00DF in both. */
     if ((addr & 0xfffff000u) == 0xf5000000u ||
         (addr & 0xfffff000u) == 0xf5800000u) {
         uint8_t *plane = ((addr & 0xfffff000u) == 0xf5000000u)
                        ? b->pal_lo : b->pal_hi;
         unsigned idx = gsp_board_palette_index(b, addr) * 2u;
         if (idx + 1u < GSP_BOARD_PAL_BYTES) {
-            plane[idx]     = (uint8_t)(data >> 8);
-            plane[idx + 1] = (uint8_t)(data & 0xffu);
+            plane[idx]     = (uint8_t)(data & 0xffu);
+            plane[idx + 1] = (uint8_t)(data >> 8);
         }
         return;
     }
@@ -432,7 +443,10 @@ void gsp_board_host_write(gsp_board_t *b, uint32_t byte_offset, uint16_t data)
         gsp_board_hstdat_store(b, data);
         b->hstdat = data;
         /* HSTCTL bit 0x0800 post-increments the address latches after a host
-         * data write, by one 16-byte cell. */
+         * data write by 0x10 -- the next 16-bit word, which is TWO physical
+         * bytes (tms34010.cpp, host_w case HOST_DATA).  The step is in GSP
+         * address units, so it stays 16 here even though the share is now
+         * 512 KiB. */
         if (b->hstctl & 0x0800u) b->hstadr += 16u;
         return;
     case GSP_BOARD_HSTCTL:
@@ -455,10 +469,11 @@ uint16_t gsp_board_host_read(gsp_board_t *b, uint32_t byte_offset)
         return (uint16_t)(b->hstadr & 0xffffu);
     case GSP_BOARD_HSTDAT:
         /* HSTDAT is a data REGISTER, not a memory window: a read returns the
-         * last value written.  It must NOT be reconstructed from the cell.
-         * The 16-byte expansion puts eight low-byte copies at base+0..7 and
-         * eight high-byte copies at base+8..15, so reading adjacent bytes of
-         * the cell would return (hi,hi) rather than the word. */
+         * last value written (tms34010.cpp, host_r case HOST_DATA goes through
+         * RDMEM_WORD, but the HOST PORT's HSTDAT register readback is the
+         * latched value).  It must NOT be reconstructed from the cell, and now
+         * that a store is a packed 2-byte word there is no cell to reconstruct
+         * from anyway. */
         return b->hstdat;
     case GSP_BOARD_HSTCTL:
         return b->hstctl;
