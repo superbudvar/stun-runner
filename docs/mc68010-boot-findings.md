@@ -7819,3 +7819,391 @@ drifting.
 3. **Still a different trajectory point from MAME.** §37's offset is untouched;
    the core is not cycle-locked to a video frame. Expect "the same game, not the
    same frame".
+## 40. Who writes `$FFDB48` — the GSP, through IPL2, and our model never asserts IPL2
+
+The 68010 parks at `$02FC82: tst.w (A2)` with `A2 = #$FFDB48` and the word never
+becomes non-zero. This section names the writer, the instrument that found it,
+and the missing wire.
+
+### 40.1 The answer
+
+**`$0002143C: move.w #$ffff, $ffdb48.l`** — three instructions into the **level-3
+autovector interrupt handler**.
+
+The vector table is not at zero. `$0010EC: 4e 7b 88 01  movec A0, VBR` relocates
+it to `$00020000` (`$0010E0: lea $20000.l, A0`), and there:
+
+```text
+020068 -> 0x0213FE    vector 26  = level 2   ADSP      (m_adsp_irq_state)
+02006C -> 0x02143C    vector 27  = level 3   GSP       (m_gsp_irq_state)
+020070 -> 0x023F24    vector 28  = level 4   sound     (m_sound_int_state, /LINKIRQ)
+020074 -> 0x0222DA    vector 29  = level 5   periodic  (m_irq_state, 244.14 Hz)
+020078 -> 0x0239FE    vector 30  = level 6   duart     (m_duart_irq_state)
+02007C -> 0x0229C4    vector 31  = level 7   NMI
+```
+
+(`vector = 24 + level`, `EXCEPTION_INTERRUPT_AUTOVECTOR` at m68kcpu.h:169. The
+signal column is read from `harddriv_m.cpp:95-100`, where MAME's line *index* is
+the 68010 interrupt level, and it is consistent: the six handlers for levels 2..7
+are consecutive table entries in level order, and each is a real
+`movem/rte` handler rather than a stub — `$0229C4`, for instance, is
+`movem.l ...,-(A7) / jsr $30756 / movem.l (A7)+,...` and is reached only through
+the table.)
+
+```text
+ 95   m_maincpu->set_input_line(1, m_msp_irq_state ...);
+ 96   m_maincpu->set_input_line(2, m_adsp_irq_state ...);
+ 97   m_maincpu->set_input_line(3, m_gsp_irq_state ? ASSERT_LINE : CLEAR_LINE);
+ 98   m_maincpu->set_input_line(4, m_sound_int_state ...);  /* /LINKIRQ on STUN Runner */
+ 99   m_maincpu->set_input_line(5, m_irq_state ...);
+100   m_maincpu->set_input_line(6, m_duart_irq_state ...);
+```
+
+`hdgsp_irq_gen` (`harddriv_m.cpp:118-120`) is the TMS34010's INT pin. So the
+whole gate is a host/GSP handshake: **the 68010 raises the GSP, waits, and the
+GSP's own interrupt is what sets the word.** The handler confirms it:
+
+```text
+02143c: 33 fc ff ff 00 ff db 48   move.w   #$ffff, $ffdb48.l
+021442: 02 79 ff 7f 00 c0 00 08   andi.w   #$ff7f, $c00008.l   ; clear HSTCTL bit 15
+02144e: 20 38 80 14               move.l   $8014.w, D0        ; tick counter
+021452: 90 b9 00 ff db 36          sub.l    $ffdb36.l, D0      ; elapsed
+021458: 23 c0 00 ff 9b aa          move.l   D0, $ff9baa.l
+021460: 4e 73                     rte
+```
+
+It releases the GSP and signals the waiter in the same breath. That is not an
+accidental writer — it is the only `move.w #non-zero` to that address in the
+program.
+
+**Confirmed:** the instruction, its address, its vector, and the MAME wiring.
+**Inferred (not measured here):** that the TMS34010's INT pin is what
+`hdgsp_irq_gen` is wired to in the machine config; I read the state variable and
+the driver, not the TMS34010's own INT generation.
+
+### 40.2 What the ROM actually does around the gate
+
+Two callers, and they differ in a way that matters:
+
+```text
+02f126: link A6,#$0 ...                                ; caller 1
+02f15e: 42 79 00 ff db 48   clr.w  $ffdb48.l           ; clear FIRST
+02f16a: 4e b9 00 02 fc 60   jsr    $2fc60.l           ; then wait
+
+02f1be: link A6,#$0 ...                                ; caller 2
+02f212: 4e b9 00 02 fc 60   jsr    $2fc60.l           ; wait, UNCONDITIONALLY
+02f23a: 42 79 00 ff db 48   clr.w  $ffdb48.l           ; clear AFTER
+```
+
+Caller 2 never clears first, so it inherits whatever the previous release left
+behind: `$FFDB48` behaves as a latch as much as a handshake, and `$02FC60`
+returns immediately if the word is still non-zero from last time. That is the
+mechanism §40.8 measures the oracle actually using.
+
+So on the normal paths `$FFDB48` is only ever *cleared*, and only *set* from the
+IRQ3 handler. There is no third writer, and no branch that skips the wait:
+`$02F212` is unconditional. Measured, 600 frames, PC histogram
+(`STUNRUN_PC_HIST`):
+
+```text
+0x02F212   1        jsr $2fc60.l      (entered exactly once)
+0x02FC82   43259    tst.w (A2)
+0x02FC84   43252    bne $2fcb6
+0x02FCB6   --       never: the exit is absent from a 1679-entry histogram
+0x02FC98   --       never: the $80000-iteration escalation is absent too
+```
+
+And the CPU is inside the gate from **frame 380** to frame 600
+(`STUNRUN_PCLOG`, `awk '$2 >= 0x2FC60 && $2 <= 0x2FCB6'`), never leaving.
+
+### 40.3 The escalation path is a watchdog, not a producer
+
+`$02FC98-$02FCA2` call `$0308C4` once every `$80000` iterations, and `$0308C4`
+does not touch `$FFDB48` either:
+
+```text
+0308c4: link A6,#-$64 ; D0=arg1=$c, D2=arg2, D3=$100000, A2=$608000
+0308e6: jsr $30778.l          ; print message selector $0c
+0308fa: jsr $23898.l
+030906: clr.w (A2)           ; $608000, one million times
+03090a: cmp.l D3,D0 / blt $30906
+03090e: jsr $21286.l
+```
+
+So `$02FC60` is a **bounded wait with a lockup path**: poll for `$80000`
+iterations, then print error message 12 and spin forever. That reframes the
+question — `$FFDB48` is not a "flag somebody forgot", it is a handshake whose
+timeout is a deliberate diagnostic.
+
+### 40.4 The instrument: `STUNRUN_WATCH_WRITE`
+
+`native/musashi_cpu.{c,h}` and `native/shell.c` gained a runtime write watch and
+an interrupt counter, both armed by one env var. Unset, the three
+`m68k_write_memory_*` callbacks each take one predictable not-taken branch on a
+file-static word; `m68k_read_memory_32` became a wrapper that calls the
+unmodified body and then tests the same word. Behaviour with the feature off is
+unchanged — `board vram nonzero words`, the render hash, and `lit=`/`colours=`
+are identical to §39.6's run — but that is a behavioural check, not a timing
+one, and no timing number is claimed.
+
+```bash
+STUNRUN_WATCH_WRITE=<hex,hex,...>   # each address gets a count + the writing PC
+```
+
+The hook tests the **raw bus address before `route_address()`**, so a watched
+address is matched however it is reached, and a long store overlapping the
+watched word counts. Arming also enables `musashi_irq_watch_t`, which counts
+both sides of an interrupt: `assert_calls` (what the board model asserted, via
+`musashi_cpu_set_irq`) and `autovector_reads` (what the CPU did about it).
+
+Measured, `STUNRUN_FRAMES=600`, RTL core on:
+
+```text
+shell: write-watch addr=0x00FFDB48 writes=1  last_pc=0x00021302 last_value=0x0000 width=32
+shell: write-watch addr=0x00608000 writes=55240 last_pc=0x0002FCAC last_value=0x0000 width=16
+shell: write-watch addr=0x00FFDB4A writes=987 last_pc=0x00030000 last_value=0x03D9 width=16
+shell: write-watch addr=0x00FFDB4C writes=2   last_pc=0x0002C0FE last_value=0x0000 width=32
+shell: write-watch addr=0x00FFDB4E writes=1   last_pc=0x00021302 last_value=0x0000 width=32
+shell: write-watch addr=0x00FFDB50 writes=1   last_pc=0x00021302 last_value=0x0000 width=32
+shell: write-watch addr=0x00FFDB52 writes=1   last_pc=0x00021302 last_value=0x0000 width=32
+shell: write-watch addr=0xFF800000 writes=0   last_pc=0x00000000 last_value=0x0000 width=0
+shell: irq assert_calls=3463 assert_l1..l7=0/0/0/0/2475/0/0
+       autovector_fetches=985 vbr=0x00020000 irq5=985 nmi=0 uninit_vector=0
+       last_vector=29 last_target=0x000222DA last_source_pc=0x00022764
+       sr=0x2004 imask=0x0 insn_retired=7187787
+```
+
+**The answer to the original question:** in a 600-frame native run, `$FFDB48` is
+written **exactly once**, by `$00021302: clr.l (A0)+` inside the boot work-RAM
+clear (`$0212FA lea $8000.w,A0` / `$0212FE move.w #$1fff,D0` / `$021302
+clr.l (A0)+` / `$021304 dbra D0,$21302`), **with the value zero**. No instruction
+sets it non-zero, because `assert_l1..l7 = 0/0/0/**0**/2475/0/0`: **the native
+model never asserts IPL2 at all.**
+
+### 40.5 The controls, because a watch that cannot fire proves nothing
+
+**Positive control 1 — `$608000`, independently known to be written** by the very
+loop that contains the gate: `$02FC70` and `$02FCAC` are both
+`clr.w $608000.l`. The watch reports 55,240 writes with `last_pc=0x0002FCAC`,
+which is exactly the second `clr`. ✓
+
+**Positive control 2 — work RAM, so the control is in the same region and the
+same callback as the target.** `$FFDB4A`: 987 writes, `last_pc=0x00030000` =
+`$030000: addq.w #1,$ffdb4a.l`. `$FFDB4C`: 2 writes, `last_pc=0x0002C0FE`.
+Every reported PC was checked against the shell's own disassembler
+(`STUNRUN_DISASM`) — see 40.6 for why that check was not optional. ✓
+
+**Negative control — `$FF800000`, provably never written.** `route_address()`
+routes it to `REGION_GSP_VRAM_MIRROR` only through
+`(address & 0xFF000000) == 0xFF000000`, and the 68010 drives a 24-bit bus, so no
+address it can present satisfies that test. Zero writes, for a reason that does
+not depend on this run. ✓
+
+**In-region discrimination.** Eight addresses armed in one run, seven written
+and one not, from the same instrument and the same code path — including three
+consecutive words (`$FFDB4E/$50/$52`) that are written once each by the same boot
+clear while their neighbour `$FFDB4A` is written 987 times by a different
+routine. The watch is not firing indiscriminately.
+
+### 40.6 Refuted while writing it: `M68K_REG_PC` is not the writing instruction
+
+The first version of the watch reported `$FFDB48 last_pc=0x00021304` and
+`$608000 last_pc=0x0002FCB2`. Both are *wrong addresses*, and both were wrong in
+the same way. `m68k_get_reg(M68K_REG_PC)` inside a memory callback is **the first
+unconsumed word of the executing instruction**, not its address: Musashi fetches
+with `REG_IR = m68ki_read_imm_16()` (m68kcpu.c:1000) and `m68ki_read_imm_16`
+increments `REG_PC` by 2 per word returned (m68kcpu.h:1140-1148), and
+`M68K_EMULATE_PREFETCH` is `M68K_OPT_OFF` (m68kconf.h:225) so there is no
+separate prefetch pointer absorbing the difference. `clr.w $608000.l` is six
+bytes, so the store is issued with `REG_PC = $02FCAC + 2 + 4 = $02FCB2`.
+
+The same arithmetic explains `$FFDB4A` reporting `$030006` for a six-byte
+`addq.w #1,$ffdb4a.l` at `$030000`. MAME's tap has the identical property —
+`ram-write-trace.lua:149` reads `device.state['CURPC']`, which is the same
+"current PC within the instruction" quantity.
+
+Reading the instruction-start PC needs a sampling point per instruction, and
+this core does not offer one: `M68K_INSTRUCTION_HOOK` is `M68K_OPT_OFF`
+(m68kconf.h:218), so `m68k_set_instr_hook_callback` never fires — as the comment
+at `musashi_cpu_reset()` already said. So `musashi_cpu_run()` now single-steps
+whenever any of the three per-instruction diagnostics is armed, and the watch
+reports the sampled instruction address. With that in place the numbers in 40.4
+are the instruction addresses.
+
+Three consequences, all recorded because each one can silently corrupt a later
+reading:
+
+1. **`STUNRUN_PC_HIST` and `STUNRUN_WATCH_WRITE` used to fight.** Each claimed
+   the whole of `musashi_cpu_run()`, so combining them produced an **empty**
+   histogram while the watch reported normally. They now share one stepping loop.
+2. **The PC histogram under-counts interrupt handler entries by one.** In
+   `m68k_execute()` the exception is taken at the top, before the loop, so the
+   handler's first instruction executes *inside* the call whose sample was taken
+   at the pre-exception PC. Measured: `$0222F2 rte` = 985 but `$0222DA` = 1, while
+   the autovector counter says 985. **Trust the autovector counter for interrupt
+   counts; the histogram's entry count is the thing that is off.**
+3. **Arming the watch makes the run single-step**, which makes
+   `m68ki_check_interrupts()` run at every instruction boundary instead of once
+   per `m68k_execute()` (m68kcpu.c:974, and the "ASG: removed per-instruction
+   interrupt checks" comment above its main loop). Measured effect on a 600-frame
+   run: `$608000` writes 55,277 unstepped vs 55,240 stepped, while
+   `board vram nonzero words=84337` and `render hash=0xFA2D16E5 lit=122880/122880
+   colours=225` are identical. Real, small, and worth stating rather than
+   assuming away.
+
+### 40.7 Refuted while writing it: "VBR is zero", so the interrupt counter read a confident zero
+
+The first interrupt counter gated on `VBR == 0` and reported
+`autovector_fetches=0` over 600 frames — which reads exactly like "no interrupt
+is ever delivered", and would have been believed. It was wrong twice over.
+
+The ROM moves the vector table (`$0010EC movec A0,VBR`), so the autovector fetch
+is a read of `(24+level)*4 + VBR` with `VBR = $00020000`, and the count was zero
+because the gate suppressed every one of them. The gate is now relative to the
+live VBR and the base it saw is reported (`vbr=0x00020000`), so a relocation is
+visible instead of silent.
+
+With that fixed the counter says what the PC histogram was already saying:
+
+```text
+assert_calls=3463  assert_level[5]=2475   the model asserted IRQ5 2475 times
+autovector_fetches=985  irq5=985  nmi=0    the CPU took 985 of them
+last_vector=29 last_target=0x000222DA      vector 29 -> $0222DA, the real handler
+```
+
+985 vs 2475 is not a discrepancy. The shell asserts IRQ5 every 32 768 cycles
+whether or not the ROM has asked for it, so most of those asserts landed while
+the interrupt mask was 7 or 5 and could not be taken (see the `sr=` sampling
+below); `FLAG_INT_MASK` becomes 5 after each delivery (m68kcpu.h:2131) and the
+ROM acks it by writing `$60C000` at `$0222EC`, which drops the line —
+`harddriv_m.cpp:111-115` and `m68kcpu.h:2154-2157`, where
+`M68K_EMULATE_INT_ACK` being off makes Musashi clear `CPU_INT_LEVEL` after every
+delivery.
+
+Also measured, and the reason "no interrupt" was never the right suspicion: the
+interrupt mask is **not** stuck. `STUNRUN_WATCH_WRITE` samples SR at every frame
+boundary and prints only changes; it reads `imask=7` until **frame 364**, then
+`imask=0` with intermittent `imask=5` for the rest of the run. The unmask is ROM
+code — `$02245C: move #$2000,SR` / `$022462: move #$2700,SR`, a matched pair
+reached 1 time each. The ROM masks all interrupts for the first 6 seconds of
+emulated time and then runs with them enabled, and `nmi=0` throughout because
+nothing drives IPL6 either.
+
+### 40.8 Cross-check in the oracle, and what it changes
+
+`tools/mame-ram-write-trace` on `$FF9BA8-$FF9BAC` for 1200 frames (the oracle
+binary, `roms/`, `--input none`, `--nothrottle`). `$FF9BAA` is written only by
+the ROM's **RAM verification walk**, and never by the IRQ3 handler:
+
+```text
+writer_pcs: 0x0059de 0x005a12 0x005a5c 0x005aaa 0x005aac 0x005afe 0x005b00
+events 486, truncated false
+```
+
+```text
+0059d8: 41 e9 ff fe          lea     (-$2,A1), A0      ; A1..A2 is the block
+0059dc: 54 48                addq.w  #2, A0
+0059de: 30 80                move.w  D0, (A0)          ; <-- the writer
+005a0a: 42 79 00 60 80 00    clr.w   $608000.l
+005a10: b5 40                eor.w   D2, D0
+005a12: 30 80                move.w  D0, (A0)
+005a14: e2 4a                lsr.w   #1, D2
+```
+
+A deterministic ramp seeded from `$8000` and shifted, compared against each word
+of a declared RAM block. On `$FFDB40-$FFDB4C` for 600 frames, 343 events, the
+same three PCs, writing values `0x0000, 0x0001, 0x0003 ... 0xFFFF`. So in MAME
+`$FFDB48` *does* end up non-zero (`0xFFFF`), written at frame 476 by `$005A5C` —
+**not** by `$02143C`.
+
+Two things follow, and they are different in weight:
+
+1. **The IRQ3 handler never runs in MAME either.** 1200 frames, `$FF9BAA`
+   untouched by `$021458`. So `$02143C` is a real, wired, correct-looking
+   producer that neither emulator reaches on this path, and it is **not** what
+   releases the gate in the oracle.
+2. **Our 68010 diverges from the oracle's before it ever reaches the gate.** The
+   native PC histogram contains **zero** executions in `$005000-$005B00` — the
+   RAM verification walk. MAME's runs it at frames 169, 263, 397 and 476. So the
+   `$FFDB48 = 0` the native model enters the gate with is not "the flag the GSP
+   never set"; it is "the RAM walk that would have left a non-zero value there
+   never ran." That is the next question, and it is upstream of this one.
+
+Confirmed: MAME's writer PCs and values above, from the oracle's own write tap.
+Inferred: that `$FFDB40-$FFDB4C` is one of the declared blocks of that walk
+(the block bounds live in a table the walk reads through A1/A2; I did not trace
+the table entry).
+
+### 40.9 Two premises in circulation that this section corrects
+
+- **"The MC68010 NMI vector is `$000107E2`."** It is not. With `VBR = $20000`,
+  vector 31 is read from `$2007C` and holds `$000229C4`, an ordinary
+  `movem.l …,-(A7) / jsr $30756 / movem.l (A7)+,… / rte` handler. `$0107E2` is
+  `move.w #$98,D0 / jsr $2326.l`, one of **nine** text-print stubs at
+  `$107D4`–`$10848` passing selectors `$97`..`$9F`; their addresses are not
+  multiples of 4, so they are a dispatch list rather than a vector table, and
+  each falls into `$10856: clr.w $608000.l / bra $10856` — a spin, with no `rte`
+  anywhere in the nine. They are unrelated to interrupts. Nothing else in this
+  investigation depended on the claim, but it would have sent a search for the
+  NMI handler into a print-string stub.
+- **`$2326` is not a general dispatcher.** It is the **text-draw** entry point
+  keyed by selector: `D0 -> lea $10136.l / lsl.l #2 / movea.l (A0),A0` picks one
+  of 394 descriptors, and the routine then composes HSTADR and pushes HSTDAT at
+  `$C0000C`. It touches no work-RAM word and has no bearing on `$FFDB48`.
+
+### 40.10 Two refutations of our own notes
+
+- `native/fake_ports.h:20-22` says "the IRQ5 handler bumps a counter at
+  `0xff9042`". It does not. The IRQ5 handler is `$0222DA` and bumps
+  `$8014.w` = `$FF9414`. `$FF9042` is word 13 of the 16-word table filled by
+  `$0225B0: lea $ff902a.l,A1 / moveq #$f,D1 / ... / move.w D0,(A1)+ / dbra D1` —
+  the watch measures 7 such fills in 600 frames, `last_pc=$0225C0`, which is the
+  `move.w D0,(A1)+`. The comment's conclusion (32 KiB of RAM is real) stands; its
+  evidence does not.
+- The ROM-image build check still reads `reset vector: SP=0xffffc000
+  PC=0x00000216` and the shell's own reset is `pc=0x00000216`, so §40's
+  addresses come from the interleaved image and not a concatenated one.
+
+### 40.11 Reproduce
+
+```bash
+export PATH="$HOME/.local/share/verilator-5.052/bin:$PATH"
+cmake -S native -B build-rtl -DSTUNRUN_GSP_RTL=1 && cmake --build build-rtl -j"$(nproc)"
+
+NATIVE_BUILD_DIR=$PWD/build-rtl SDL_VIDEODRIVER=dummy \
+STUNRUN_LIVE_VIDEO=1 STUNRUN_FRAMES=600 \
+STUNRUN_WATCH_WRITE=0xFFDB48,0x608000,0xFFDB4A,0xFFDB4C,0xFFDB4E,0xFFDB50,0xFFDB52,0xFF800000 \
+./run.sh
+
+STUNRUN_PC_HIST=/tmp/pc.txt STUNRUN_PCLOG=/tmp/pclog.txt STUNRUN_WATCH_WRITE=0xFFDB48 \
+  ./run.sh          # then grep the histogram for 0x02FC / 0x0222DA / 0x0059DE
+
+for r in 0x212FA:0x21310 0x2FC60:0x2FCB8 0x2F1BE:0x2F270 0x308C4:0x30930 \
+         0x2143C:0x21462 0x59D8:0x5A20; do
+  NATIVE_BUILD_DIR=$PWD/build-rtl SDL_VIDEODRIVER=dummy STUNRUN_LIVE_VIDEO=1 \
+  STUNRUN_FRAMES=1 STUNRUN_DISASM=$r:/tmp/dis.txt ./run.sh >/dev/null 2>&1
+  echo "== $r"; cat /tmp/dis.txt
+done
+
+PATH=/mnt/build/mame-ref:$PATH python3 tools/mame-ram-write-trace roms OUT \
+  --device :mainpcb:maincpu --space program --base 0xffdb40 --end 0xffdb4c \
+  --frames 600 --start-frame 10 --end-frame 600 --max-events 200000 --nothrottle
+```
+
+```text
+python3 -m unittest discover -s tests   249 tests OK
+ctest --test-dir build-test              61/61 PASS
+ctest --test-dir build                   61/61 PASS
+```
+
+### 40.12 Not filed as BUGS.md, and why
+
+Two candidates were considered and neither survives `BUGS.md`'s bar, which is
+defects in the 1989 game and in MAME, never ours:
+
+- **`$02FC60`'s lockup.** `$0308C4` prints selector `$0c` and then spins. Read
+  as a deliberate watchdog — bounded wait, then a diagnostic, then halt — that
+  is defensible engineering, not a defect. It would become a `BUGS.md` entry only
+  if a capture showed the game reaching it in normal play.
+- **The native model never asserting IPL2.** That is a gap in *our* machine
+  model, which is where it belongs.

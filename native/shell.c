@@ -317,6 +317,15 @@ static char g_pc_hist_path[512] = { 0 };
 static unsigned g_trace_count = 0;
 static FILE *g_pclog_fp = NULL;
 
+/* STUNRUN_WATCH_WRITE: the armed addresses, and the value each held at the
+ * previous frame boundary, so the per-frame readback prints only changes.
+ * Sized by MUSASHI_WRITE_WATCH_MAX; g_watch_frames_armed == 0 when the watch
+ * is off, which is what makes the per-frame block one branch. */
+static uint32_t g_watch_frames_addr[MUSASHI_WRITE_WATCH_MAX];
+static uint16_t g_watch_frames_value[MUSASHI_WRITE_WATCH_MAX];
+static unsigned g_watch_frames_armed;
+static uint32_t g_watch_frames_sr;
+
 /* STUNRUN_PCLOG=<path>: one "frame pc cycles" line per frame.  Comparing this
  * against the same series from MAME answers "behind or stuck" in one look,
  * which no single end-of-run PC can do. */
@@ -1504,6 +1513,40 @@ static int run_walk(void)
                     g_mc68010_active = true;
                     printf("shell: mc68010=active rom-dir=%s pc=0x%08X\n",
                            rom_dir, musashi_cpu_get_pc(g_cpu));
+                    /* STUNRUN_WATCH_WRITE=<hex,hex,...>: arm the runtime write
+                     * watch.  Every armed address gets a write count and the PC
+                     * of its last writer; the interrupt counter comes up with
+                     * it.  Arm it HERE, after reset and before the first frame,
+                     * so the whole run is covered.  A malformed spec arms
+                     * nothing and says so -- a typo must not be able to look
+                     * like "nothing writes it". */
+                    {
+                        const char *ww = getenv("STUNRUN_WATCH_WRITE");
+                        if (ww && ww[0]) {
+                            musashi_write_watch_t w[MUSASHI_WRITE_WATCH_MAX];
+                            unsigned armed = musashi_cpu_write_watch_enable(
+                                g_cpu, ww);
+                            unsigned n = musashi_cpu_write_watch(
+                                g_cpu, w, MUSASHI_WRITE_WATCH_MAX);
+                            unsigned k;
+                            printf("shell: write-watch armed=%u/%u spec=%s\n",
+                                   armed,
+                                   armed ? armed : 1u, ww);
+                            if (armed == 0u)
+                                printf("shell: write-watch note: the spec did not "
+                                       "parse, so NOTHING is being watched; a "
+                                       "silent watch proves nothing.\n");
+                            for (k = 0; k < n; k++) {
+                                g_watch_frames_addr[k] = w[k].address;
+                                /* Seed with the CURRENT value so only later
+                                 * changes are announced. */
+                                (void)stunrun_mem_read16_be(
+                                    &ports, w[k].address,
+                                    &g_watch_frames_value[k]);
+                            }
+                            g_watch_frames_armed = n;
+                        }
+                    }
                     /* STUNRUN_TEXT_LOG=1: decode every string the MC68010
                      * draws through the GSP host port and print one line each,
                      * so a service-mode run reads as commentary instead of a
@@ -1635,6 +1678,35 @@ static int run_walk(void)
                         (unsigned long)musashi_cpu_get_pc(g_cpu),
                         (unsigned long)musashi_cpu_total_cycles(g_cpu),
                         musashi_cpu_gsp_write_count(g_cpu));
+            /* Read the watched words back once a frame and print each one only
+             * when it CHANGES.  This is the complement of the write counter: a
+             * zero write count says the emulated 68010 did not store there, and
+             * a flat value says the word is not being disturbed by anything
+             * either.  Sampled at the frame boundary, so it cannot see a value
+             * that is set and cleared inside one frame. */
+            if (g_watch_frames_armed > 0u) {
+                unsigned i;
+                uint32_t sr = musashi_cpu_get_reg(g_cpu, "sr");
+                if (sr != g_watch_frames_sr) {
+                    printf("shell: watch-sr frame=%u sr=0x%04X "
+                           "imask=0x%X (was 0x%04X)\n",
+                           frame, sr, (sr >> 8) & 7u, g_watch_frames_sr);
+                    g_watch_frames_sr = sr;
+                }
+                for (i = 0; i < g_watch_frames_armed; i++) {
+                    uint16_t v = 0;
+                    if (stunrun_mem_read16_be(&ports, g_watch_frames_addr[i],
+                                             &v) != 0)
+                        continue;
+                    if (v == g_watch_frames_value[i])
+                        continue;
+                    printf("shell: watch-word frame=%u addr=0x%08X "
+                           "value=0x%04X (was 0x%04X)\n",
+                           frame, g_watch_frames_addr[i], v,
+                           g_watch_frames_value[i]);
+                    g_watch_frames_value[i] = v;
+                }
+            }
         } else if (frame != 0u) {
             stunrun_game_loop_step(&game_loop);
         }
@@ -2211,6 +2283,52 @@ static int run_walk(void)
                    "every value above is this driver's initialiser, not evidence.\n");
     }
 #endif
+
+    /* STUNRUN_WATCH_WRITE report.  Printed whether the watch was armed or not, so
+     * an unarmed run says so rather than printing nothing at all. */
+    {
+        musashi_write_watch_t w[MUSASHI_WRITE_WATCH_MAX];
+        unsigned n = musashi_cpu_write_watch(g_cpu, w, MUSASHI_WRITE_WATCH_MAX);
+        const musashi_irq_watch_t *iw = musashi_cpu_irq_watch(g_cpu);
+        uint32_t sr_now = g_cpu ? musashi_cpu_get_reg(g_cpu, "sr") : 0u;
+        unsigned i;
+
+        if (n == 0u) {
+            printf("shell: write-watch OFF (set STUNRUN_WATCH_WRITE=<hex,...> "
+                   "to arm it); no statement about who writes what\n");
+        } else {
+            for (i = 0; i < n; i++) {
+                printf("shell: write-watch addr=0x%08X writes=%lu "
+                       "last_pc=0x%08X last_value=0x%04X width=%u\n",
+                       w[i].address, (unsigned long)w[i].writes,
+                       w[i].last_pc, w[i].last_value, w[i].last_width_bits);
+                if (w[i].writes == 0u)
+                    printf("shell: write-watch note: 0x%08X was NEVER written "
+                           "by the emulated 68010 in this run.\n", w[i].address);
+            }
+        }
+        printf("shell: irq assert_calls=%lu assert_l1..l7=%lu/%lu/%lu/%lu/%lu/%lu/%lu "
+               "autovector_fetches=%lu vbr=0x%08X irq5=%lu nmi=%lu "
+               "uninit_vector=%lu last_vector=%lu last_target=0x%08X "
+               "last_source_pc=0x%08X sr=0x%04X imask=0x%X "
+               "insn_retired=%lu\n",
+               (unsigned long)iw->assert_calls,
+               (unsigned long)iw->assert_level[1],
+               (unsigned long)iw->assert_level[2],
+               (unsigned long)iw->assert_level[3],
+               (unsigned long)iw->assert_level[4],
+               (unsigned long)iw->assert_level[5],
+               (unsigned long)iw->assert_level[6],
+               (unsigned long)iw->assert_level[7],
+               (unsigned long)iw->autovector_reads,
+               iw->vbr,
+               (unsigned long)iw->level5_reads,
+               (unsigned long)iw->level7_reads,
+               (unsigned long)iw->uninit_vector_reads,
+               (unsigned long)iw->last_vector, iw->last_target_pc,
+               iw->last_source_pc, sr_now,
+               (sr_now >> 8) & 7u, (unsigned long)musashi_cpu_insn_count());
+    }
 
     {
         unsigned lit = 0u, colours = 0u;

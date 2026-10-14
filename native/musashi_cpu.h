@@ -368,4 +368,92 @@ typedef struct {
 int musashi_cpu_bind_gsp_upload_callers(musashi_gsp_upload_adapter_t *adapter,
                                        stunrun_gsp_upload_callers_t *out);
 
+/* ── Runtime write watch + interrupt-delivery counter (OBSERVATION ONLY) ───
+ *
+ * Enabled by musashi_cpu_write_watch_enable() from STUNRUN_WATCH_WRITE.  With
+ * the feature OFF there is no hook in the memory path at all: the three
+ * m68k_write_memory_* callbacks and m68k_read_memory_32 each take one
+ * predictable branch on a file-static count of zero and return.
+ *
+ * WHAT IT MEASURES.  Every m68k_write_memory_8/16/32 call is tested for an
+ * overlap with a watched 68010 bus address, and each hit records the writing
+ * PC (`M68K_REG_PC` at the time of the store, which in Musashi is the address
+ * of the instruction currently executing because M68K_EMULATE_PREFETCH is off),
+ * the value, and the access width.  The test is on the RAW bus address before
+ * `route_address()`, so a watched address is matched however it is reached --
+ * including by `m68k_write_memory_32_pd`, which presents a predecrement long
+ * store as two word writes.
+ *
+ * WHAT IT CANNOT SEE.  Stores that bypass these callbacks: `display_list_poke_*
+ * -> stunrun_mem_write*_be()` and any future direct write into the fake-ports
+ * RAM.  For the question this exists to answer -- who writes a work-RAM word --
+ * those are the ROM's own C transcriptions, not the 68010, and a zero count is
+ * a statement about the emulated 68010 only.
+ *
+ * WHY `musashi_irq_watch_t` IS HERE.  There was no 68010 interrupt counter in
+ * the checkpoint before this, so "the loop never exits" could not be separated
+ * from "no interrupt is ever delivered".  Musashi fetches the handler address
+ * for a taken interrupt as `m68ki_read_data_32((vector<<2) + REG_VBR)`
+ * (m68kcpu.h:2134) with `vector = EXCEPTION_INTERRUPT_AUTOVECTOR + level`
+ * (:2116, and `#define EXCEPTION_INTERRUPT_AUTOVECTOR 24` at :169), i.e. a
+ * longword read of `(24+level)*4` for levels 1..7.  Counting longword reads of
+ * the aligned range 0x64..0xBC therefore counts delivered interrupts, without
+ * single-stepping and without touching Musashi's own build options
+ * (M68K_EMULATE_INT_ACK is M68K_OPT_OFF in third_party/musashi/m68kconf.h:111,
+ * so m68ki_int_ack is a constant and m68k_set_int_ack_callback() is dead --
+ * which is why the count is taken at the vector fetch instead).
+ *
+ * A longword read at one of those addresses from ROM code would be a false
+ * positive, and the counter cannot tell the two apart from the inside.  The
+ * `target` field is what makes that checkable: an interrupt's target is the
+ * longword just read, so `target` landing inside the ROM image is the expected
+ * result and `target` landing in RAM is a warning.  Cross-check the count
+ * against the PC histogram (`STUNRUN_PC_HIST`), which independently records
+ * whether the handler was ever entered. */
+#define MUSASHI_WRITE_WATCH_MAX 16
+
+typedef struct musashi_write_watch {
+    uint32_t address;       /* watched 68010 bus address */
+    uint32_t writes;        /* bus writes overlapping [address, address+width) */
+    uint32_t last_pc;       /* M68K_REG_PC during the most recent one */
+    uint16_t last_value;    /* value carried by the most recent one */
+    uint8_t  last_width_bits;
+    uint8_t  in_use;
+} musashi_write_watch_t;
+
+typedef struct musashi_irq_watch {
+    uint32_t assert_calls;         /* musashi_cpu_set_irq() invocations */
+    uint32_t assert_level[8];      /* ... by level, index 0..7 */
+    uint32_t autovector_reads;     /* longword reads of (24+level)*4 + VBR */
+    uint32_t vbr;                  /* the VBR those reads were relative to */
+    uint32_t level5_reads;         /* ... at vector 29  (0x74): IRQ5 */
+    uint32_t level7_reads;         /* ... at vector 31  (0x7C): NMI */
+    uint32_t uninit_vector_reads;  /* reads of vector 75 (0x12C): handler was 0 */
+    uint32_t last_vector;
+    uint32_t last_source_pc;       /* PC the fetch interrupted */
+    uint32_t last_target_pc;       /* handler address read out of the vector */
+} musashi_irq_watch_t;
+
+/* Parse `spec` -- comma-separated hex addresses, e.g. "0xFFDB48,0x608000" --
+ * and arm the watch.  Returns how many addresses were armed (0 on a malformed
+ * spec, which also leaves the watch OFF so a typo cannot look like a negative
+ * result).  Arming also enables the interrupt counter.  Call it after
+ * musashi_cpu_reset() and before the first musashi_cpu_run(); re-calling it
+ * replaces the list. */
+unsigned musashi_cpu_write_watch_enable(musashi_cpu_t *cpu, const char *spec);
+void musashi_cpu_write_watch_disable(void);
+
+/* Copy out the armed watch entries (up to `max`); returns how many were
+ * written, so `out[i].in_use` is always 1 for i < that. */
+unsigned musashi_cpu_write_watch(const musashi_cpu_t *cpu,
+                                 musashi_write_watch_t *out, unsigned max);
+
+/* The interrupt counter.  Zeroed by musashi_cpu_write_watch_enable(). */
+const musashi_irq_watch_t *musashi_cpu_irq_watch(const musashi_cpu_t *cpu);
+
+/* Instructions retired while the watch was armed -- the run is single-stepped
+ * then, so this is also the sanity number that proves the stepping happened
+ * (it is 0 in every run that did not arm the watch). */
+uint32_t musashi_cpu_insn_count(void);
+
 #endif /* STUNRUN_MUSASHI_CPU_H */

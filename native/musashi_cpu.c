@@ -35,6 +35,106 @@ static int g_flow_log_enabled;
 static int g_pc_hist_enabled;
 static uint32_t g_pc_hist_scratch[MUSASHI_PC_HIST_SIZE];
 
+/* ── Runtime write watch (STUNRUN_WATCH_WRITE) ───────────────────────────
+ *
+ * OBSERVATION ONLY.  Nothing here writes a latch, a register, a bus event or
+ * memory: the hook sits in front of the three m68k_write_memory_* callbacks,
+ * tests the raw bus address, records, and returns.  Armed count 0 means the
+ * hook is one predictable branch and no compare, and the interrupt counter is
+ * not even reached.
+ *
+ * Kept file-static, like g_pc_hist_enabled / g_flow_log_enabled above, so the
+ * shell can arm it from one place and the per-access cost when off is one
+ * load-and-test of a word that is zero in every default run. */
+static unsigned s_watch_count;
+static musashi_write_watch_t s_watch[MUSASHI_WRITE_WATCH_MAX];
+static musashi_irq_watch_t s_irq_watch;
+
+/* Why the watch makes musashi_cpu_run() single-step.
+ *
+ * `m68k_get_reg(M68K_REG_PC)` is NOT the address of the instruction executing
+ * inside a memory callback.  Musashi fetches the opcode with
+ * `REG_IR = m68ki_read_imm_16()` (m68kcpu.c:1000) and `m68ki_read_imm_16`
+ * increments REG_PC by 2 per word it returns (m68kcpu.h:1140-1148); with
+ * M68K_EMULATE_PREFETCH off there is no separate prefetch pointer to hide
+ * that.  So REG_PC during an instruction is
+ * `instruction_address + 2 + 2 * extension_words_already_consumed`.  For
+ * `clr.w $608000.l` that is $02FCAC + 2 + 4 = $02FCB2, six bytes past the
+ * instruction that actually issued the store -- which is exactly the number
+ * this watch reported before the fix, and it would have sent anyone looking
+ * for the writer to the wrong instruction.
+ *
+ * Reading the instruction-start PC therefore needs a per-instruction sampling
+ * point, and m68k_execute() does not provide one: its loop is
+ * "fetch, dispatch, USE_CYCLES" with no hook (M68K_INSTRUCTION_HOOK is
+ * M68K_OPT_OFF in this tree's m68kconf.h:218, so m68k_set_instr_hook_callback
+ * never fires -- the comment at musashi_cpu_reset() says so).  So the watch
+ * borrows the single-stepping musashi_cpu_run() already does for the PC
+ * histogram and the control-flow log, which is the only per-instruction
+ * sampling point this core offers.  Consequence worth knowing before trusting
+ * a number from this instrument: single-stepping makes m68ki_check_interrupts()
+ * run at every instruction boundary rather than once per m68k_execute() call
+ * (m68kcpu.c:974, and the "ASG: removed per-instruction interrupt checks"
+ * comment above the main loop), which changes interrupt latency.  Compare a
+ * stepped run against an unstepped one before reading behaviour into it --
+ * section 40 of docs/mc68010-boot-findings.md records that check. */
+static uint32_t s_insn_start;
+static uint32_t s_insn_count;
+
+/* A bus write of `width_bits` at `address` touches [address, address + width).
+ * A watch on `base` is a hit when the two byte ranges overlap, so watching a
+ * word also catches a long store at the address below it. */
+static void write_watch_note(uint32_t address, uint16_t value,
+                             unsigned width_bits)
+{
+    uint32_t first = address;
+    uint32_t last  = address + width_bits / 8u;
+    unsigned i;
+
+    for (i = 0; i < s_watch_count; i++) {
+        uint32_t wfirst = s_watch[i].address;
+        uint32_t wlast  = s_watch[i].address + 2u; /* one word, always */
+        if (first >= wlast || last <= wfirst)
+            continue;
+        s_watch[i].writes++;
+        s_watch[i].last_pc = s_insn_start;
+        s_watch[i].last_value = value;
+        s_watch[i].last_width_bits = (uint8_t)width_bits;
+    }
+}
+
+/* Musashi takes an interrupt at m68kcpu.h:2134 with
+ * `new_pc = m68ki_read_data_32((vector<<2) + REG_VBR)`, and with the autovector
+ * scheme `vector = 24 + level` (:2116).  That is a 32-bit read of the aligned
+ * address `(24+level)*4 + VBR`, so levels 1..7 land at offsets 0x64..0x7C from
+ * VBR and the spurious and uninitialised-interrupt vectors extend the offsets
+ * to 0xBC.  Counting those reads counts delivered interrupts without rebuilding
+ * Musashi with M68K_EMULATE_INT_ACK on, which would change the core this
+ * repository's measurements are defined against
+ * (third_party/musashi/m68kconf.h:111 has it M68K_OPT_OFF, so
+ * m68k_set_int_ack_callback() is dead code here).
+ *
+ * VBR IS NOT CONSTANT, and assuming it was is what made this counter read a
+ * confident zero while the PC histogram showed the handler running 985 times.
+ * The test is therefore relative to the live VBR, and the base it saw is
+ * reported, so a relocation is visible instead of silent. */
+static void irq_watch_note(uint32_t address, uint32_t value)
+{
+    uint32_t vbr = (uint32_t)m68k_get_reg(NULL, M68K_REG_VBR);
+    uint32_t offset = address - vbr;
+
+    if (offset < 0x64u || offset > 0xBCu || (offset & 3u) != 0u)
+        return;
+    s_irq_watch.autovector_reads++;
+    s_irq_watch.vbr = vbr;
+    s_irq_watch.last_vector = offset >> 2;
+    s_irq_watch.last_source_pc = s_insn_start;
+    s_irq_watch.last_target_pc = value;
+    if (offset == 0x74u) s_irq_watch.level5_reads++;   /* level 5, IRQ5 */
+    if (offset == 0x7Cu) s_irq_watch.level7_reads++;   /* level 7, NMI  */
+    if (offset == 0x12Cu) s_irq_watch.uninit_vector_reads++;
+}
+
 /* ── Forward declarations required by Musashi ── */
 
 unsigned int  m68k_read_memory_8(unsigned int address);
@@ -659,34 +759,30 @@ void musashi_cpu_reset(musashi_cpu_t *cpu)
 
 int musashi_cpu_run(musashi_cpu_t *cpu, int cycles)
 {
-    if (g_pc_hist_enabled) {
-        /* Where do the cycles actually go?  Single-step and tally the PC at
-         * each instruction boundary.  Enabled by STUNRUN_PC_HIST=<path>;
-         * written by musashi_cpu_write_pc_histogram(). */
+    /* Any per-instruction diagnostic needs the same thing this core can give
+     * it: a sampling point at each instruction boundary.  Musashi's
+     * m68kops.c was generated with M68K_INSTRUCTION_HOOK off, so the hook
+     * route is unavailable and m68k_execute(1) is the only way in.  The three
+     * diagnostics therefore share one stepping loop rather than each claiming
+     * the whole run -- combining STUNRUN_PC_HIST with STUNRUN_WATCH_WRITE used
+     * to silently produce an EMPTY histogram. */
+    if (s_watch_count != 0u || g_pc_hist_enabled || g_flow_log_enabled) {
         int done = 0;
         while (done < cycles) {
             unsigned pc = m68k_get_reg(NULL, M68K_REG_PC);
-            if (pc < MUSASHI_PC_HIST_SIZE) {
+            /* s_insn_start is what write_watch_note() reports, because
+             * REG_PC inside a memory callback is the first UNCONSUMED word of
+             * the instruction, not its address.  See the comment above it. */
+            if (s_watch_count != 0u) {
+                s_insn_start = pc;
+                s_insn_count++;
+            }
+            if (g_pc_hist_enabled && pc < MUSASHI_PC_HIST_SIZE) {
                 if (cpu) cpu->pc_hist[pc]++;
                 else g_pc_hist_scratch[pc]++;
             }
-            done += m68k_execute(1);
-        }
-        if (cpu) {
-            cpu->total_cycles += (uint32_t)done;
-            dot_clock_advance(cpu, (uint32_t)done);
-        }
-        return done;
-    }
-    if (g_flow_log_enabled) {
-        /* Musashi's m68kops.c was generated with M68K_INSTRUCTION_HOOK off,
-         * so the per-instruction callback never fires and the hook route is
-         * unavailable.  m68k_execute(1) runs exactly one instruction, so
-         * stepping here gives the control-flow log the same per-instruction
-         * visibility the hook would have.  Only paid for while the log is on. */
-        int done = 0;
-        while (done < cycles) {
-            flow_log_instruction(m68k_get_reg(NULL, M68K_REG_PC));
+            if (g_flow_log_enabled)
+                flow_log_instruction(pc);
             done += m68k_execute(1);
         }
         if (cpu) {
@@ -705,6 +801,15 @@ int musashi_cpu_run(musashi_cpu_t *cpu, int cycles)
 
 void musashi_cpu_set_irq(musashi_cpu_t *cpu, unsigned level)
 {
+    /* Count the board-side assertion too.  `autovector_reads` counts what the
+     * CPU did about it, and the two numbers differing is the whole story of
+     * "the interrupt never arrives"; counting only the far side cannot tell an
+     * un-asserted line from a masked one. */
+    if (s_watch_count != 0u) {
+        s_irq_watch.assert_calls++;
+        if (level < 8u)
+            s_irq_watch.assert_level[level]++;
+    }
     (void)cpu;
     m68k_set_irq(level);
 }
@@ -1938,7 +2043,19 @@ unsigned int m68k_read_memory_16(unsigned int address)
     }
 }
 
+static unsigned int read_memory_32_impl(unsigned int address);
+
 unsigned int m68k_read_memory_32(unsigned int address)
+{
+    unsigned int value = read_memory_32_impl(address);
+    /* The interrupt tap needs the value the CPU is about to take as its new PC,
+     * so it has to wrap the read rather than sit beside it. */
+    if (s_watch_count != 0u)
+        irq_watch_note(address, value);
+    return value;
+}
+
+static unsigned int read_memory_32_impl(unsigned int address)
 {
     if (!s_cpu) return 0xFFFFFFFFu;
 
@@ -2028,6 +2145,8 @@ unsigned int m68k_read_pcrelative_32(unsigned int address)
 
 void m68k_write_memory_8(unsigned int address, unsigned int value)
 {
+    if (s_watch_count != 0u)
+        write_watch_note(address, (uint16_t)value, 8u);
     if (!s_cpu) return;
 
     unsigned offset;
@@ -2105,6 +2224,8 @@ void m68k_write_memory_8(unsigned int address, unsigned int value)
 
 void m68k_write_memory_16(unsigned int address, unsigned int value)
 {
+    if (s_watch_count != 0u)
+        write_watch_note(address, (uint16_t)value, 16u);
     if (!s_cpu) return;
 
     unsigned offset;
@@ -2169,6 +2290,8 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
 
 void m68k_write_memory_32(unsigned int address, unsigned int value)
 {
+    if (s_watch_count != 0u)
+        write_watch_note(address, (uint16_t)value, 32u);
     if (!s_cpu) return;
 
     unsigned offset;
@@ -2225,6 +2348,67 @@ void m68k_write_memory_32_pd(unsigned int address, unsigned int value)
 }
 
 /* ── Instrumentation ── */
+
+unsigned musashi_cpu_write_watch_enable(musashi_cpu_t *cpu, const char *spec)
+{
+    const char *cursor;
+
+    (void)cpu;
+    memset(s_watch, 0, sizeof(s_watch));
+    memset(&s_irq_watch, 0, sizeof(s_irq_watch));
+    s_watch_count = 0;
+    if (spec == NULL || spec[0] == '\0')
+        return 0;
+
+    for (cursor = spec; *cursor != '\0'; ) {
+        char *end;
+        unsigned long value;
+        while (*cursor == ',' || *cursor == ' ') cursor++;
+        if (*cursor == '\0') break;
+        value = strtoul(cursor, &end, 0);
+        if (end == cursor)
+            return 0; /* malformed: leave the watch OFF rather than half on */
+        if (s_watch_count >= MUSASHI_WRITE_WATCH_MAX)
+            return 0;
+        s_watch[s_watch_count].address = (uint32_t)value;
+        s_watch[s_watch_count].in_use = 1u;
+        s_watch_count++;
+        cursor = end;
+    }
+    return s_watch_count;
+}
+
+void musashi_cpu_write_watch_disable(void)
+{
+    memset(s_watch, 0, sizeof(s_watch));
+    memset(&s_irq_watch, 0, sizeof(s_irq_watch));
+    s_watch_count = 0;
+}
+
+unsigned musashi_cpu_write_watch(const musashi_cpu_t *cpu,
+                                 musashi_write_watch_t *out, unsigned max)
+{
+    unsigned i;
+    unsigned n = 0;
+
+    (void)cpu;
+    if (out == NULL)
+        return 0;
+    for (i = 0; i < s_watch_count && n < max; i++, n++)
+        out[n] = s_watch[i];
+    return n;
+}
+
+const musashi_irq_watch_t *musashi_cpu_irq_watch(const musashi_cpu_t *cpu)
+{
+    (void)cpu;
+    return &s_irq_watch;
+}
+
+uint32_t musashi_cpu_insn_count(void)
+{
+    return s_insn_count;
+}
 
 size_t musashi_cpu_gsp_write_count(const musashi_cpu_t *cpu)
 {
