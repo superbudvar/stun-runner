@@ -9905,3 +9905,84 @@ screenshot was taken**. `tools/mame-gsp-state-snapshot` already returns
 frame to be a complete pair. Until that pair exists, no scanout-parity claim is
 reachable from committed evidence, and §50's percentage differences should be
 read as "our output differs from MAME's" with no attribution.
+
+## 54. SOM payload (`stun-runner-q9t`): the framing is already decoded; the semantics are a disassembly task, not a guessing game
+
+Partial result. I did not finish q9t. What I established changes how it should be
+approached, which is worth more than the partial decode.
+
+### 54.1 The framing is not UNKNOWN — the repo already models it
+
+Two C slices exist and both stop at the same line:
+
+* `reproduction/gsp/record_parser.{h,c}` — 8-word records, `base + (index << 4)`
+  addressing, and extractors for header, two A8 variants, A6, two coordinate
+  fields and a count. Its own header says *"The code preserves raw words. It does
+  not assign road/object/HUD meaning."*
+* `reproduction/gsp/work_buffer_consumer.{h,c}` — FIFO → work buffer, the literal
+  `SLL 8h / OR` byte-lane composition, a 128-write burst, and a 256-word display
+  copy. *"The FIFO payload's meaning and the meaning of either destination buffer
+  remain UNKNOWN."*
+
+So q9t's "UNKNOWN" is scoped: **the record envelope is understood; the field
+meanings are not.**
+
+### 54.2 Real payload bytes are already committed
+
+`reference/experiments/stunrun/display-list-service-f2-60-180/mame.log` carries
+the whole transfer, not just counts:
+
+```text
+M1_GSP_DL_CALL id=1 frame=95 stream=00060002 raw=00141615171F1013 00000000 ...
+M1_GSP_DL_HOST id=1 hi=FFDE lo=0000 control=B800
+M1_GSP_DL_FIFO id=1 frame=95 pc=00022730 addr=00C0000C data=00001616 destination=FFDE0000
+M1_GSP_DL_FIFO ... destination=FFDE0010        (stride 0x10 = 16 bytes = 8 words)
+```
+
+116 bytes / 58 words in that one stream. Naive 8-word alignment puts the first
+data record at word 9, not word 8: the envelope is an 8-word header followed by
+one extra word, then records on the 16-byte stride `record_parser` already
+assumes. `destination` steps by `0x10`, which is that same stride.
+
+### 54.3 Refuted before it could mislead: PIXBLT is not 6/10-bit packed here
+
+I first decoded the data words as TMS34020-style PIXBLT (X in bits 15-10, Y in
+bits 9-0). It produced X = 50, which the chip cannot do. The repo's own reference
+settles it — `docs/tms34010-reference.md:1145-1151`, from `ug.txt` §7.2:
+
+> * **width** `DX` — 16 LSBs of `DYDX`
+> * **height** `DY` — 16 MSBs of `DYDX`
+
+`DYDX` is a 32-bit register with two full 16-bit halves on **this** part. The
+packed 6/10 form is the TMS34020. Recorded because the two are easy to conflate
+and the packed form gives plausible-looking nonsense.
+
+The observed words (`FF11`, `D922`, `4312`) are therefore not raw DX/DY either —
+512×240 bounds both. Something packs or scales them.
+
+### 54.4 The reframe: the consumer code is the decoder
+
+The field semantics are not recoverable by staring at hex. They are defined by
+**the GSP code that consumes the records** — and that code is in our hands:
+
+* it is uploaded from ROM (`capture-gsp-program-upload`, stream captured at
+  `/tmp/opencode/gsp-upload-v3/gsp-upload-events.txt`, 701 877 rows);
+* it is already executing in the Verilated RTL;
+* it is disassemblable — Ghidra symbols exist for the uploaded program.
+
+`record_parser.h` already names the consumer PCs from M5 traces: `0xFFF45000`,
+`0xFFF45090`, `0xFFF45890`, `0xFFF45A10`, `0xFFF45A40`, `0xFFF45A50`. Reading
+that routine and watching which register each field lands in converts q9t from
+open-ended reverse-engineering into a bounded disassembly checked against a
+documented ISA (`docs/tms34010-reference.md`).
+
+That also feeds `stun-runner-alo` directly: if the consumer shows the payload
+being built from live track data, a C geometry pipeline is verifiable per field.
+If it cannot be read, emulation is the only route with an oracle.
+
+### 54.5 Not established
+
+Which field is which vertex/slope/lighting term; whether the records are PIXBLT
+parameters at all; whether the packing is a shift, a mask, or a different
+instruction family. None of that was measured — the consumer disassembly has not
+been done.
