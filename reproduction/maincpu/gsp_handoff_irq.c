@@ -7,7 +7,7 @@
  *
  *   02143c: move.w  #$ffff,$ffdb48.l   flag the 68010's display-list waiter
  *   021444: move.l  d0,-(a7)          save D0 (the interrupted D0)
- *   021446: andi.w  #$ff7f,$c00008.l  clear HSTCTL bit 15 = RELEASE the GSP
+ *   021446: andi.w  #$ff7f,$c00008.l  clear HSTCTL bit 7 = ack the GSP's INT
  *   02144e: move.l  $8014.w,d0        D0 = 68010 free-running tick counter
  *   021452: sub.l   $ffdb36.l,d0      D0 -= last sampled tick
  *   021458: move.l  d0,$ff9baa.l      record elapsed ticks
@@ -19,10 +19,13 @@
  * frame already pushed D0 when the interrupt was taken. Modelled here as an
  * explicit save/restore of the interrupted D0, which is what it is.
  *
- * $8014 is the 68010 tick counter at offset 0x14 of the $8000 page
- * ($008014); $FFDB36 and $FF9BAA are work RAM; $00C00008 is the GSP host
- * HSTCTL. See docs/mc68010-boot-findings.md section 45. Do not add behaviour
- * here without updating that section.
+ * THE ANDI MASK IS NOT WHAT EARLIER SECTIONS SAID. $FF7F clears exactly one
+ * bit: bit 7. Findings 45 and 47.7 each claimed it "preserves bits 11:0" and
+ * "releases the GSP by clearing HLT"; both are wrong, and both were refuted
+ * from the ROM bytes. Bit 7 is HSTCTLL.INTOUT -- the GSP-to-host interrupt
+ * request -- so the instruction ACKNOWLEDGES the interrupt that just delivered
+ * this handler. Bit 15 (HLT) is preserved by the mask and was already clear
+ * when the handler ran (findings 48.2). Do not reintroduce either claim.
  */
 #include <stddef.h>
 
@@ -40,11 +43,13 @@ void stunrun_gsp_handoff_irq(stunrun_gsp_handoff_state_t *s)
      * wait can only be released by this interrupt. */
     s->wait_flag = (uint16_t)STUNRUN_GSP_HANDOFF_WAIT_FLAG;
 
-    /* $021446: ANDI.W #$FF7F on HSTCTL. Bit 15 is HLT, so this releases the GSP
-     * in the same breath as it releases the waiter. Bits 11:0 survive, exactly
-     * as ANDI does -- notably 0x0800, the HSTDAT auto-increment. */
-    s->hstctl_after =
-        (uint16_t)(s->hstctl & (uint16_t)~STUNRUN_GSP_HANDOFF_HSTCTL_HLT);
+    /* $021446: ANDI.W #$FF7F on HSTCTL. One bit cleared: bit 7, INTOUT. The
+     * host arm of MAME's HSTCTLL write is clear-only (`newreg &= data |
+     * ~0x0080`, tms34010.cpp:1676), so this drops the GSP's INT line and ends
+     * the handshake that delivered the interrupt. Bits 15:8 -- HLT among them
+     * -- and bit 11 (the HSTDAT auto-increment) all survive exactly as the
+     * mask says, because the mask is not `~0x0080` and not `~0x8000`. */
+    s->hstctl_after = (uint16_t)(s->hstctl & STUNRUN_GSP_HANDOFF_HSTCTL_MASK);
 
     /* $02144e-$021452: elapsed 68010 ticks since the last sample. Plain 32-bit
      * subtraction, as SUB.L does: a wrapped free-running counter yields a large

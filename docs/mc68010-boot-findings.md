@@ -7865,16 +7865,19 @@ GSP's own interrupt is what sets the word.** The handler confirms it:
 
 ```text
 02143c: 33 fc ff ff 00 ff db 48   move.w   #$ffff, $ffdb48.l
-021442: 02 79 ff 7f 00 c0 00 08   andi.w   #$ff7f, $c00008.l   ; clear HSTCTL bit 15
+021442: 02 79 ff 7f 00 c0 00 08   andi.w   #$ff7f, $c00008.l   ; ack: clear HSTCTL bit 7
 02144e: 20 38 80 14               move.l   $8014.w, D0        ; tick counter
 021452: 90 b9 00 ff db 36          sub.l    $ffdb36.l, D0      ; elapsed
 021458: 23 c0 00 ff 9b aa          move.l   D0, $ff9baa.l
 021460: 4e 73                     rte
 ```
 
-It releases the GSP and signals the waiter in the same breath. That is not an
-accidental writer — it is the only `move.w #non-zero` to that address in the
-program.
+It acknowledges the GSP's interrupt request and signals the waiter in the same
+breath. That is not an accidental writer — it is the only `move.w #non-zero` to
+that address in the program.
+
+**Corrected in section 48.2:** the `; clear HSTCTL bit 15` comment this listing
+originally carried was wrong. `$FF7F` clears bit 7 only, and preserves bit 15.
 
 **Confirmed:** the instruction, its address, its vector, and the MAME wiring.
 **Inferred (not measured here):** that the TMS34010's INT pin is what
@@ -8822,7 +8825,7 @@ The level-3 autovector handler transcribed to
 ```asm
 02143c: move.w  #$ffff,$ffdb48.l
 021444: move.l  d0,-(a7)
-021446: andi.w  #$ff7f,$c00008.l     ; clear HSTCTL bit 15 = release the GSP
+021446: andi.w  #$ff7f,$c00008.l     ; clear HSTCTL bit 7 = ack INTOUT
 02144e: move.l  $8014.w,d0
 021452: sub.l   $ffdb36.l,d0
 021458: move.l  d0,$ff9baa.l        ; elapsed 68010 ticks
@@ -8835,8 +8838,16 @@ editing ROM. The default shell still executes the original 68k path; this slice
 is not wired into the live run.
 
 **Confirmed (disassembled from the ROM this session):** the instruction bytes
-above, `ANDI.W #$FF7F` preserving bits 11:0 including the `0x0800` HSTDAT
-auto-increment, and the push/pop pair touching only D0.
+above, and the push/pop pair touching only D0.
+
+**Corrected in section 48.2, after this was first written wrongly:** this
+section also claimed `ANDI.W #$FF7F` "preserves bits 11:0 including the `0x0800`
+HSTDAT auto-increment". Bits 11:0 *are* bits 0 through 11, so that includes bit
+7, which the mask does clear. `$FF7F` clears exactly one bit. The 0x0800
+auto-increment claim happens to be true; the "11:0" umbrella around it is not.
+This section further claimed the instruction "releases the GSP" via bit 15. It
+does not — `$FF7F` preserves bit 15 — and bit 15 was already clear when the
+handler ran.
 
 **Inferred:** that `$8014.w` is the free-running tick counter. The tick delta is
 modelled as plain 32-bit wraparound `SUB.L`, and the test pins the wrapped case
@@ -8918,3 +8929,516 @@ conclude "the renderer is the only problem" or "the GSP is wrong" from these
 results alone. Next discriminator: capture/compare the oracle's physical VRAM
 and palette at the same frame, then render those oracle buffers with the same
 CPU scanout to validate the renderer independently of the RTL's output.
+
+---
+
+## 47. IPL2 from the GSP's own HSTCTLL.INTOUT: the `$02FC60` gate opens
+
+§41.9 listed three pieces of work and stopped at the first. The pin is still not
+in the vendored RTL and still is not ours to add — but the pin is not needed to
+reproduce the *level*. HSTCTLL bit 7 (INTOUT) is a register bit inside the core
+we already run, and MAME's INT output is a function of that bit and nothing
+else. So this section reconstructs the bit from the core's own bus traffic,
+delivers it as IPL2, and measures what happens.
+
+**The gate opens.** `$02FCB6` — the wait exit that had never executed once in
+600 frames — executes **once**, the level-3 autovector handler runs, it writes
+`$FFFF` to `$FFDB48`, and the GSP's VRAM write count grows past its frozen
+84,337.
+
+### 47.1 Two mechanisms, and which one actually moves the bit
+
+INTOUT is read two ways and the two are checked against each other every run.
+
+**(a) The GSP's own register, read out of the Verilated model.** `io_reg` is not
+a port — it is an array inside the generated root class — so whether it can be
+read at all depends on Verilator keeping the signal. It can, here:
+`tms34010_sv___024root.h:716` carries
+`VlUnpacked<SData,32> tms34010_system__DOT__u_core__DOT__u_io_regs__DOT__io_reg`,
+and `tms34010_sv.h:87` exposes `rootp` publicly. The driver reads
+`io_reg[IO_IDX_HSTCTLL]` directly, behind a `__has_include` for the root header
+and a `std::void_t` detection trait for the member
+(`native/gsp_rtl_driver.cpp`, `rtl_io_reg_visible` / `rtl_io_hstctll`). Both
+guards exist so that a renamed signal degrades to "the RTL's register is not
+observable here", reported as `rtl-signal=absent`, instead of breaking the
+build. Measured: `rtl-signal=exposed`.
+
+**(b) A shadow reconstructed from the core's local-bus I/O writes**, with MAME's
+own equations (§47.2). This is the mechanism that survives without (a), and it
+is the one that turned out to be necessary for *half* the register: the
+MC68010's HSTCTL write arrives at `gsp_rtl_driver_host_write()`, not on the
+cycle bus, so a bus-only trace can see the setter and never the clearer.
+
+**Which moves the bit.** The setter and the clearer are different paths:
+
+| edge | writer | data | source |
+|---|---|---|---|
+| rise, frame 534 | GSP, local-bus write to I/O index `0x0F` | `$0080` | `INTOUT set-by=1 data=0x0080` |
+| fall, frame 535 | MC68010 host HSTCTL write | `$3800` | `INTOUT clear-by=2 data=0x3800` |
+
+(`set-by`/`clear-by`: 0 none, 1 processor-side local-bus write, 2 MC68010 host
+HSTCTL write, 3 adopted from the RTL's own `io_reg`.) Nothing else moved it:
+one processor-side HSTCTLL write, 19 host HSTCTL writes, `mismatch=0` between the
+shadow and the RTL across the whole run, `mame-rule-0xC000000F=0`.
+
+**That is structurally forced, not coincidental.** MAME's host arm
+(`tms34010.cpp:1676`) is `newreg &= data | ~0x0080`, so the MC68010 can only
+clear INTOUT; the processor arm (`:1667-1669`) is the only thing that can raise
+it. So there is no third candidate, and the instrument agrees with the RTL on
+every settled comparison.
+
+### 47.2 The MAME edge semantics implemented
+
+S.T.U.N. Runner instantiates a **TMS34010**, so the code that runs is
+`tms34010_device::io_register_w` [S8], whose `case REG_HSTCTLL` is at
+`tms34010.cpp:1661` and whose edge detection is at `:1682-1685`:
+
+```c
+/* tms34010.cpp:1665-1669  -- processor side (!m_external_host_access) */
+newreg  = (oldreg & 0xff8f) | (data & 0x0070);
+newreg |= data & 0x0080;
+newreg &= data | ~0x0008;
+/* tms34010.cpp:1675-1677  -- host side (the else) */
+newreg  = (oldreg & 0xfff8) | (data & 0x0007);
+newreg &= data | ~0x0080;
+newreg |= data & 0x0008;
+/* tms34010.cpp:1682-1685  -- the edge, both arms */
+if (!(oldreg & 0x0080) && (newreg & 0x0080))  m_output_int_cb(1);
+else if ((oldreg & 0x0080) && !(newreg & 0x0080)) m_output_int_cb(0);
+```
+
+`host_control_w` sets `m_external_host_access = true` for exactly one write
+(`tms34010.cpp:2039-2042`), so the two arms are the same case. `m_output_int_cb`
+is bound at `harddriv.cpp:1489` to `hdgsp_irq_gen`, which sets `m_gsp_irq_state`
+(`harddriv_m.cpp:118-120`), which `update_interrupts` turns into
+`m_maincpu->set_input_line(3, ...)` (`harddriv_m.cpp:97`) — level 3 is IPL2.
+Level 2 autovector is vector `24 + 3 = 27`, and with `VBR = $00020000` the table
+slot at `$2006C` holds `$0002143C` [ROM].
+
+**Two things in that transcription that the comments do not say.**
+
+1. The processor arm does **not** compute set-only, although the comment above
+   it says "can set INTOUT". Bit 7 is `old7` after line 1667, `old7 | data7`
+   after 1668, and `old7 & data7` after 1669 — so the result is `old & data`,
+   and a processor write whose data has bit 7 clear *clears* INTOUT. The
+   vendored RTL instead has `io_reg[INTOUT] <= io_reg[INTOUT] | data[INTOUT]`
+   (`tms34010_io_regs.sv:553-554`), which is genuinely set-only. **The two
+   models differ on this rule.** In this run the one processor write carried
+   `data = $0080` (bit 7 set), so both models rise and `mismatch` stays 0; the
+   divergence is not exercised and is reported as such, not as agreement.
+2. The 1827-1832 block with byte-identical text is `case REG020_HSTCTLL` inside
+   `tms34020_device::io_register_w` (`tms34010.cpp:1751`) — the **TMS34020**,
+   which this board does not instantiate. Citing it for a TMS34010 run points a
+   reader at a device that is not in the machine.
+
+The delivery is edge-driven, not "assert while the bit is set", and that is not
+a stylistic choice: `M68K_EMULATE_INT_ACK` is `M68K_OPT_OFF`
+(`third_party/musashi/m68kconf.h:111`), so `m68ki_exception_interrupt()` ends
+with `CPU_INT_LEVEL = 0` (`third_party/musashi/m68kcpu.h:2155-2158`) — the CPU
+drops the line itself on acknowledge, exactly as MAME's does. Re-assertion
+therefore needs a new board-side edge, which is what MAME's
+`m_output_int_cb`-on-edges does.
+
+### 47.3 Measured result — 600 frames, RTL core on
+
+Baseline is §39.6 / §40.4: `board vram nonzero words=84337`, frozen, `$02FCB6`
+never present in a 1,679-entry histogram, `assert_l1..l7=0/0/0/0/2475/0/0`,
+`$FFDB48` written once with value 0.
+
+```text
+shell: gsp-rtl intout edge frame=0   level=0 sr=0x2704 imask=0x7 pc=0x00000414
+shell: gsp-rtl intout edge frame=534 level=1 sr=0x2504 imask=0x5 pc=0x0003D1BE
+shell: gsp-rtl intout edge frame=535 level=0 sr=0x2300 imask=0x3 pc=0x0002144E
+shell: gsp-rtl HSTCTLL.INTOUT level=0 rises=1 falls=1 ipl2-asserts=1 ipl2-clears=2
+shell: gsp-rtl INTOUT set-by=1 data=0x0080 clear-by=2 data=0x3800
+shell: gsp-rtl HSTCTLL shadow=0x0000 rtl-io-reg=0x0000 rtl-signal=exposed mismatch=0
+        (proc-writes=1 host-hstctl-writes=19 mame-rule-0xC000000F=0)
+shell: gsp-rtl GSP-local I/O writes=56 distinct=19 overflow=0
+shell: gsp-rtl board vram nonzero words=84787
+shell: write-watch addr=0x00FFDB48 writes=3 last_pc=0x0002F23A last_value=0x0000
+        width=16 nonzero-writes=1 nonzero-last-pc=0x0002143C nonzero-last-value=0xFFFF
+shell: irq assert_calls=2473 assert_l1..l7=0/0/1/0/2472/0/0
+        autovector_fetches=965 vbr=0x00020000 irq5=964 nmi=0
+        last_vector=29 last_target=0x000222DA last_source_pc=0x0002FC94
+        insn_retired=7375313
+render frame=600 hash=0xF3973280 lit=122880/122880 colours=225
+```
+
+PC histogram (`STUNRUN_PC_HIST` is a file path):
+
+| address | baseline | with INTOUT→IPL2 |
+|---|---|---|
+| `$02FC82` `tst.w (A2)` | 43,259 | 35,042 |
+| `$02FCB6` **the wait exit** | **absent** | **1** |
+| `$02143C` IPL3 entry | absent | 1 |
+| `$021444` `move.l D0,-(A7)` | absent | 1 |
+| `$021446` `andi.w #$ff7f,$c00008.l` | absent | 1 |
+| `$021460` `rte` | absent | 1 |
+| `$02F23A` `clr.w $ffdb48.l` | absent | 1 |
+| `$00069A` boot fill | 230,400 | 230,400 |
+
+Distinct PCs in the histogram: 1,679 → 5,196. `insn_retired` 7,187,787 →
+7,373,313. Three consecutive 600-frame runs produced byte-identical output on
+every line above.
+
+**Acceptance, stated one by one.**
+
+1. **`$02FCB6` executes a non-zero number of times — MET, 1 execution** (0 in
+   baseline, where it is absent from the histogram entirely). It is 1 and not
+   3 because the GSP raises INTOUT **once** in this run, at frame 534. §41.6's
+   synthetic control pulsed IPL2 every third frame and got 3; one real edge
+   cannot give three.
+2. **`$FFDB48` becomes non-zero and the writer is `$02143C` — MET.** Directly
+   measured: `nonzero-writes=1 nonzero-last-pc=0x0002143C
+   nonzero-last-value=0xFFFF`. `last_pc` alone could not show this, because the
+   *last* writer is `$02F23A` clearing it, and the frame sampler reads at the
+   frame boundary and this word is set and cleared inside one frame — which is
+   why `musashi_write_watch_t` grew a `nonzero_writes` / `nonzero_last_pc` /
+   `nonzero_last_value` trio. `$02143C` also executes exactly once.
+3. **GSP VRAM write count grows past the frozen 84,337 — MET, 84,337 → 84,787
+   (+450).** This is the strongest of the six, because it is the one number the
+   gate could not fake: releasing the wait hands the 68010 back to its own
+   drawing code, and it writes more VRAM.
+4. **No runaway — MET.** One rise, one fall, one assert, one delivery, one
+   `rte`. `assert_calls=2473` against 3,463 in baseline, of which IPL5 is 2,472
+   against 2,475. Autovector fetches 965 with `irq5=964`: the difference of one
+   is the single vector-27 fetch. The IRQ5 *delivery* count falls further, 985
+   to 964, and `insn_retired` rises 7,187,787 → 7,373,313. Those two move
+   together in a way this section does **not** explain — the IRQ5 period is
+   paced in cycles and a frame is a fixed cycle budget, so the delivery count
+   should be near-constant, and why 21 fewer were taken is **UNKNOWN**. It is
+   not load-bearing for any acceptance number here, and it is recorded so a
+   later reader does not mistake the drop for a consequence of the IPL2 work.
+   §47.5's NC4 shows what the absence of the deassert looks like: 152
+   deliveries in 65 frames, `$021460 rte` 152 times, `$FFDB48` written `$FFFF`
+   152 times. Bounded only by the run length — so the deassert is what makes
+   this once-per-edge, not luck.
+5. **`lit=`/`colours=` and both CTest trees — MET.** `lit=122880/122880
+   colours=225` at every 50-frame sample from 400 to 600, and in the terminal
+   line. `python3 -m unittest discover -s tests` 251 OK; `ctest --test-dir
+   build-test` 63/63; `ctest --test-dir build` 63/63; and `ctest --test-dir
+   build-rtl` 63/63 (that tree is not in the standing gate but is the one the
+   changed code is built into).
+6. **Correspondence with the replay's one assert / one clear — MET on count and
+   polarity, NOT on frame.** Re-run unchanged:
+   `./run.sh --gsp-replay /tmp/opencode/gsp-upload-v3` still prints
+   `HINT/INTOUT asserts=1 clears=1 currently=0` and
+   `rtl-word-writes=330490 vram-writes=1295144`, byte-identical to §42's
+   recorded run, so this change did not disturb it. One assert and one clear,
+   same polarity, from the same `io_reg[HSTCTLL][7]`. The frames differ:
+   replay asserts at ~406 and clears at ~411 (it starts the core at the
+   captured HLT release), live asserts at 534 and clears at 535.
+
+### 47.4 The bigger defect this uncovered: our IPL plumbing had ONE level
+
+The first working version asserted IPL2 and **nothing was delivered**. `assert_l3`
+went 0 → 1, `autovector_fetches` stayed at 985, `last_target` stayed `$0222DA`,
+and `insn_retired` was bit-identical to baseline. The assert was real and the
+gate did not open.
+
+Cause: `musashi_cpu_set_irq()` called `m68k_set_irq(level)`, which writes one
+global `CPU_INT_LEVEL`. The board has **six** interrupt lines
+(`harddriv_m.cpp:94-100`), MAME keeps them as a bitmask and re-derives the CPU
+level from the highest still-asserted one on every single-line transition
+(`m68000_musashi_device::set_irq_line`, `m68kcpu.cpp:708-735`), and so did we
+not. The shell asserts IPL5 every 32,768 cycles (`shell.c`, the IRQ5 tick) and
+the ROM's `$60C000` ack cleared "the line", so a pending IPL2 of `$0300` was
+overwritten by `$0500` within 32,768 cycles — long before the ROM's interrupt
+mask left 5.
+
+Fix: both entry points go through Musashi's `m68k_set_virq(level, active)`
+(`m68kcpu.c:1080-1093`), which is a transcription of that same MAME routine, and
+the three `REGION_IRQACK` sites now clear **line 5** rather than zeroing the
+level — matching `hd68k_irq_ack_w`, which clears `m_irq_state` and then calls
+`update_interrupts()` and so re-drives all six lines
+(`harddriv_m.cpp:111-115`). `musashi_cpu_reset()` also drives all seven lines
+off once, because `m68k_init()` does not clear `m68ki_cpu.virq_state` and that
+bitmask now outlives a delivery.
+
+This is behaviour-preserving where no second line is live: with only IPL5
+asserted, `m68k_set_virq(5, 0)` re-derives level 0, exactly as the old
+`m68k_set_irq(0)` did. Both CTest trees and the Python suite confirm the rest of
+the model did not move.
+
+### 47.5 Negative controls, each rebuilt before it was run
+
+Per §45.1: the build is inside every trial. Each break below was made, rebuilt,
+run, and restored; the reported numbers are the actual output.
+
+| # | deliberate break | expected | measured |
+|---|---|---|---|
+| NC1 | suppress the INTOUT rise in the driver (`if (0 && ...)`) | nothing delivered, gate shut | `rises=0`, `assert_l3=0`, `autovector_fetches=985`, `$02143C` absent, **`$02FCB6` absent**, `$02FC82`=43,259, VRAM **84,337**, `$FFDB48` 1 write / 0 non-zero — i.e. exactly the baseline |
+| NC2 | transpose the host arm to `newreg \|= data & 0x0080` (set-only) | the shadow must diverge from the RTL | run output identical, **but `mismatch=1`** — the settled-state comparison against `io_reg[HSTCTLL]` caught the divergence and adopted the RTL's value. The mismatch counter is itself the control: 0 in the correct build, 1 in the broken one |
+| NC3 | revert the per-line IPL model (`m68k_set_irq`), keep the INTOUT wiring | the assert is destroyed before it can be taken | `rises=1`, `assert_l3=1`, **`autovector_fetches=985`**, `$02143C` absent, **`$02FCB6` absent**, `$02FC82`=43,259, VRAM **84,337** — bit-for-bit the pre-fix behaviour |
+| NC4 | never deassert IPL2 | unbounded re-entry | `$02143C` **152**, `$021460 rte` **152**, `$FFDB48` `$FFFF` **152** times, `$02FCB6` 3, `last_vector=27 last_target=$002143C`, `insn_retired` 7,510,613 |
+
+NC1 and NC3 are the load-bearing pair: NC1 removes the signal and NC3 removes
+the plumbing, and each independently returns every acceptance number to its
+baseline value. NC4 is what "bounded" is worth.
+
+**One self-inflicted segfault, found and fixed.** The first build crashed
+`native-shell`, `native-shell-oki-audio-probe` and `native-shell-coin-start` —
+the three CTest targets that run the shell *without* an MC68010, where the GSP
+driver is never constructed. `gsp_rtl_driver_intout_observation()` dereferenced
+`s_top` through the new root-class read. `rtl_io_hstctll()` now returns the
+shadow when `s_top == NULL` and the report says `rtl-signal=absent`. Recorded
+because the failure mode is the interesting part: a feature that only exists in
+the RTL build broke the tests that do not use it, and only the build that
+actually runs the changed code notices.
+
+### 47.6 The GSP's own I/O write addresses — and an open question about the index
+
+The run also records every distinct address the core presents in I/O space, with
+its count, which is a fact about the program rather than about our model:
+
+```text
+0x000000 x3   0x000010 x3   0x000020 x3   0x000030 x3   0x000040 x3
+0x000050 x3   0x000060 x3   0x000070 x3   0x000080 x3   0x000090 x4
+0x0000A0 x1   0x0000B0 x5   0x0000F0 x1   0x000100 x3   0x000110 x2
+0x000130 x3   0x000140 x3   0x000150 x6   0x000160 x1
+```
+
+56 writes total. The stride is `0x10`, one 16-bit register in the RTL's
+bit-addressed numbering (`idx = addr[8:4]`, `tms34010_io_regs.sv:154-156`).
+`0xC00000F0` is the single INTOUT setter.
+
+**Open, and deliberately left open: which numbering the hardware uses.** Two
+decode rules are in play for the same bus address and they differ by 16×:
+
+* the vendored RTL: `idx = addr[8:4]`, so `IO_IDX_HSTCTLL = 0x0F` is at
+  `$C00000F0` (`tms34010_pkg.sv:382`);
+* MAME: `map(0xc0000000, 0xc00001ff)` with `IOREG(offset)` and
+  `offset = address - 0xC0000000`, and `REG_HSTCTLL == 15`
+  (`tms34010.cpp:34-41`, `:1576-1577`, `tms34010.h:78`), so `$C000000F`.
+
+Under the RTL's rule the program's addresses decode to registers `0x00..0x16`;
+under MAME's rule the *same* addresses become offsets `0x000, 0x010, ...,
+0x160`, which is exactly the `0x90`–`0x160` range `analysis/mame-bugs.md` (MD-12)
+reports the real S.T.U.N. Runner GSP program writing at. The two accounts of the
+same traffic agree on the addresses and disagree on what they name — and only one
+of them can be right about the TMS34010's register file.
+
+That is **not** settled here, and nothing in this section depends on it: what is
+delivered is the RTL core's own `io_reg[HSTCTLL][7]`, cross-checked against a
+shadow, `mismatch=0`. Two things would settle it and neither was done:
+
+* reading MAME's `memory_map` handler-offset convention (the `emu/` sources are
+  not present in `/mnt/build/mame-ref`, only the device and machine files);
+* a MAME run with `STUNRUN_GSP_IOBREPORT` set, which prints every `offset` the
+  driver sees (the `MD-12` triage hook at `tms34010.cpp:1579-1615`) — if
+  `0x00f` appears there, MAME's decode reaches HSTCTLL and the program's
+  `$C00000F0` is meaningless to it.
+
+Note also that this run **cannot** settle it on its own: the core issues only 56
+I/O writes in 600 frames, so it is far behind MAME's trajectory (§37, §39.6),
+and a register the program has not reached yet is not evidence about the other
+numbering. `mame-rule-0xC000000F=0` is a statement about 600 frames of this
+trajectory, not about the program.
+
+### 47.7 `andi.w #$ff7f` clears bit 7 — and NOT bit 15
+
+I read `$021446: andi.w #$ff7f,$c00008.l` as preserving HSTCTL bit 7, on the
+strength of §45's "Confirmed" line that `ANDI.W #$FF7F` "preserves bits 11:0
+including the `0x0800` HSTDAT auto-increment". Bits 11:0 **are** bits 0 through
+11, and bit 7 is one of them — that §45 sentence is wrong, and I copied the error
+rather than reading the mask.
+
+**Both halves of this subsection were then wrong on the next pass and are
+corrected in section 48.2.** The mask is `1111_1111_0111_1111`: it clears
+**exactly one bit, bit 7** — not "bits 6:0". And `$3800` having bit 15 clear
+says nothing about what the mask does to bit 15, because the mask governs:
+`$FF7F` **preserves** bit 15. The value `$3800` in `INTOUT clear-by=2 data=0x3800`
+is the value the ANDI *wrote*, i.e. the post-mask HSTCTL, so its bit 15 being
+clear means bit 15 was **already** clear before the instruction ran. The handler
+therefore does not release the GSP; there was nothing to release.
+
+What the instruction does do is the acknowledge. Because the host arm is
+clear-only (`newreg &= data | ~0x0080`, `tms34010.cpp:1676`), writing HSTCTL
+with bit 7 clear drops INTOUT, which drops the GSP's INT line — the very line
+whose rising edge delivered this handler. The deassert is observed at
+`pc=0x0002144E`, the *end* of the eight-byte `andi.w` at `$021446` (2 opcode +
+2 immediate + 4 long address), which is consistent with the write completing
+before the level is re-read.
+
+So the level-3 handler drops INTOUT (bit 7) and signals the waiter
+(`$FFDB48 = $FFFF`) in one breath. It does not touch bit 15.
+
+### 47.8 Fidelity limits, stated
+
+1. **One frame of latency.** The GSP is stepped for a frame *after* the 68010
+   has run that frame, so an INTOUT edge is delivered at the start of the next
+   68010 frame. In MAME the two processors run concurrently. The signal is
+   right; the scheduling is not, and a cadence comparison would be measuring
+   this.
+2. **Cadence does not match.** MAME delivers IPL2 every third frame from frame
+   131 (§41.4). The RTL core delivers it once, at frame 534. §45.3's ordering
+   divergence and §37's trajectory offset are upstream of this; one edge is not
+   evidence about the steady-state rate.
+3. **The processor-arm rule differs between MAME and the RTL** (§47.2 item 1)
+   and is not exercised here.
+4. **`reproduction/maincpu/gsp_handoff_irq.{h,c}` was not used.** Delivery of
+   the interrupt makes Musashi run the real ROM handler, which is the stronger
+   result; the C slice stays an unused transcription, as before.
+5. **Frame 450 parity is unchanged.** §46's 99.72%-different replay frame is a
+   scanout/VRAM-trajectory problem and this does not touch it. The 225-colour
+   `lit=`/`colours=` result is content, not parity, and §39.5 still stands: a
+   hash cannot tell a correct picture from a correctly-rendered zero region.
+
+### 47.9 Reproduce
+
+```bash
+export PATH="$HOME/.local/share/verilator-5.052/bin:$PATH"
+cmake -S native -B build-rtl -DSTUNRUN_GSP_RTL=1 && cmake --build build-rtl -j"$(nproc)"
+
+NATIVE_BUILD_DIR=$PWD/build-rtl SDL_VIDEODRIVER=dummy \
+STUNRUN_MC68010=1 STUNRUN_STUNRUN_DIR=roms/stunrun \
+STUNRUN_LIVE_VIDEO=1 STUNRUN_FRAMES=600 STUNRUN_FRAME_LOG=50 \
+STUNRUN_AUDIO_BACKEND=null STUNRUN_VIDEO_BACKEND=null \
+STUNRUN_PC_HIST=/tmp/opencode/pchist.txt STUNRUN_WATCH_WRITE=0xFFDB48,0x608000,0xFF800000 \
+build-rtl/stunrun-native-shell | grep -E "intout|INTOUT|HSTCTLL|nonzero|write-watch|irq assert|render"
+
+grep -i '^0x02FCB6 \|^0x02143C \|^0x02FC82 \|^0x00069A ' /tmp/opencode/pchist.txt
+
+# The handler, byte-exact, from the ROM image:
+NATIVE_BUILD_DIR=$PWD/build-rtl STUNRUN_MC68010=1 STUNRUN_STUNRUN_DIR=roms/stunrun \
+STUNRUN_LIVE_VIDEO=1 STUNRUN_FRAMES=1 STUNRUN_AUDIO_BACKEND=null STUNRUN_VIDEO_BACKEND=null \
+STUNRUN_DISASM=0x021430:0x021480:/tmp/opencode/irq3.txt build-rtl/stunrun-native-shell >/dev/null 2>&1
+cat /tmp/opencode/irq3.txt
+
+# Acceptance 6, unchanged by this work:
+./run.sh --gsp-replay /tmp/opencode/gsp-upload-v3   # HINT/INTOUT asserts=1 clears=1
+
+python3 -m unittest discover -s tests   # 251 OK
+ctest --test-dir build-test              # 63/63
+ctest --test-dir build                   # 63/63
+ctest --test-dir build-rtl               # 63/63
+```
+
+### 47.10 BUGS.md candidates — reported, not fixed
+
+**Ours, not candidates.** The single-global IPL level (§47.4) and the NULL-core
+dereference (§47.5) are defects in our machine model and belong in this
+document, not `BUGS.md`.
+
+**MAME, candidate, not filed:** the processor-side INTOUT rule computes
+`old & data` while its own comment says "can set INTOUT"
+(`tms34010.cpp:1664-1669`). If a program writes HSTCTLL with bit 7 clear, MAME
+clears INTOUT and fires the external interrupt's *falling* edge where the
+documented set-only behaviour would hold the bit. Not filed: impact on any
+title is unmeasured, and `BUGS.md`'s entries get sent upstream, where a
+cosmetic inconsistency is a liability.
+
+**The register-index question (§47.6), candidate only, `UNKNOWN`.** Either the
+vendored RTL's `idx = addr[8:4]` or MAME's `offset = address - 0xC0000000`
+mis-decodes the TMS34010's I/O register file, and on this evidence it is not
+possible to say which. Not filed, and should not be until `STUNRUN_GSP_IOBREPORT`
+has been run against the same traffic.
+
+## 48. Corrections to §45 and §47.7, and a configuration limit §47.3 missed
+
+Three things went wrong while integrating §47. Two were mine and had already been
+committed; one was missed by the work itself.
+
+### 48.1 The C slice transcribed the wrong mask
+
+`reproduction/maincpu/gsp_handoff_irq.c` implemented the `$021446` ANDI as
+`s->hstctl & ~0x8000` — clear HSTCTL bit 15. The ROM bytes are:
+
+```text
+021446: 02 79 ff 7f 00 c0 00 08   andi.w  #$ff7f, $c00008.l
+```
+
+`$FF7F` is `1111_1111_0111_1111`. It clears **exactly one bit, bit 7**, and
+preserves the other fifteen including bit 15. The transcription now uses the
+ROM's mask verbatim (`STUNRUN_GSP_HANDOFF_HSTCTL_MASK 0xFF7F`).
+
+### 48.2 The instruction ACKNOWLEDGES; it does not release the GSP
+
+§45 and §47.7 both described this handler as clearing HLT "and so releasing the
+GSP". It does not. Bit 15 is preserved by the mask, so the instruction cannot
+clear HLT under any input.
+
+That HLT was not held anyway is visible in §47's own measurement.
+`INTOUT clear-by=2 data=0x3800` records the value the ANDI **wrote** — the
+post-mask HSTCTL, because ANDI is a read-modify-write of the 16-bit register and
+MAME splits the write-back into HSTCTLH/HSTCTLL. Its bit 15 is clear. Since the
+mask preserves bit 15, bit 15 must have been **already clear** when the handler
+read it. The GSP was not halted at this handshake; nothing was released.
+
+What bit 7 is: HSTCTLL.INTOUT, the GSP-to-host interrupt request. The host arm
+of MAME's HSTCTLL write is clear-only (`newreg &= data | ~0x0080`,
+`tms34010.cpp:1676`), so writing it with bit 7 clear drops INTOUT, which drops
+the GSP's INT line — the line whose rising edge delivered this handler. **The
+instruction is the interrupt acknowledge.** That is the whole of its board
+effect, and it is a good deal less dramatic than "releases the GSP".
+
+*Inferred, not measured:* that bit 15 was already clear is read off the written
+value, not observed. The driver tracks HSTCTLL (the low byte) only, so
+HSTCTLH/HLT is never sampled directly. If the HLT state at handler entry ever
+matters, it needs tracking rather than inference.
+
+### 48.3 The test and the implementation shared one error
+
+The wrong transcription shipped with a green test, and the interesting fact is
+*why*. The old test took `0xB800` as its single HSTCTL input and asserted
+`hstctl_after(0xB800) == 0x3800`.
+
+`0xB800 & 0x7FFF` is `0x3800`. That is exactly what the wrong implementation
+produced — so the test was a **faithful** test of the wrong mask. It was not
+blind: under the ROM's real mask the same call returns `0xB800` and the old
+assertion would have failed immediately.
+
+So the failure is not "the test could not see the bug". It is that §45's
+"Confirmed" line, the implementation, and the test were all derived from one
+mistaken reading, so they agreed with each other and disagreed with the ROM.
+**Artifacts that share an error do not corroborate each other**, and a green
+test standing next to a wrong implementation is what that failure looks like.
+
+The mask table now in the test separates the four candidates:
+
+| input   | ROM `$FF7F` | `~0x8000` | `~0x0080` | `$FE7F` |
+|---------|-------------|-----------|-----------|---------|
+| `0xB880`| `0xB800`    | `0x3880`  | `0xB880`  | `0xB800`|
+| `0xB800`| `0xB800`    | `0x3800`  | `0xB800`  | `0xB800`|
+| `0xFFFF`| `0xFF7F`    | `0x7FFF`  | `0xFF80`  | `0xFE7F`|
+| `0x0180`| `0x0100`    | `0x0180`  | `0x0100`  | `0x0000`|
+
+Two gaps surfaced while building it, both found by controls rather than by
+reading:
+
+* The first draft used only inputs whose **bit 8** was clear, so a mask that
+  wrongly cleared bit 8 too (`$FE7F`) passed every assertion. `0xFFFF` pins all
+  fifteen survivors at once.
+* The first draft asserted `hstctl_after(0xB880) & ~0x0080 == 0xB880`, which is
+  false — the input has bit 7 **set**, so clearing it must change the value.
+  Replaced with an XOR, which names exactly the bits that moved. The control run
+  caught this: `restored` came back FAILED, which is the control working, not
+  the code.
+
+Nine negative controls, each **rebuilt** before it was run (§45.1), all fail:
+
+```text
+wrong mask ~0x8000        wrong mask ~0x0080     wrong mask $FE7F (bit 8)
+wrong mask $7FFF           wrong mask 0x0000      clamp wrapped tick to zero
+drop wait-flag write       drop elapsed store     clobber interrupted D0
+restored                                                              PASSED
+```
+
+### 48.4 §47's numbers only hold with STUNRUN_LIVE_VIDEO=1
+
+§47.3 reports `rises=1 falls=1 ipl2-asserts=1` and
+`board vram nonzero words=84787`. I re-ran the same 600 frames both ways:
+
+```text
+STUNRUN_LIVE_VIDEO=1   rises=1 falls=1 ipl2-asserts=1   vram nonzero words=84787
+STUNRUN_LIVE_VIDEO=0   rises=0 falls=0 ipl2-asserts=0   vram nonzero words=82720
+```
+
+Cause: `GSP_RTL_SYNC_AND_STEP` is inside `if (g_live_video && g_cpu != NULL && ...)`
+(`native/shell.c:1878`), so **headless the GSP core is never clocked at all** and
+INTOUT can never move. The entire IPL2 mechanism is unreachable outside the
+live-video configuration.
+
+§47's "three consecutive 600-frame runs byte-identical on every line" is true
+*within* one configuration and says nothing across configurations. Stating it
+without that qualifier is what hid this. The IPL2 result is a live-video result.
