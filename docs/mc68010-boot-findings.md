@@ -8747,3 +8747,120 @@ or observe MAME's scanout registers at the same checkpoint, compare the replay
 framebuffer, and capture matching physical VRAM/palette state. Until then the
 rendered replay is an instrumental GSP view, **not the game's MAME-matched
 screen**.
+
+## 44. First semantic divergence between the oracle and the native host stream
+
+`tools/compare-gsp-host-events` compares the MAME upload capture against the
+native `musashi_gsp_bus_event_t` stream field by field and reports the FIRST
+event that differs, with both records and surrounding context.
+
+### 44.1 What it compares, and what it refuses to compare
+
+Compared: the event kind (host register or `/GSPRES`), the register address, the
+effective 16-bit data after the lane mask, the mask itself, and the `/GSPRES`
+level.
+
+NOT compared: raw file bytes, PC, cycle counts, and frame numbers.
+
+* Raw bytes cannot be used. `gsp_emit_bus_event()` never assigns the padding at
+  record offsets 29-31 and 37-39, so those bytes carry uninitialised stack and
+  move on any recompile (§23.6).
+* PC is an alignment hint, not an equality key. Inside a Musashi memory callback
+  `REG_PC` is the first UNCONSUMED word of the instruction, so it can sit past
+  the writing instruction; MAME's `CURPC` has the same property. The first
+  capture pair shows it directly: MAME seq 1 is PC `$069A`, native seq 583 is
+  callback PC `$069C`, and those are the same event.
+* Frame is a MAME-only column; the native stream has cycles. Frame-vs-cycle is
+  not a comparison the artifacts support.
+
+The tool aligns the MAME tap's first event to the first native event with the
+same signature whose PC is within 16 bytes, or takes `--native-start-seq`
+explicitly. It says which it used, in `alignment`.
+
+### 44.2 The two producers do not record the same events
+
+A real native stream carries **262,766** host writes to `$00C0000E` that the
+MAME tap never records. MAME's driver only decodes word offsets 0-6 of the
+`$C00000-$C03FFF` host aperture and lets `$C0000E` and above fall through
+(§13). This tool names that address `HSTDAT-UNMAPPED-0E` rather than folding it
+into `HSTDAT`. Folding them would make a later mismatch look like a data
+difference when it is a producer difference, and would silently discard a
+quarter of the native traffic.
+
+### 44.3 Measured result
+
+```text
+oracle /tmp/opencode/gsp-upload-v3/gsp-upload-events.txt   701,877 rows
+native /tmp/opencode/gsp-dump-final/gsp_bus_events.bin    902,647 records
+alignment: --native-start-seq 583 (oracle seq 1, PC $069A <-> native $069C)
+
+MATCH for 224,522 events
+DIVERGED at oracle seq 224523 (frame 31): HSTCTL $C00008 = $B800 at PC $0570
+           native seq 225105 is still HSTDAT $C0000C = $0000 at PC $069C
+```
+
+The oracle has finished the boot VRAM-fill loop and halted the GSP
+(`$0570` writes `HSTCTL=$B800`, HLT asserted); the native model is still inside
+the fill loop at `$069C`. That is the same class of difference already recorded
+in §12.5 — at frame 600 the native PC was where MAME's was at frame 300 — so
+this is the divergence surfaced in event space rather than newly found.
+
+**It is a point to investigate, not proof of which side is wrong.** The two
+captures come from separate runs and the oracle stream carries no cycle stamps,
+so this is the first ORDERING difference, not a measured cycle offset. The
+$FFDB48 symptom is not explained by it: both sides reach `$02FC82` with the
+level-3 interrupt mechanism §40.1/§41.2 describes, and the missing IPL2 wire
+remains the blocking difference.
+
+## 45. GSP handoff interrupt ($02143C) ported to C
+
+The level-3 autovector handler transcribed to
+`reproduction/maincpu/gsp_handoff_irq.{h,c}` with CTest
+`gsp-handoff-irq-slice-c`. It is the only writer of `$FFDB48` in the program
+(§40.1) and releases both the waiter and the GSP:
+
+```asm
+02143c: move.w  #$ffff,$ffdb48.l
+021444: move.l  d0,-(a7)
+021446: andi.w  #$ff7f,$c00008.l     ; clear HSTCTL bit 15 = release the GSP
+02144e: move.l  $8014.w,d0
+021452: sub.l   $ffdb36.l,d0
+021458: move.l  d0,$ff9baa.l        ; elapsed 68010 ticks
+02145e: move.l  (a7)+,d0
+021460: rte
+```
+
+Owned in C deliberately: its effects are observable and adjustable without
+editing ROM. The default shell still executes the original 68k path; this slice
+is not wired into the live run.
+
+**Confirmed (disassembled from the ROM this session):** the instruction bytes
+above, `ANDI.W #$FF7F` preserving bits 11:0 including the `0x0800` HSTDAT
+auto-increment, and the push/pop pair touching only D0.
+
+**Inferred:** that `$8014.w` is the free-running tick counter. The tick delta is
+modelled as plain 32-bit wraparound `SUB.L`, and the test pins the wrapped case
+(5 − `0xFFFFFFF0` = 21) so a later "safety" clamp cannot be mistaken for
+fidelity.
+
+### 45.1 The control procedure was wrong first, and said so
+
+The first negative-control run reported all three deliberate breaks as PASSING.
+That looked like the familiar "tests pass for the wrong reason" problem; it was
+not. I mutated the source and then invoked `ctest` directly, without building.
+CTest does not build, so every trial ran the STALE BINARY and proved nothing.
+
+Rebuilt before each trial, all four breaks fail as they should:
+
+```text
+clear all of HSTCTL instead of only HLT   FAILED
+clamp the wrapped tick delta to zero      FAILED
+drop the $FFDB48 write                    FAILED
+drop the $FF9BAA store                    FAILED
+restored                                  PASSED
+```
+
+A negative control that passes is evidence about the CONTROL, not about the
+code. All breaks passing should send you to the harness first. The lesson is
+recorded so the next automation puts the build inside the trial loop rather than
+beside it.
