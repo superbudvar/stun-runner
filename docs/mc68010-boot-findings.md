@@ -8709,3 +8709,41 @@ Confirmed here: the source had a 12-float buffer, wrote only 12 floats, and drew
 four vertices; the unit test fails when the fourth vertex is omitted. The
 specific screenshot's visual signature matches that malformed strip. The
 scanout pixels themselves are unchanged by this fix.
+
+## 44. The complete replay PNG is still not MAME's displayed frame
+
+The user compared the replay to MAME's normal-mode title screen and correctly
+pointed out that the remaining discrepancy is not merely a vertical squash.
+The image comparison was made at frame 450 in both normal-mode MAME and the
+frame-ordered RTL replay:
+
+```text
+MAME normal-frames-1-600 frame 240 SHA256 = 7e48495c...c853d49
+MAME normal-frames-1-600 frame 480 SHA256 = 7e48495c...c853d49
+MAME state-snapshot frame 450 screen = title screen (1084 px differ from frame 480)
+replay frame 450 vs MAME frame 450: 122534/122880 pixels differ (99.72%),
+  max RGB distance=255, average channel distance R=70.43 G=76.45 B=83.85,
+  SSIM=0.082492 (`tools/frame_diff`)
+```
+
+The renderer's **effective scanout inputs are already known to be wrong**.
+MAME's state snapshot at frame 450 records `DPYADR=0xF87C`,
+`DPYSTRT=0xFC3C`, `DPYTAP=0`, `DPYCTL=0xF004`, `HEBLNK=55`, `HSBLNK=311`,
+`FINESCROLL=7`. The replay's tracked values at frame 450 are
+`DPYSTRT=0xFFFC`, `DPYADR=0xFFC3`, `DPYTAP=0x0200`, `DPYCTL=0x8201`, with
+`core-set=0x1` — only DPYSTRT was actually observed from the RTL. The renderer
+then substitutes fallback values for the three unseen registers, but
+DPYSTRT remains `0xFFFC` and the timing bounds are the frame-600 fixture. Those
+are not MAME's frame-450 scanout parameters.
+
+So the established answer is: **the final-screen mismatch is not just
+presentation or scaling**. The backend's missing fourth quad vertex caused the
+black diagonal and is fixed in §43. Separately, the replay is rasterized from
+an incomplete/unverified display-register shadow; its 99.72%-different output
+cannot establish that the GSP program or palette is wrong, nor can its color
+count establish parity. It also cannot exonerate the GSP RTL: the core-set
+DPYSTRT itself differs from MAME's sampled value. The remaining test must feed
+or observe MAME's scanout registers at the same checkpoint, compare the replay
+framebuffer, and capture matching physical VRAM/palette state. Until then the
+rendered replay is an instrumental GSP view, **not the game's MAME-matched
+screen**.
