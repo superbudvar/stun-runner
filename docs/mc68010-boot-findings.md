@@ -9517,3 +9517,76 @@ It is not fixed here — fixing it means decoupling "rasterise the share" from
 Worth stating plainly: the blank-scaffold frame still produces a stable hash, so
 `hash=` alone continues to be worthless as evidence. §48's 225-colour reading
 was never a picture, only a pipeline that consistently produced 225.
+
+## 50. Colour parity against MAME: **no**. The open question is now answered.
+
+§39.6 and §42 carried "colour equality vs MAME" as an open question, with the
+standing warning that `lit=122880/122880 colours=225` and a stable frame hash
+cannot distinguish a correct picture from a correctly-rendered wrong one. With
+§49's headless/live split settled, the live run can finally be compared against
+the committed oracle screenshot.
+
+### 50.1 The measurement
+
+Committed oracle `fixtures/oracle/frame_600/frame_600_screen.png` (512x240) against
+`STUNRUN_CAPTURE_FRAME=600` from a 600-frame live RTL run, via `tools/frame_diff`
+(exit 1 = "different", which is that tool's contract):
+
+```text
+frame_diff: width=512 height=240 total_pixels=122880
+frame_diff: pixels_different=122644 (99.81%)
+frame_diff: max_rgb_distance=255
+frame_diff: avg_channel_distance R=49.18 G=57.91 B=59.54
+frame_diff: ssim_score=0.523887
+```
+
+Per-band, to locate the difference rather than only size it (threshold 10):
+
+| rows | region | differing |
+|------|--------|-----------|
+| 0–120 | playfield top | **100.00%** |
+| 120–200 | playfield mid | 99.92% |
+| 200–240 | HUD bottom | 98.75% |
+
+**No region is close.** This is not a local defect with good surroundings.
+
+For scale: the earlier replay-path attempt recorded in `ea973d4` was 99.72%
+differing at SSIM 0.0825. SSIM has improved to 0.524 — the pipeline produces
+structure now — but 0.524 reflects broad similarity (a busy band at the bottom,
+large low-detail areas) and not correctness.
+
+### 50.2 What looking at the pictures claimed, and what the numbers say
+
+The two frames were viewed side by side before measuring. Visually, ours appears
+to have the right *architecture*: a HUD band at the bottom in roughly the right
+place, and a logo band above it. That reading suggested the HUD was close and the
+playfield was the broken part, and it would have pointed the next step at the
+display list.
+
+The band numbers contradict it. The HUD band is the **least** wrong at 98.75%
+and is nowhere near right. Visually similar band placement is not evidence of
+correct scanout geometry, and had this been left at "eyeball" the next step would
+have been aimed at the wrong subsystem.
+
+What the pictures do establish is the shape of the failure: rows 0–120 are a
+single flat olive fill where the oracle has a tunnel and perspective, and the
+middle band is smeared diagonally. A region that is *entirely* one palette entry
+means the scanout is reading somewhere that is not the playfield.
+
+### 50.3 Incidental: `frame_diff` misreports its own output size
+
+`frame_diff` prints `diff.png written (4433 bytes)` as `written (1 bytes)`. The
+file on disk is 4433 bytes and is a valid PNG, so only the message is wrong — but
+it is the kind of small falsehood that makes a later reader doubt the tool
+rather than the finding. Worth fixing; not fixed here because it is not this
+question.
+
+### 50.4 Not claimed
+
+This is a statement about **frame 600 of a 600-frame live RTL run**. It is not
+evidence about the replay path, about `--service`, about other frames, or about
+any single subsystem: the 68010's host-port traffic and the GSP's own execution
+are both already known to differ from the oracle (§44's first divergence at
+oracle seq 224523). Whether the scanout geometry is independently wrong, or
+merely rendering a share the emulation has not filled correctly, is **not**
+separated by this measurement and must not be reported as if it were.
