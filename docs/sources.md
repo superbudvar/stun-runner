@@ -55,6 +55,7 @@ cite.
 | `CREDITS.md` | S1 for the credits table; S2/S4 for job titles; S3 for the team |
 | `analysis/hardware-lineage.md` | S3 against S1/S6/S7 for the VRAM result |
 | `docs/hardware-contract.md` | S6 `[MANUAL]`, S7 `[MAME]`, S1 `[ROM]`, S3 `[MARGOLIN]` |
+| `docs/mame-machine-reference.md` | S7 `[MAME]` + S8 throughout; S6 and S1 for the cross-checks |
 | `docs/mc68010-boot-findings.md` | S1 `[ROM]`, S7 `[MAME]`, S6 `[MANUAL]` |
 | `analysis/rom-text-strings.md` | S1 throughout |
 

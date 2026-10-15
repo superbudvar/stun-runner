@@ -19,6 +19,7 @@ Do not bulk-load these. Read `STATUS.md` plus the contract your role needs.
 | `PROJECT.md` | target goals and architecture |
 | `DRIVER_MINING.md` | mandatory Step 0 driver-mining process |
 | `MAME_HARNESS.md` | harness contract: selectors, waits, fixtures, checkpoints |
+| `docs/mame-machine-reference.md` | what the pinned MAME tree models: chips, address maps, wiring |
 | `TESTING.md` · `LCOV.md` · `PREFLIGHT.md` · `MILESTONES.md` | test strategy, coverage, readiness gates |
 | `EVIDENCE.md` | required provenance fields for any captured artifact |
 | `BUGS.md` | defects in the **1989 game** and in **MAME** (never ours) |
