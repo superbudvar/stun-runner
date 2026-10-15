@@ -8600,3 +8600,88 @@ Three separable pieces, in dependency order:
 
 The gate itself needs nothing: `$02FC60` already returns correctly the moment
 `$FFDB48` is non-zero, as the injection control in 41.6 shows.
+
+## 42. Frame-ordered app replay of captured GSP host traffic
+
+`./run.sh --gsp-replay <capture-dir>` is a separate app mode; the default
+`./run.sh` path is unchanged. It consumes `gsp-upload-events.txt` from
+`tools/capture-gsp-program-upload`. It applies all pre-release host writes to
+the board model only, reconstructing the uploaded 512 KiB share without
+spending hundreds of thousands of Verilated host-port handshakes while the GSP
+is held. It then starts the RTL reset-held with HLT sampled asserted, restores
+the captured HSTADR/HSTCTL state and final pre-release /GSPRES level, applies
+the HLT-clear event, and feeds post-release host transactions into the running
+core. No MC68010 core is started. The old frame-404 image associated
+with this capture is 4 MiB of program-space reads, not a physical 512 KiB share,
+and is deliberately not loaded as VRAM.
+
+The event schema is the tool's 11 whitespace-separated columns:
+`seq frame kind address data mask derived-destination pc a0 a1 a2`. `seq` is
+the ordering authority. `frame` is the only time coordinate; this capture has
+no 68010 cycle timestamps. The app therefore steps the RTL between observed
+post-release frame changes and retains within-frame sequence, but this is explicitly
+**frame-ordered replay, not cycle-locked replay**. The parser rejects malformed
+rows, non-monotonic frames, and non-dense sequence numbers.
+Replay defaults `STUNRUN_GSP_IDLE_CYCLES=0`: unlike live-shell fast mode, it
+does not infer a GSP STOP from host-port silence and steps the full frame
+interval. An explicit caller override remains available for experiments.
+The replay-only driver initializer does not run its normal 200,000-cycle
+empty-board warm-up. After staging the halted program state it releases reset
+with HCS sampling HLT asserted, so the post-release HLT clear starts the core
+at the captured boundary. The viewer also requires the
+capture's `result.json` manifest (`stunrun-gsp-program-upload-result/v1`),
+requires `stored == seq`, `dropped == 0`, a valid release sequence, and checks
+the parsed row count against the manifest. A clean-prefix truncation is thus
+rejected even when every remaining row is well-formed.
+
+The shared renderer emits `gsp-replay-frame.png` by default (override with
+`STUNRUN_REPLAY_PNG`). It also presents and writes PNG checkpoints at each
+observed 30-frame boundary (for example `<png>.frame-0450.png`). The same RGB frame is presented via the SDL/OpenGL
+backend when available; `STUNRUN_LIVE_VIDEO=0` selects headless capture. A
+`gsp-replay-outputs.log` beside the working directory (override with
+`STUNRUN_REPLAY_OUTPUTS`) records frame checkpoints, RTL-local board word/VRAM
+write counters and active-low HINT/INTOUT asserts and clears. Its
+`.vram-deltas.txt` sidecar contains only changed VRAM bytes measured around
+RTL-stepping intervals, excluding host writes applied between those intervals.
+HINT is the RTL's observed host-facing output pin; this is an RTL observation,
+not parity with MAME.
+
+**Response stream partially observed; oracle response stream still absent.**
+The RTL replay observes one HINT/INTOUT assert and one clear during the
+post-release run. Those are RTL-side edges, not MAME parity. The oracle capture
+taps MC68010 writes and `/GSPRES`; it does not include MC68010 reads from the
+GSP host port, returned HSTDAT/HSTCTL values, or MAME's HSTCTLL.INTOUT edge
+timeline with event frame, sequence and GSP PC. The new outputs log does not
+invent these values. To close
+that gap, extend `mame/lua/gsp-program-upload.lua` (and its bounded event schema
+in `tools/capture-gsp-program-upload`) with the MAME TMS34010 host-read path and
+the `tms34010.cpp` output-interrupt callback, recording frame/order/PC plus
+observed values and refusing overflow/truncation; then compare those records
+against the RTL HINT edge log. Full response parity remains UNKNOWN.
+
+The earlier live-shell INTENB probe is also recorded for the rejected IPL2
+shortcut: at 600 frames it saw two INTENB writes, final value `0x0400`, and no
+bit-7 rise or fall. This supports the source reading that INTENB is not the
+interrupt event; no IPL2 was wired from it.
+
+The requested raw event/image payload is absent from the repository's
+`reference/experiments/stunrun/gsp-program-upload` directory; it contains the
+provenance metadata only. The run below uses the already-existing raw capture
+at `/tmp/opencode/gsp-upload-v3` (not a generated fixture), whose event file
+hash matches that metadata. Its 4 MiB boundary image is verified but not used
+because it is an obsolete program-address image. Local evidence run (not an
+oracle-parity test):
+
+```text
+capture event SHA-256: 5640860abca7c79b8ea6f4fe17129636f4ac4c2758e53fc957b1a4fd52e542be
+source rows: 701877; pre-release host rows staged=631200; post-release host rows replayed=70672
+release HSTCTL event=631205; final event frame=597
+headless render: 512x240, lit=122880, colours=225
+frame 420 onward shows output; frame 450 PNG: `/tmp/opencode/boundary-full.png.frame-0450.png`
+core-only counters: word_writes=330490, vram_writes=1295144
+RTL HINT/INTOUT output: one assert, one clear, currently deasserted
+```
+
+Those are replay measurements, not named MAME output comparisons. In particular
+the live state before the capture tap's first frame is not present in this log,
+so reconstruction is only as complete as the captured transaction prefix.

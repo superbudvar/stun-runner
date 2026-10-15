@@ -61,6 +61,18 @@ Judging this by `hash=` alone is not possible — every wrong-origin defect here
 produced a stable hash; use `lit=`/`colours=`. Still open in §39.6: colour
 equality against MAME, a sheared image, and the unresolved cycle offset.
 
+**Oracle-driven app replay.** `./run.sh --gsp-replay <capture-dir>` now stages
+the pre-release upload into the GSP board without a live 68010, then runs the
+Verilated core from the captured HLT-release boundary while applying the
+oracle's post-release host transactions in sequence. The 701,877-row capture
+is split into 631,200 staged pre-release host writes and 70,672 post-release
+host writes; replay timing is frame-ordered because the capture has no CPU
+cycle stamps. The shared renderer shows output at frame 420 (225 colours); the
+frame-450 image is `/tmp/opencode/boundary-full.png.frame-0450.png`. RTL emitted
+one HINT/INTOUT assert and clear. This is not MAME parity: the oracle capture
+still lacks GSP host-read responses and MAME's INTOUT edge timeline. Findings
+§42. Truncated-prefix control is rejected against `result.json`'s stored count.
+
 ### Parallel thread — GSP execution (`stun-runner-gsvp`)
 
 Distinct from M5. The GSP has no ROM: `mainpcb:user1` is the ADSP object ROM,

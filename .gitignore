@@ -11,6 +11,8 @@ build/
 build-rtl/
 Testing/
 capture/
+gsp-replay-frame.png*
+gsp-replay-outputs.log*
 snap/
 nvram/
 cfg/*.cfg

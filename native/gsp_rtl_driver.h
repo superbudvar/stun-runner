@@ -49,6 +49,11 @@ void gsp_rtl_driver_init(gsp_board_t *board,
                          const uint8_t *vram_image,
                          size_t vram_image_words);
 
+/* Replay-only initialization: attach the RTL and leave it held in reset. The
+ * capture's own reset/host events then establish the state; do not run the
+ * driver's normal empty-board boot loop first. */
+void gsp_rtl_driver_init_replay(gsp_board_t *board);
+
 /* Full per-frame sync: copy musashi VRAM → shared board, step GSP, copy back.
  * musashi_gsp_vram: musashi_cpu's gsp_vram, exposed as 16-bit words.
  * word_count: MUSASHI_GSP_VRAM_WORDS, i.e. the whole 512 KiB share.
@@ -81,7 +86,7 @@ void gsp_rtl_driver_sync_to_musashi(uint16_t *musashi_gsp_vram,
  * intensity plus 3 bits of entry select); there is nothing to convert, so
  * this is a plain memcpy like its VRAM counterpart. */
 void gsp_rtl_driver_sync_palette_to_musashi(uint16_t *musashi_pal_lo,
-                                            uint16_t *musashi_pal_hi);;
+                                            uint16_t *musashi_pal_hi);
 
 /* Returns non-zero if the GSP is halted and should not be stepped. */
 int gsp_rtl_driver_is_halted(void);
@@ -93,6 +98,9 @@ uint64_t gsp_rtl_driver_step(uint64_t gsp_cycles);
 /* Inject a host-port write from the MC68010 into the RTL.
  * reg: 0=HSTADRL, 1=HSTADRH, 2=HSTDAT, 3=HSTCTL. */
 int gsp_rtl_driver_host_write(unsigned reg, uint16_t data);
+
+/* Apply an observed active-low /GSPRES transition from an oracle capture. */
+int gsp_rtl_driver_set_reset(int released);
 
 /* Read the GSP's current display-register state after a GSP frame step.
  * Returns the four live display registers (DPYSTRT, DPYADR, DPYTAP, DPYCTL)
@@ -113,6 +121,14 @@ void gsp_rtl_driver_get_display_regs(uint16_t *dpystrt,
  * means it is still the initialiser this driver was built with. Print it
  * next to the values -- an unmarked register is a guess wearing a number. */
 uint32_t gsp_rtl_driver_display_regs_seen(void);
+
+/* Count of GSP-local INTENB I/O writes and observed bit-7 edge transitions.
+ * Observation only; these are not wired to the MC68010 interrupt input. */
+void gsp_rtl_driver_intenb_observation(uint32_t *writes, uint32_t *rises,
+                                       uint32_t *falls, uint16_t *last);
+/* Active-low HINT output, driven by HSTCTLL.INTOUT; observation only. */
+void gsp_rtl_driver_hint_observation(uint32_t *asserts, uint32_t *clears,
+                                     int *asserted);
 
 /* Shutdown and free the RTL. */
 void gsp_rtl_driver_shutdown(void);

@@ -15,15 +15,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${NATIVE_BUILD_DIR:-$ROOT/build/native}"
 ROM_DIR="${STUNRUN_STUNRUN_DIR:-$ROOT/roms/stunrun}"
 BIN="$BUILD_DIR/stunrun-native-shell"
+REPLAY_DIR=""
 
 MODE="normal"
 WANT_RTL="${WANT_GSP_RTL:-1}"
 
 show_help() {
     cat <<EOF
-Usage: run.sh [--service] [--no-rtl] [--frames N] [-h]
+Usage: run.sh [--service] [--gsp-replay CAPTURE-DIR] [--no-rtl] [--frames N] [-h]
 
   --service     Boot to the self-test screen instead of normal play.
+  --gsp-replay DIR  Replay an oracle GSP host-event capture (RTL required).
   --no-rtl      Do not require the Verilated TMS34010 core.
   --frames N    Stop after N frames (default 0 = run until closed).
   -h, --help    This text.
@@ -31,6 +33,8 @@ Usage: run.sh [--service] [--no-rtl] [--frames N] [-h]
 Environment:
   NATIVE_BUILD_DIR   Where the shell was built (default: build/native)
   STUNRUN_LIVE_VIDEO=0  Headless; same run, no window.
+  STUNRUN_REPLAY_PNG     Final replay PNG (default: gsp-replay-frame.png).
+  STUNRUN_REPLAY_OUTPUTS GSP output observation log (default: gsp-replay-outputs.log).
   STUNRUN_IN0        Overrides the port value chosen by --service.
   STUNRUN_FRAME_LOG=N   Print lit=/colours= every N frames. Use this to see
                       when a screen appears or vanishes -- the terminal
@@ -51,6 +55,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --service) MODE="service" ;;
+        --gsp-replay) shift; REPLAY_DIR="${1:?--gsp-replay needs a capture directory}"; MODE="gsp-replay" ;;
         --no-rtl)  WANT_RTL=0 ;;
         --frames)  shift; STUNRUN_FRAMES="${1:?--frames needs a number}" ;;
         --frames=*) STUNRUN_FRAMES="${1#--frames=}" ;;
@@ -59,6 +64,20 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+if [[ "$MODE" == "gsp-replay" ]]; then
+    BIN="$BUILD_DIR/stunrun-gsp-replay"
+    if [[ ! -x "$BIN" ]]; then "$ROOT/build.sh"; fi
+    if [[ ! -x "$BIN" ]]; then
+        printf 'run.sh: GSP replay executable unavailable; build with Verilator and STUNRUN_GSP_RTL=1\n' >&2
+        exit 3
+    fi
+    if [[ ! -f "$REPLAY_DIR/gsp-upload-events.txt" ]]; then
+        printf 'run.sh: missing %s/gsp-upload-events.txt\n' "$REPLAY_DIR" >&2
+        exit 2
+    fi
+    exec "$BIN" "$REPLAY_DIR"
+fi
 
 if [[ ! -d "$ROM_DIR" ]]; then
     printf 'ROM directory not found: %s\n' "$ROM_DIR" >&2

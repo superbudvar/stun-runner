@@ -43,6 +43,16 @@ static bool                   s_gsp_halted = true;
 /* Set once the core has stepped a real budget; until then musashi's share is
  * authoritative and must be copied in, or the board starts empty. */
 static bool                   s_core_ran = false;
+/* Observation-only INTENB write accounting.  INTENB bit 7 is not an
+ * interrupt event: MAME's external INT output follows HSTCTLL INTOUT state.
+ * Keep the raw writes and bit transitions visible before considering wiring. */
+static uint32_t s_intenb_writes = 0;
+static uint32_t s_intenb_bit7_rises = 0;
+static uint32_t s_intenb_bit7_falls = 0;
+static uint16_t s_intenb_last = 0;
+static uint32_t s_hint_asserts = 0;
+static uint32_t s_hint_clears = 0;
+static int s_hint_asserted = 0;
 
 /* Shadow display-register state, updated from GSP I/O register bus cycles.
  * The TMS34010 display registers (DPYSTRT, DPYCTL, DPYTAP, DPYADR) live at
@@ -113,6 +123,14 @@ static void step_one(bool *cycle_pending)
 
     s_top->clk = 1;
     s_top->eval();
+    {
+        int asserted = s_top->hint_n_o == 0;
+        if (asserted != s_hint_asserted) {
+            if (asserted) s_hint_asserts++;
+            else s_hint_clears++;
+            s_hint_asserted = asserted;
+        }
+    }
 
     /* Track GSP display-register writes from the I/O bus.
      *
@@ -142,6 +160,14 @@ static void step_one(bool *cycle_pending)
             case 0x09: s_dpy_regs[S_DPYSTRT] = wdata; s_dpy_seen |= 1u << S_DPYSTRT; break;
             case 0x1B: s_dpy_regs[S_DPYTAP]  = wdata; s_dpy_seen |= 1u << S_DPYTAP;  break;
             case 0x1E: s_dpy_regs[S_DPYADR]  = wdata; s_dpy_seen |= 1u << S_DPYADR;  break;
+            case 0x11:
+                s_intenb_writes++;
+                if (!(s_intenb_last & 0x0080u) && (wdata & 0x0080u))
+                    s_intenb_bit7_rises++;
+                if ((s_intenb_last & 0x0080u) && !(wdata & 0x0080u))
+                    s_intenb_bit7_falls++;
+                s_intenb_last = wdata;
+                break;
             default: break;
             }
         }
@@ -223,12 +249,15 @@ static uint64_t run_gsp(uint64_t gsp_cycles)
 
 extern "C" {
 
-void gsp_rtl_driver_init(gsp_board_t *board,
-                         const uint8_t *vram_image,
-                         size_t vram_image_words)
+static void gsp_rtl_driver_initialize(gsp_board_t *board,
+                                      const uint8_t *vram_image,
+                                      size_t vram_image_words,
+                                      bool replay)
 {
     if (s_init_done) return;
     s_board = board;
+    s_hint_asserts = s_hint_clears = 0;
+    s_hint_asserted = 0;
 
     s_top = new tms34010_sv;
 
@@ -245,7 +274,10 @@ void gsp_rtl_driver_init(gsp_board_t *board,
     s_top->host_we_i  = 0;
     s_top->host_reg_i = 0;
     s_top->host_wdata_i = 0;
-    s_top->hcs_n_i = 1;     /* held in reset */
+    /* In replay mode HCS=1 makes reset-release sample HLT=1, so uploaded VRAM
+     * can be installed and host registers synchronized before the captured
+     * HSTCTL release starts the program. */
+    s_top->hcs_n_i = 1;
     s_top->rst = 1;
     s_top->vclk_rst_i = 1;
     s_top->clk = 0;
@@ -265,31 +297,47 @@ void gsp_rtl_driver_init(gsp_board_t *board,
         }
     }
 
-    /* Release reset: GSP fetches its boot vector from VRAM.
-     * The MC68010 has already uploaded the GSP program at this point. */
-    s_top->rst = 0;
-    s_top->vclk_rst_i = 0;
-    s_top->hcs_n_i = 0;     /* /GSPRES released — ROM-less boot */
-    s_top->eval();
+    if (!replay) {
+        /* Normal live mode's ROM-less boot. */
+        s_top->rst = 0;
+        s_top->vclk_rst_i = 0;
+        s_top->hcs_n_i = 0;
+        s_top->eval();
 
-    /* Boot: run until the GSP halts at its first STOP instruction.
-     * In the real boot sequence this is $0216 (stop #$2700).
-     * Allow up to 200k cycles for boot — should halt well before that. */
-    s_gsp_halted = false;
-    for (unsigned i = 0; i < 200000; i++) {
-        /* One clock tick: rising + falling edge with eval() */
-        s_top->clk = 1;
-        s_top->eval();
-        s_top->clk = 0;
-        s_top->eval();
-        if (i > 1000 && !s_top->host_req_i && !s_top->host_ack_o) {
-            s_gsp_halted = true;
-            break;
+        /* Boot: run until the GSP halts at its first STOP instruction.
+         * In the real boot sequence this is $0216 (stop #$2700).
+         * Allow up to 200k cycles for boot — should halt well before that. */
+        s_gsp_halted = false;
+        for (unsigned i = 0; i < 200000; i++) {
+            s_top->clk = 1;
+            s_top->eval();
+            s_top->clk = 0;
+            s_top->eval();
+            if (i > 1000 && !s_top->host_req_i && !s_top->host_ack_o) {
+                s_gsp_halted = true;
+                break;
+            }
         }
+    } else {
+        /* No empty-board warm-up. Keep the core reset/HLT-held until replay
+         * seeds uploaded VRAM and applies the capture's last /GSPRES release. */
+        s_gsp_halted = true;
     }
 
     s_init_done = true;
     printf("gsp_rtl_driver: init done, halted=%d\n", s_gsp_halted ? 1 : 0);
+}
+
+void gsp_rtl_driver_init(gsp_board_t *board,
+                         const uint8_t *vram_image,
+                         size_t vram_image_words)
+{
+    gsp_rtl_driver_initialize(board, vram_image, vram_image_words, false);
+}
+
+void gsp_rtl_driver_init_replay(gsp_board_t *board)
+{
+    gsp_rtl_driver_initialize(board, nullptr, 0, true);
 }
 
 /* Step the GSP for one frame's worth of cycles.
@@ -459,6 +507,17 @@ int gsp_rtl_driver_host_write(unsigned reg, uint16_t data)
     return 0;
 }
 
+int gsp_rtl_driver_set_reset(int released)
+{
+    if (!s_init_done || !s_top) return -1;
+    s_top->rst = released ? 0 : 1;
+    s_top->vclk_rst_i = s_top->rst;
+    bool pending = false;
+    step_one(&pending);
+    if (released) s_gsp_halted = false;
+    return 0;
+}
+
 /* Read the GSP's current display-register state after a GSP frame step.
  * Returns the four live display registers (DPYSTRT, DPYADR, DPYTAP, DPYCTL)
  * from the shadow state maintained during run_gsp().
@@ -490,6 +549,23 @@ void gsp_rtl_driver_get_display_regs(uint16_t *dpystrt,
 uint32_t gsp_rtl_driver_display_regs_seen(void)
 {
     return s_dpy_seen;
+}
+
+void gsp_rtl_driver_intenb_observation(uint32_t *writes, uint32_t *rises,
+                                      uint32_t *falls, uint16_t *last)
+{
+    if (writes) *writes = s_intenb_writes;
+    if (rises) *rises = s_intenb_bit7_rises;
+    if (falls) *falls = s_intenb_bit7_falls;
+    if (last) *last = s_intenb_last;
+}
+
+void gsp_rtl_driver_hint_observation(uint32_t *asserts, uint32_t *clears,
+                                     int *asserted)
+{
+    if (asserts) *asserts = s_hint_asserts;
+    if (clears) *clears = s_hint_clears;
+    if (asserted) *asserted = s_hint_asserted;
 }
 
 void gsp_rtl_driver_shutdown(void)

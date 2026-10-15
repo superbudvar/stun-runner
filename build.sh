@@ -72,7 +72,11 @@ printf '  GSP RTL core: %s\n' "$([[ "$WANT_RTL" == 1 ]] && echo ON || echo OFF)"
 cmake -S "$ROOT/native" -B "$BUILD_DIR" \
     -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}" \
     -DSTUNRUN_GSP_RTL="$WANT_RTL"
-cmake --build "$BUILD_DIR" --target stunrun-native-shell --parallel "$JOBS"
+if [[ "$WANT_RTL" == 1 ]]; then
+    cmake --build "$BUILD_DIR" --target stunrun-native-shell stunrun-gsp-replay --parallel "$JOBS"
+else
+    cmake --build "$BUILD_DIR" --target stunrun-native-shell --parallel "$JOBS"
+fi
 
 # Verify the core is actually IN the binary. Configuring -DSTUNRUN_GSP_RTL=1
 # and failing to link it is not a build failure -- the shell compiles fine

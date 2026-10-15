@@ -913,6 +913,14 @@ if(STUNRUN_GSP_RTL)
   if(TARGET stunrun_gsp_rtl_driver)
     target_compile_definitions(stunrun-native-shell PRIVATE STUNRUN_GSP_RTL=1)
     target_link_libraries(stunrun-native-shell PRIVATE stunrun_gsp_rtl_driver)
+    add_executable(stunrun-gsp-replay
+      gsp_replay.cpp gsp_display.c render.c)
+    target_include_directories(stunrun-gsp-replay PRIVATE
+      . .. ../backend gsp_rtl)
+    target_link_libraries(stunrun-gsp-replay PRIVATE
+      stunrun_backends stunrun_gsp_rtl_driver stunrun_gsp_board)
+    set_target_properties(stunrun-gsp-replay PROPERTIES
+      C_STANDARD 99 CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
     message(STATUS "GSP RTL core linked into the shell (STUNRUN_GSP_RTL=1)")
   else()
     message(WARNING
@@ -925,5 +933,4 @@ if(STUNRUN_GSP_RTL)
       "sent the last person looking in the wrong place entirely.")
   endif()
 endif()
-
 

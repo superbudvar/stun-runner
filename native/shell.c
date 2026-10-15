@@ -2260,6 +2260,14 @@ static int run_walk(void)
            (unsigned long long)g_gsp_rtl_board.unmapped_writes,
            (unsigned long long)g_gsp_rtl_board.word_reads,
            (unsigned long long)g_gsp_rtl_board.word_writes);
+    {
+        uint32_t writes = 0, rises = 0, falls = 0;
+        uint16_t last = 0;
+        gsp_rtl_driver_intenb_observation(&writes, &rises, &falls, &last);
+        printf("shell: gsp-rtl INTENB IO writes=%u bit7-rises=%u "
+               "bit7-falls=%u last=0x%04x (observation only)\n",
+               writes, rises, falls, last);
+    }
     printf("shell: gsp-rtl board vram nonzero words=%u\n",
            gsp_board_vram_nonzero_words(&g_gsp_rtl_board));
     printf("shell: gsp-rtl host HSTDAT=%lu (nonzero %lu)  HSTADR-nonzero=%lu  "
