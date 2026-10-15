@@ -61,6 +61,13 @@ Judging this by `hash=` alone is not possible — every wrong-origin defect here
 produced a stable hash; use `lit=`/`colours=`. Still open in §39.6: colour
 equality against MAME, a sheared image, and the unresolved cycle offset.
 
+The CPU-free oracle replay is **not** a matching screen: at frame 450 the
+renderer differs from MAME on 99.72% of pixels. MAME frame 240/480 remain the
+same title image, while the replay consumes an incomplete display-register
+shadow (`core-set=DPYSTRT` only) and its physical VRAM is 47.70% different from
+MAME at the checkpoint. Findings §46 records the comparison. Do not treat the
+replay's visible/225-colour output as screen parity.
+
 **Oracle-driven app replay.** `./run.sh --gsp-replay <capture-dir>` now stages
 the pre-release upload into the GSP board without a live 68010, then runs the
 Verilated core from the captured HLT-release boundary while applying the

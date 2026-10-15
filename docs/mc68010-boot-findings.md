@@ -8748,13 +8748,13 @@ framebuffer, and capture matching physical VRAM/palette state. Until then the
 rendered replay is an instrumental GSP view, **not the game's MAME-matched
 screen**.
 
-## 44. First semantic divergence between the oracle and the native host stream
+## 45. First semantic divergence between the oracle and the native host stream
 
 `tools/compare-gsp-host-events` compares the MAME upload capture against the
 native `musashi_gsp_bus_event_t` stream field by field and reports the FIRST
 event that differs, with both records and surrounding context.
 
-### 44.1 What it compares, and what it refuses to compare
+### 45.1 What it compares, and what it refuses to compare
 
 Compared: the event kind (host register or `/GSPRES`), the register address, the
 effective 16-bit data after the lane mask, the mask itself, and the `/GSPRES`
@@ -8777,7 +8777,7 @@ The tool aligns the MAME tap's first event to the first native event with the
 same signature whose PC is within 16 bytes, or takes `--native-start-seq`
 explicitly. It says which it used, in `alignment`.
 
-### 44.2 The two producers do not record the same events
+### 45.2 The two producers do not record the same events
 
 A real native stream carries **262,766** host writes to `$00C0000E` that the
 MAME tap never records. MAME's driver only decodes word offsets 0-6 of the
@@ -8787,7 +8787,7 @@ into `HSTDAT`. Folding them would make a later mismatch look like a data
 difference when it is a producer difference, and would silently discard a
 quarter of the native traffic.
 
-### 44.3 Measured result
+### 45.3 Measured result
 
 ```text
 oracle /tmp/opencode/gsp-upload-v3/gsp-upload-events.txt   701,877 rows
@@ -8864,3 +8864,57 @@ A negative control that passes is evidence about the CONTROL, not about the
 code. All breaks passing should send you to the harness first. The lesson is
 recorded so the next automation puts the build inside the trial loop rather than
 beside it.
+
+## 46. MAME screen capture shows the replay is not just geometrically scaled
+
+The oracle's composed screen was captured at frame 450 with
+`tools/mame-gsp-state-snapshot` (`--input none --frames 450 --targets 450
+--screen-dir ...`). MAME frames 240 and 480 in the committed normal-mode
+capture are byte-identical (SHA-256 `7e48495c...c853d49`); frame 450 is the same
+title-screen state, differing from frame 480 at only 1,084 pixels.
+
+Comparing MAME's frame-450 screen against the replay renderer's frame-450 RGB
+buffer with `tools/frame_diff` gives:
+
+```text
+pixels_different=122534/122880 (99.72%)
+max_rgb_distance=255
+avg_channel_distance R=70.43 G=76.45 B=83.85
+ssim_score=0.082492
+```
+
+This is not the black-triangle presentation bug (§43): the comparison uses the
+saved replay PNG/framebuffer before SDL/OpenGL. Supplying MAME's frame-450
+display snapshot to the replay renderer (`STUNRUN_REPLAY_DISPLAY_SNAPSHOT`) does
+not resolve it; the resulting frame has one colour and remains 100% different.
+The replay's own raster-register state at frame 450 is also recorded in
+`gsp-replay-outputs.log`:
+
+```text
+MAME frame 450:      DPYSTRT=FC3C DPYADR=F87C DPYTAP=0000 DPYCTL=F004
+RTL shadow frame 450: DPYSTRT=FFFC DPYADR=FFC3 DPYTAP=0200 DPYCTL=8201 core-set=1
+effective RTL raster: DPYSTRT=FFFC DPYADR=0000 DPYTAP=0000 DPYCTL=F010
+```
+
+`core-set=1` means only DPYSTRT is observed as an RTL write; the shadow's other
+values are initializers, and the renderer substitutes reset/frame-600 fallbacks.
+The MAME override proves these register fallbacks are not the whole problem:
+the same replay board still renders a one-colour frame under MAME's display
+registers.
+
+The physical VRAM comparison is also non-identical at the checkpoint:
+MAME's 512 KiB frame-450 dump has 208,031 nonzero words; the replay board has
+84,050, with 250,077/524,288 bytes different (47.70%). This is an
+oracle-to-replay state difference, not a framebuffer scaling metric. Replay is
+frame-ordered, not cycle-locked, and the MAME event capture omits host-read
+responses; the difference does **not** yet distinguish a GSP execution
+divergence from missing timing/protocol inputs or palette/rendering defects.
+
+The MAME GSP clock is 48 MHz (`harddriv.h:39`) and the main CPU clock is 8 MHz
+(`harddriv.cpp:1463`), so replay now advances six GSP cycles per captured 68010
+frame unit (`harddriv.cpp:1483`). The earlier five-to-one replay measurement
+is superseded; the six-to-one run still has the VRAM mismatch above. Do not
+conclude "the renderer is the only problem" or "the GSP is wrong" from these
+results alone. Next discriminator: capture/compare the oracle's physical VRAM
+and palette at the same frame, then render those oracle buffers with the same
+CPU scanout to validate the renderer independently of the RTL's output.

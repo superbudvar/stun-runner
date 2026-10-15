@@ -12,6 +12,8 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
+#include <map>
 #include <regex>
 #include <string>
 #include <vector>
@@ -19,6 +21,84 @@ extern "C" {
 namespace {
 static gsp_board_t board;
 static stunrun_renderer_t renderer;
+
+/* MAME configures the MC68010 at HARDDRIV_MASTER_CLOCK/4 = 8 MHz and the
+ * TMS34010 at HARDDRIV_GSP_CLOCK = 48 MHz (harddriv.cpp:1463,1483;
+ * harddriv.h:38-39), so one captured main-CPU frame budget of 132886 cycles
+ * advances the GSP by 6x that amount. The live shell's 5:1 approximation is
+ * not used by oracle replay. */
+static constexpr uint64_t MAME_GSP_CYCLES_PER_CPU_FRAME = 132886ULL * 6ULL;
+
+struct oracle_display_t {
+    uint16_t dpyadr;
+    uint16_t dpytap;
+    uint16_t dpystart;
+    uint16_t dpyctl;
+    unsigned heblnk;
+    unsigned hsblnk;
+    unsigned fine_scroll;
+};
+
+bool json_uint(const std::string &object, const char *name, unsigned *value)
+{
+    const std::regex pattern(std::string("\\\"") + name +
+                             "\\\"\\s*:\\s*(\\d+)");
+    std::smatch match;
+    if (!std::regex_search(object, match, pattern)) return false;
+    *value = static_cast<unsigned>(std::strtoul(match[1].str().c_str(), nullptr, 10));
+    return true;
+}
+
+bool read_oracle_display_snapshots(
+    const char *path, std::map<unsigned, oracle_display_t> *snapshots)
+{
+    std::ifstream file(path);
+    if (!file) {
+        std::fprintf(stderr, "gsp-replay: cannot open display snapshot %s\n", path);
+        return false;
+    }
+    const std::string json((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+    const std::regex snapshot_re(
+        R"(\{\s*"frame"\s*:\s*(\d+)[\s\S]*?"display"\s*:\s*\{([^}]*)\})");
+    for (std::sregex_iterator it(json.begin(), json.end(), snapshot_re), end;
+         it != end; ++it) {
+        const unsigned frame = static_cast<unsigned>(
+            std::strtoul((*it)[1].str().c_str(), nullptr, 10));
+        const std::string display = (*it)[2].str();
+        unsigned dpyadr, dpytap, dpystart, dpyctl, heblnk, hsblnk, fine_scroll;
+        if (!json_uint(display, "dpyadr", &dpyadr) ||
+            !json_uint(display, "dpytap", &dpytap) ||
+            !json_uint(display, "dpystart", &dpystart) ||
+            !json_uint(display, "dpyctl", &dpyctl) ||
+            !json_uint(display, "heblnk", &heblnk) ||
+            !json_uint(display, "hsblnk", &hsblnk) ||
+            !json_uint(display, "fine_scroll", &fine_scroll) ||
+            dpyadr > 0xFFFFu || dpytap > 0xFFFFu || dpystart > 0xFFFFu ||
+            dpyctl > 0xFFFFu) {
+            std::fprintf(stderr,
+                "gsp-replay: malformed/unsupported display snapshot at frame %u\n",
+                frame);
+            return false;
+        }
+        (*snapshots)[frame] = {
+            static_cast<uint16_t>(dpyadr), static_cast<uint16_t>(dpytap),
+            static_cast<uint16_t>(dpystart), static_cast<uint16_t>(dpyctl),
+            heblnk, hsblnk, fine_scroll
+        };
+    }
+    return !snapshots->empty();
+}
+
+bool write_blob(const std::filesystem::path &path, const uint8_t *bytes,
+                size_t length)
+{
+    FILE *file = std::fopen(path.string().c_str(), "wb");
+    if (!file) return false;
+    const size_t written = std::fwrite(bytes, 1, length, file);
+    const int close_result = std::fclose(file);
+    return written == length && close_result == 0;
+}
 
 bool parse_event(const char *line, unsigned long long *seq, unsigned *frame,
                  char *kind, unsigned *address, unsigned *data,
@@ -100,6 +180,14 @@ bool read_summary_count(const char *capture_dir, unsigned long long *stored,
 
 int run(const char *capture_dir)
 {
+    std::map<unsigned, oracle_display_t> oracle_displays;
+    const char *oracle_state = std::getenv("STUNRUN_REPLAY_DISPLAY_SNAPSHOT");
+    if (oracle_state && !read_oracle_display_snapshots(oracle_state,
+                                                       &oracle_displays)) {
+        std::fprintf(stderr, "gsp-replay: no usable display snapshots in %s\n",
+                     oracle_state);
+        return 2;
+    }
     const std::string events_path = std::string(capture_dir) + "/gsp-upload-events.txt";
     unsigned long long expected_records = 0, dropped_records = 0;
     unsigned long long summary_sequence = 0;
@@ -285,15 +373,30 @@ int run(const char *capture_dir)
         checkpoint_regs.dpyadr  = (seen & 0x2u) ? dpyadr : 0u;
         checkpoint_regs.dpytap  = (seen & 0x4u) ? dpytap : 0u;
         checkpoint_regs.dpyctl  = (seen & 0x8u) ? dpyctl : 0xF010u;
+        const char *scanout_source = "rtl-shadow/fallback";
+        const auto oracle = oracle_displays.find(frame);
+        if (oracle != oracle_displays.end()) {
+            /* DPYADR in the MAME snapshot is sampled mid-frame. MAME reloads
+             * it from DPYSTRT at vblank, so start this full-frame raster at
+             * DPYSTRT and let the shared scanout advance it. */
+            checkpoint_regs.dpystrt = oracle->second.dpystart;
+            checkpoint_regs.dpyadr = 0u;
+            checkpoint_regs.dpytap = oracle->second.dpytap;
+            checkpoint_regs.dpyctl = oracle->second.dpyctl;
+            checkpoint_regs.heblnk = oracle->second.heblnk * 2u;
+            checkpoint_regs.hsblnk = oracle->second.hsblnk * 2u;
+            checkpoint_regs.finescroll = oracle->second.fine_scroll;
+            scanout_source = "mame-snapshot";
+        }
         std::fprintf(observations,
             "# raster frame=%u DPYSTRT=%04x DPYADR=%04x DPYTAP=%04x "
             "DPYCTL=%04x HEBLNK=%u HSBLNK=%u VEBLNK=%u VSBLNK=%u "
-            "FINESCROLL=%u\n",
+            "FINESCROLL=%u source=%s\n",
             frame, checkpoint_regs.dpystrt, checkpoint_regs.dpyadr,
             checkpoint_regs.dpytap, checkpoint_regs.dpyctl,
             checkpoint_regs.heblnk, checkpoint_regs.hsblnk,
             checkpoint_regs.veblnk, checkpoint_regs.vsblnk,
-            checkpoint_regs.finescroll);
+            checkpoint_regs.finescroll, scanout_source);
         uint16_t lo[STUNRUN_GSP_PALETTE_ENTRIES], hi[STUNRUN_GSP_PALETTE_ENTRIES];
         for (unsigned i = 0; i < STUNRUN_GSP_PALETTE_ENTRIES; ++i) {
             lo[i] = (uint16_t)(board.pal_lo[i*2] | (board.pal_lo[i*2+1] << 8));
@@ -314,8 +417,8 @@ int run(const char *capture_dir)
         if (backends.video.present) backends.video.present(backends.video.user);
         unsigned lit = 0, colours = 0;
         stunrun_render_content_stats(&renderer, &lit, &colours);
-        printf("gsp-replay checkpoint frame=%u png=%s lit=%u colours=%u\n",
-            frame, path, lit, colours);
+        printf("gsp-replay checkpoint frame=%u png=%s lit=%u colours=%u scanout=%s\n",
+            frame, path, lit, colours, scanout_source);
         return true;
     };
     auto step_and_record = [&](unsigned frame, uint64_t cycles) {
@@ -349,7 +452,8 @@ int run(const char *capture_dir)
         }
         if (frame != current_frame) {
             step_and_record(current_frame,
-                (uint64_t)(frame - current_frame) * 664430u);
+                (uint64_t)(frame - current_frame) *
+                    MAME_GSP_CYCLES_PER_CPU_FRAME);
             uint32_t asserts, clears; int asserted;
             gsp_rtl_driver_hint_observation(&asserts, &clears, &asserted);
             std::fprintf(observations, "%u %llu %llu %u %u %d\n", current_frame,
@@ -430,6 +534,32 @@ int run(const char *capture_dir)
         (unsigned long long)(board.vram_writes - baseline_vram_writes));
     printf("gsp-replay: HINT/INTOUT asserts=%u clears=%u currently=%d; host read responses absent from oracle capture\n",
         asserts, clears, asserted);
+    const char *state_dir = std::getenv("STUNRUN_REPLAY_STATE_DIR");
+    if (state_dir && state_dir[0]) {
+        std::error_code ec;
+        std::filesystem::create_directories(state_dir, ec);
+        const std::filesystem::path dir(state_dir);
+        const std::string frame = std::to_string(current_frame);
+        if (ec ||
+            !write_blob(dir / ("frame-" + frame + "-gsp_vram.bin"), board.vram,
+                        GSP_BOARD_VRAM_BYTES) ||
+            !write_blob(dir / ("frame-" + frame + "-gsp_pal_lo.bin"), board.pal_lo,
+                        GSP_BOARD_PAL_BYTES) ||
+            !write_blob(dir / ("frame-" + frame + "-gsp_pal_hi.bin"), board.pal_hi,
+                        GSP_BOARD_PAL_BYTES)) {
+            std::fprintf(stderr, "gsp-replay: failed to write board state under %s\n",
+                         state_dir);
+            std::fclose(observations);
+            std::fclose(deltas);
+            stunrun_backend_pair_shutdown(&backends);
+            if (window) SDL_DestroyWindow(window);
+            if (SDL_WasInit(0)) SDL_Quit();
+            gsp_rtl_driver_shutdown();
+            return 2;
+        }
+        std::printf("gsp-replay: captured VRAM+palette at frame %u under %s\n",
+                    current_frame, state_dir);
+    }
     std::fclose(observations);
     std::fclose(deltas);
     if (window) {

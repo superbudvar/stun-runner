@@ -35,6 +35,9 @@ Environment:
   STUNRUN_LIVE_VIDEO=0  Headless; same run, no window.
   STUNRUN_REPLAY_PNG     Final replay PNG (default: gsp-replay-frame.png).
   STUNRUN_REPLAY_OUTPUTS GSP output observation log (default: gsp-replay-outputs.log).
+  STUNRUN_REPLAY_STATE_DIR  Optional final VRAM/palette dump for comparison.
+  STUNRUN_REPLAY_DISPLAY_SNAPSHOT  Optional MAME state-snapshot result.json;
+                      exact-frame display registers override RTL shadow values.
   STUNRUN_IN0        Overrides the port value chosen by --service.
   STUNRUN_FRAME_LOG=N   Print lit=/colours= every N frames. Use this to see
                       when a screen appears or vanishes -- the terminal
