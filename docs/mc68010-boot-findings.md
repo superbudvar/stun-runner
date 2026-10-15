@@ -10365,3 +10365,93 @@ Separately follow the `$FFF48FC0` validator/worker and the `$FFF45800` alternate
 fill path. Only after that can a C implementation emit the same FILL operations
 from the upstream SOM payload rather than copying a record format whose shape
 semantics remain unknown.
+
+## 59. Primary record fields map to FILL XY operands (`stun-runner-q9t`)
+
+The primary FILL path can now be reduced to its literal register dataflow. This
+is the first point where a raw record yields a useful geometry operation rather
+than only control flow.
+
+### 59.1 Word 1, word 2, word 3
+
+On the ordinary path (`word0.bit15=0`, `word0.bit12=0`, external `A13.bit3=0`):
+
+```asm
+003450f0: MOVE  *A5+,A8,0       ; record word 1
+00345100: MOVE  A8,B0           ; B0 low/X = word 1
+00345110: MOVE  *A5+,A6,0       ; record word 2
+...
+00345360: MOVE  *A5+,A8,0       ; record word 3
+003453a0: SLL   10h,A8
+003453b0: MOVY  A8,A6           ; A6 high/Y = word 3; low/X remains word 2
+003453c0: MOVE  A8,B1
+003453d0: MOVY  B1,B0           ; B0 high/Y = word 3; low/X remains word 1
+003453e0: ADDXY A11,A6          ; add caller's Y delta to A6.Y
+...
+00345430: MOVE  B0,B2           ; FILL DADDR = (word3:Y, word1:X)
+00345440: MOVE  A6,B7           ; candidate FILL DYDX
+...
+003454a0: MOVE  B0,B2
+003454b0: MOVE  A6,B7
+003454c0: SUBXY B2,B7           ; B7.Y -= B2.Y; B7.X remains word2
+003454e0: FILL  XY              ; DADDR=B2, DYDX=B7, COLOR1=B9
+```
+
+On the documented TMS34010 register meanings (`docs/tms34010-reference.md:1355-1357`,
+§4.3), B2 is DADDR, B7 is DYDX, B9 is COLOR1. `FILL XY` fills the destination
+array with COLOR1 (§3.10, lines 1350-1360). Thus the literal setup is:
+
+```text
+DADDR.X = word 1
+DADDR.Y = word 3
+DYDX.DX = word 2
+DYDX.DY = high 16 bits of caller A11
+```
+
+Why `DYDX.DY` is the high half of A11: `ADDXY A11,A6` adds A11's high-16 Y
+delta to A6.Y; `SUBXY B2,B7` then subtracts the starting Y held in B2, leaving
+that delta in B7.Y. Word 2 remains in the low/X half throughout, hence DX.
+
+For capture record 0 (`0014 1615 171F 1013 ...`), the values are therefore
+DADDR `(X=0x1615,Y=0x1013)` and DYDX `(DX=0x171F,DY=A11[31:16])`. **A11 was not
+captured in the M1_GSP_DL_ENTRY record**, so the actual height is still unknown;
+the C test supplies a synthetic A11 value only to test the arithmetic, not as an
+oracle observation.
+
+These are TMS34010 XY/DYDX operands, **not asserted screen-space pixel values**.
+Their large values are not to be clamped to 512×240 without evidence.
+
+### 59.2 C helper
+
+`stunrun_gsp_payload_primary_fill_xy()` now exposes that exact dataflow as a
+small C slice. It takes the record plus live caller A11 and A13 values and
+returns the four FILL operands only for the primary path. It rejects skip
+(bit 15), mode jump (bit 12), selector-C00 alternate, and external A13 bit-3
+alternate without touching output.
+
+Tests use the real captured record 0 for word1/2/3 and a synthetic A11 vector
+whose expected DY is taken directly from `ADDXY`/`SUBXY` disassembly. Five
+negative controls rebuilt before CTest (wrong X field, wrong Y field, wrong DX,
+wrong A11 half, ignoring A13) all fail; restored passes.
+
+This is the first concrete C geometry operation, but not a complete ADSP
+replacement: the upstream logic that produces these records and A11 remains
+unimplemented, and the other two workers are not decoded.
+
+### 59.3 Other worker entry points
+
+The branch targets resolve as follows:
+
+* `$FFF44D50` = `RETS`: skip this record.
+* `$FFF44D60` = `JA $FFF48FC0`: an alternate validator/worker. Its first decoded
+  actions save register banks, write `$C0000150`, inspect records against
+  bounds, and branch to error/status writes at `$FFF71C10`. Its payload semantics
+  remain to be read.
+* `$FFF45800` = a second FILL worker. It loads a color value from a table, then
+  reaches `FILL XY` at `$FFF45A00`; its loop uses A7/A9/A10 and multiply/rotate
+  operations. Those are likely the remaining geometric parameters, but their
+  meanings are not yet decoded.
+
+The outstanding job is no longer "what is the payload?" in the abstract. It is
+two bounded analyses: trace the `$FFF45800` FILL setup, then the bounds-checking
+contract at `$FFF48FC0`, with A11/A13 and VRAM writes captured at the same frame.

@@ -37,6 +37,7 @@ int main(void)
 {
     stunrun_gsp_payload_record_t rec[8];
     stunrun_gsp_payload_control_t ctl;
+    stunrun_gsp_fill_xy_setup_t fill;
     uint16_t back[64];
     size_t n = 0u, w = 0u;
 
@@ -116,6 +117,32 @@ int main(void)
     rec[0].raw[0] = 0x8000u;
     check(stunrun_gsp_payload_control(&rec[0]).color_action ==
           STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SKIP);
+
+    /* Restore the actual first captured record and run the primary worker's
+     * register mapping. A11 is supplied by the caller and A13 bit 3 is clear.
+     * These are register-level XY/DYDX values, not claimed visible pixels. */
+    rec[0].raw[0] = 0x0014u;
+    check(stunrun_gsp_payload_primary_fill_xy(&rec[0], 0x00020000u, 0u,
+                                               &fill) == 1);
+    check(fill.destination_x == 0x1615u);
+    check(fill.destination_y == 0x1013u);
+    check(fill.dx == 0x171Fu);
+    check(fill.dy == 0x0002u);
+
+    /* Caller A13 bit 3, bit-15 skip, bit-12 mode, and selector-C00 divert
+     * before the primary FILL. Every diversion must leave output untouched. */
+    memset(&fill, 0xA5, sizeof(fill));
+    check(stunrun_gsp_payload_primary_fill_xy(&rec[0], 0x00020000u, 0x8u,
+                                               &fill) == 0);
+    check(fill.destination_x == 0xA5A5u);
+    rec[0].raw[0] = 0x8000u;
+    check(stunrun_gsp_payload_primary_fill_xy(&rec[0], 0u, 0u, &fill) == 0);
+    rec[0].raw[0] = 0x1000u;
+    check(stunrun_gsp_payload_primary_fill_xy(&rec[0], 0u, 0u, &fill) == 0);
+    rec[0].raw[0] = 0x0C00u;
+    check(stunrun_gsp_payload_primary_fill_xy(&rec[0], 0u, 0u, &fill) == 0);
+    check(stunrun_gsp_payload_primary_fill_xy(NULL, 0u, 0u, &fill) == 0);
+    check(stunrun_gsp_payload_primary_fill_xy(&rec[0], 0u, 0u, NULL) == 0);
     check(STUNRUN_GSP_PAYLOAD_COLOR1_A == 0x01010101u);
     check(STUNRUN_GSP_PAYLOAD_COLOR1_B == 0x15151515u);
 

@@ -145,3 +145,34 @@ stunrun_gsp_payload_control_t stunrun_gsp_payload_control(
     }
     return c;
 }
+
+int stunrun_gsp_payload_primary_fill_xy(
+    const stunrun_gsp_payload_record_t *r, uint32_t a11, uint32_t a13,
+    stunrun_gsp_fill_xy_setup_t *out)
+{
+    stunrun_gsp_payload_control_t control;
+    stunrun_gsp_fill_xy_setup_t result;
+
+    if (r == NULL || out == NULL)
+        return 0;
+
+    control = stunrun_gsp_payload_control(r);
+    if (control.skip || control.mode ||
+        control.color_action == STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SELECTOR_ALT ||
+        (a13 & (1u << 3)) != 0u)
+        return 0;
+
+    /* Literal dataflow from the disassembly:
+     *   word1 -> A8 -> B0.X
+     *   word3 -> A8 -> MOVY A8,B0, so B0.Y = word3
+     *   word2 -> A6.X; MOVY word3,A6 sets A6.Y
+     *   ADDXY A11,A6; B7=A6; SUBXY B2,B7 leaves B7.X=word2 and
+     *   B7.Y=A11.Y, since B2.Y is the same word3 start value.
+     *   FILL XY consumes B2 as DADDR and B7 as DYDX. */
+    result.destination_x = r->raw[1];
+    result.destination_y = r->raw[3];
+    result.dx = r->raw[2];
+    result.dy = (uint16_t)(a11 >> 16);
+    *out = result;
+    return 1;
+}

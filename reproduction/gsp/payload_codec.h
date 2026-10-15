@@ -83,6 +83,15 @@ typedef struct stunrun_gsp_payload_control {
     uint8_t color_action;
 } stunrun_gsp_payload_control_t;
 
+/* Register-level setup produced by the primary FILL XY worker. These values
+ * are XY/DYDX operands, not asserted screen-space pixel coordinates. */
+typedef struct stunrun_gsp_fill_xy_setup {
+    uint16_t destination_x; /* B2 low half: word 1 -> A8 -> B0 -> B2 */
+    uint16_t destination_y; /* B2 high half: word 3 -> A8 -> MOVY -> B0 */
+    uint16_t dx;            /* B7 low half: word 2 -> A6 -> B7 */
+    uint16_t dy;            /* B7 high half: A11.Y added to A6 then SUBXY B2 */
+} stunrun_gsp_fill_xy_setup_t;
+
 /* Split a word stream into records.
  *
  * Rejects rather than guesses. A word count that is not a whole number of
@@ -115,6 +124,17 @@ uint16_t stunrun_gsp_payload_unmapped(const stunrun_gsp_payload_record_t *r,
 /* Derive the control word's literal tests and resulting B9 setup action. */
 stunrun_gsp_payload_control_t stunrun_gsp_payload_control(
     const stunrun_gsp_payload_record_t *r);
+
+/* Reconstruct the primary worker's FILL XY operands from one record.
+ *
+ * a11 is the caller-provided register value at the point the worker executes
+ * ADDXY A11,A6. a13 is the live A13 register tested by BTST 3h,A13. Returns 1
+ * and fills `out` only when this record takes the primary worker: bit15 skip,
+ * bit12 mode jump, selector 0xC00, or A13 bit3 all reject the path. Returns 0
+ * without touching output on NULL/alternate input. */
+int stunrun_gsp_payload_primary_fill_xy(
+    const stunrun_gsp_payload_record_t *r, uint32_t a11, uint32_t a13,
+    stunrun_gsp_fill_xy_setup_t *out);
 
 #ifdef __cplusplus
 }
