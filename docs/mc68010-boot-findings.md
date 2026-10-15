@@ -8618,13 +8618,14 @@ core. No MC68010 core is started. The old frame-404 image associated
 with this capture is 4 MiB of program-space reads, not a physical 512 KiB share,
 and is deliberately not loaded as VRAM.
 
-The event schema is the tool's 11 whitespace-separated columns:
-`seq frame kind address data mask derived-destination pc a0 a1 a2`. `seq` is
-the ordering authority. `frame` is the only time coordinate; this capture has
-no 68010 cycle timestamps. The app therefore steps the RTL between observed
-post-release frame changes and retains within-frame sequence, but this is explicitly
-**frame-ordered replay, not cycle-locked replay**. The parser rejects malformed
-rows, non-monotonic frames, and non-dense sequence numbers.
+Legacy v1 event rows have 11 whitespace-separated columns:
+`seq frame kind address data mask derived-destination pc a0 a1 a2`. New v2
+rows append `time_ns`, sampled from MAME `machine.time` inside the write/reset
+callback. `seq` is still the ordering authority; v2 time must be monotonic and
+all replayed GSP cycles are advanced between event timestamps at the measured
+48 MHz GSP clock. V1 remains supported but is explicitly
+**frame-ordered, not cycle-locked**. The parser rejects malformed rows,
+non-monotonic frames/timestamps, and non-dense sequence numbers.
 Replay defaults `STUNRUN_GSP_IDLE_CYCLES=0`: unlike live-shell fast mode, it
 does not infer a GSP STOP from host-port silence and steps the full frame
 interval. An explicit caller override remains available for experiments.
@@ -8717,8 +8718,8 @@ scanout pixels themselves are unchanged by this fix.
 
 The user compared the replay to MAME's normal-mode title screen and correctly
 pointed out that the remaining discrepancy is not merely a vertical squash.
-The image comparison was made at frame 450 in both normal-mode MAME and the
-frame-ordered RTL replay:
+The image comparison was made at frame 450 in normal-mode MAME and the
+legacy-v1 frame-ordered RTL replay:
 
 ```text
 MAME normal-frames-1-600 frame 240 SHA256 = 7e48495c...c853d49
@@ -8913,7 +8914,7 @@ The MAME override proves these register fallbacks are not the whole problem:
 the same replay board still renders a one-colour frame under MAME's display
 registers.
 
-The physical VRAM comparison is also non-identical at the checkpoint:
+The legacy-v1 replay's physical VRAM comparison is also non-identical at the checkpoint:
 MAME's 512 KiB frame-450 dump has 208,031 nonzero words; the replay board has
 84,050, with 250,077/524,288 bytes different (47.70%). This is an
 oracle-to-replay state difference, not a framebuffer scaling metric. Replay is
@@ -8922,13 +8923,13 @@ responses; the difference does **not** yet distinguish a GSP execution
 divergence from missing timing/protocol inputs or palette/rendering defects.
 
 The MAME GSP clock is 48 MHz (`harddriv.h:39`) and the main CPU clock is 8 MHz
-(`harddriv.cpp:1463`), so replay now advances six GSP cycles per captured 68010
-frame unit (`harddriv.cpp:1483`). The earlier five-to-one replay measurement
-is superseded; the six-to-one run still has the VRAM mismatch above. Do not
-conclude "the renderer is the only problem" or "the GSP is wrong" from these
-results alone. Next discriminator: capture/compare the oracle's physical VRAM
-and palette at the same frame, then render those oracle buffers with the same
-CPU scanout to validate the renderer independently of the RTL's output.
+(`harddriv.cpp:1463`, `harddriv.cpp:1483`), a 6:1 ratio. The measurements above
+used the legacy frame-only v1 event capture; its frame-chunked replay still
+differed substantially and is not the result of the timestamped v2 path. Do not
+conclude "the renderer is the only problem" or "the GSP is wrong" from those
+v1 results alone. The next discriminator is the v2 timestamped replay plus a
+renderer baseline using MAME's physical VRAM, palette, and scanout state at the
+same frame.
 
 ---
 
@@ -9442,3 +9443,77 @@ live-video configuration.
 §47's "three consecutive 600-frame runs byte-identical on every line" is true
 *within* one configuration and says nothing across configurations. Stating it
 without that qualifier is what hid this. The IPL2 result is a live-video result.
+
+## 49. The GSP core runs headless (`stun-runner-88e`)
+
+§48.4 recorded that §47's whole IPL2 result only existed under
+`STUNRUN_LIVE_VIDEO=1`. The cause was structural: `GSP_RTL_SYNC_AND_STEP` and
+`gsp_rtl_apply_intout()` sat inside
+
+```c
+if (g_live_video && g_cpu != NULL && (frame % g_live_video_stride) == 0) {
+    ... GSP_RTL_SYNC_AND_STEP(mem); gsp_rtl_apply_intout(); ...
+    ... render, present, frame-log, GL scanout ...
+}
+```
+
+so headless the GSP was never clocked **at all**. A rendering option was gating
+machine emulation.
+
+### 49.1 What changed
+
+Core stepping and interrupt delivery moved out of the `g_live_video` gate into
+their own block keyed only on `g_cpu != NULL`. Rasterisation, presentation, the
+frame log, GL scanout and FPS pacing stayed gated, because those genuinely are
+display concerns.
+
+The stride was left governing only rendering. It is documented at its
+declaration as a cadence for *"600 frames do not all rasterise"* — a display
+cost decision that accidentally governed core stepping because the two were
+fused. With the default stride of 1 the step cadence is unchanged for every
+existing live run, so this is not a behaviour change for the default path.
+
+In the non-Verilator trees `GSP_RTL_SYNC_AND_STEP` is already an empty macro, so
+this compiles to nothing there and the ROM-free CTest trees are unaffected.
+
+### 49.2 Measured: the two configurations are now identical
+
+600 frames, same command, `STUNRUN_PC_HIST` captured for each:
+
+| observation | `LIVE_VIDEO=0` | `LIVE_VIDEO=1` |
+|---|---|---|
+| INTOUT rises / falls | 1 / 1 | 1 / 1 |
+| ipl2-asserts | 1 | 1 |
+| `INTOUT set-by` / `clear-by` | 1 `$0080` / 2 `$3800` | 1 `$0080` / 2 `$3800` |
+| `$02143C` (handler) | 1 | 1 |
+| `$02FC82` (wait loop) | 35042 | 35042 |
+| `$02FCB6` (wait exit) | 1 | 1 |
+| board vram nonzero words | 84787 | 84787 |
+
+Before this change the headless column read `rises=0 falls=0 ipl2-asserts=0` and
+`vram nonzero words=82720`.
+
+### 49.3 What still differs — precisely, not approximately
+
+`diff` of the two full run logs returns **three** hunks, all display-only:
+
+1. the `pc histogram=` line (I passed different paths);
+2. `live-video frames-presented=601 stride=1` — display;
+3. the terminal render line:
+
+```text
+LIVE_VIDEO=0  mode=blank-scaffold lit=0/122880    colours=0    hash=0x7D611DC5
+              + "the frame is ENTIRELY BLACK ..." warning
+LIVE_VIDEO=1  mode=live-gsp-share lit=122880/122880 colours=225 hash=0xF3973280
+```
+
+So the emulation is now configuration-independent and the **rasterisation is
+not**: a headless run reproduces the machine exactly but still emits the blank
+scaffold, so `lit=`/`colours=` carry no information headless. That is the
+remaining half, and it is what blocks the frame/pixel comparison against MAME.
+It is not fixed here — fixing it means decoupling "rasterise the share" from
+"present it", which is a display change, not an emulation one.
+
+Worth stating plainly: the blank-scaffold frame still produces a stable hash, so
+`hash=` alone continues to be worthless as evidence. §48's 225-colour reading
+was never a picture, only a pipeline that consistently produced 225.

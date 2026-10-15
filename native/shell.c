@@ -1873,16 +1873,21 @@ static int run_walk(void)
                    "title-counts=match fifo-block=match\n");
         }
 
-        /* Live video: scan out the GSP share the 68010 just wrote and present
-         * it.  This is the only path that puts our OWN work on screen -- the
-         * gsp-tms34010-display path below reads MAME dump files.  Strided so
-         * 600 frames do not all rasterise when a coarse cadence is enough. */
-        if (g_live_video && g_cpu != NULL &&
-            (frame % g_live_video_stride) == 0) {
-            /* Step the GSP RTL to process display lists from the MC68010 frame.
-             * musashi and the GSP board share the same VRAM array, so the GSP's
-             * pixel writes appear directly in musashi VRAM.
-             * Guarded by STUNRUN_GSP_RTL (Verilator build only). */
+        /* Machine emulation: step the GSP core once per emulated frame.
+         *
+         * Deliberately NOT inside the g_live_video gate.  The core is
+         * emulation, not display.  Gating it on a rendering option meant a
+         * headless run never clocked the GSP at all, so INTOUT could never
+         * move and the entire IPL2 handshake stayed unreachable outside an
+         * interactive run -- measured: LIVE_VIDEO=1 rises=1 vram=84787,
+         * LIVE_VIDEO=0 rises=0 vram=82720 (findings 48.4).  That made the
+         * frame-parity work depend on a window being open.
+         *
+         * musashi and the GSP board share the same VRAM array, so the GSP's
+         * pixel writes appear directly in musashi VRAM.  Guarded by
+         * STUNRUN_GSP_RTL (Verilator build only), so the plain CTest trees
+         * compile this to nothing. */
+        if (g_cpu != NULL) {
             musashi_gsp_memory_t mem;
             if (musashi_cpu_gsp_memory(g_cpu, &mem) == 0) {
                 GSP_RTL_SYNC_AND_STEP(mem);
@@ -1895,6 +1900,14 @@ static int run_walk(void)
                 gsp_rtl_apply_intout();
 #endif
             }
+        }
+
+        /* Live video: scan out the GSP share the 68010 just wrote and present
+         * it.  This is the only path that puts our OWN work on screen -- the
+         * gsp-tms34010-display path below reads MAME dump files.  Strided so
+         * 600 frames do not all rasterise when a coarse cadence is enough;
+         * the stride is a DISPLAY cadence and never governed core stepping. */
+        if (g_live_video && (frame % g_live_video_stride) == 0) {
             if (render_live_gsp_frame() == 0) {
                 g_live_video_presented++;
                 render_mode = "live-gsp-share";
