@@ -9818,3 +9818,90 @@ spacing (MAME's). `m_ioreg_pre_write_cb` already receives the raw `offset`
 (`tms34010.cpp:1570`), so the oracle can answer this without a new hook; it needs
 an observation-only patch recording every offset regardless of whether it is
 ≥ 64, not just the out-of-range ones. Until that exists, §52.4 stays open.
+
+## 53. The parity discriminator: run, and what it does NOT establish
+
+### 53.1 Retraction: §52.3's "DPYSTRT exact match" was an artifact
+
+§52.3 compared our 600-frame `DPYSTRT=0xfffc` against MAME's `GSPREG` line from a
+30-second run — roughly frame 1800, not frame 600. Both numbers are real and they
+are not comparable, because **`DPYSTRT` is time-varying too**. Captured properly
+at frame 600:
+
+```text
+MAME frame 600 (tools/mame-gsp-state-snapshot --targets 600)
+    dpystart 64572 = 0xFC3C     dpytap 0     dpyctl 61444 = 0xF004     dpyadr 63612
+MAME ~frame 1800 (the GSPREG line used in 52.3)
+    DPYSTRT 0xFFFC
+ours frame 600
+    DPYSTRT 0xFFFC   DPYTAP 0x0200   DPYCTL 0xF010
+```
+
+At a **comparable point in time** three of the four disagree:
+
+| register | ours @600 | MAME @600 | verdict |
+|---|---|---|---|
+| DPYSTRT | `0xfffc` | `0xfc3c` | disagree |
+| DPYTAP | `0x0200` | `0x0000` | disagree |
+| DPYCTL | `0xf010` | `0xf004` | disagree |
+| DPYADR | `0xffc3` | `0xf87c` | live value; not comparable |
+
+§52.3's table is wrong and is withdrawn. `DPYADR` was already flagged as
+incomparable there; `DPYSTRT` has to be flagged the same way. **The one register
+that appeared to confirm our decode confirms nothing.**
+
+### 53.2 The harness was built for this fixture, and it renders blank
+
+MAME's frame-600 `dpystart` (64572 = `0xFC3C`), `dpyctl` (61444 = `0xF004`) and
+`dpytap` (0) are **exactly `tools/gsp_render.py`'s hardcoded `rasterise()`
+defaults** (`dpystrt=64572, dpyctl=61444, dputap=0`). That harness was written
+as the acceptance test for this fixture, so this is not a mismatched setup.
+
+Staged the committed fixture under the filenames it wants (524288-byte
+`frame_600_gsp_vram.bin` → `gsp_vram.bin`; the 1024-byte combined
+`frame_600_gsp_palette.bin` split 512/512 into `gsp_pal_lo.bin`/`gsp_pal_hi.bin`)
+and rasterised it:
+
+```text
+harness defaults     dpystrt=0xFC3C  nonzero=0/332216  colours=2
+MAME frame-600 regs  dpystrt=0xFC0C  nonzero=0/332216  colours=2
+```
+
+**Blank.** Not "slightly wrong" — not one non-zero byte, with either register
+set. (The second row passes `0xFC0C`, my own misreading of 64572 as `0xFC0C`
+before recomputing it; `64572 = 0xFC3C`. Both rows are blank either way, but the
+harness-defaults row is the correct one and agrees with MAME exactly.)
+
+### 53.3 What this establishes, and what it does not
+
+**Establishes:** the committed `frame_600_gsp_vram.bin`, rasterised by our own
+transcribed display path using MAME's own frame-600 registers, does **not**
+reproduce MAME's frame-600 screen. So the parity failure is *not* explained by
+our emulation having failed to fill VRAM — the failure exists with MAME's VRAM
+and MAME's registers and no emulation in the loop at all.
+
+**Does not establish:** which subsystem is at fault. There are still at least
+three, and this narrows nothing between them:
+
+1. the committed fixture is not the frame-600 framebuffer (it holds 5058 nonzero
+   words of 262144 — sparse, consistent with a program plus display list rather
+   than a rendered picture);
+2. the rasteriser's VRAM addressing is wrong (`gsp_render.py` transcribes
+   `scanline_multisync`/`get_display_params` from MAME, but a transcription can
+   still be wrong);
+3. MAME's screen at frame 600 is composed from somewhere other than that share.
+
+So §50's open question — scanout geometry vs unfilled share — is **not** answered.
+It is, however, no longer answerable by comparing our live frame to MAME's: the
+comparison has to start from an artefact that is known to contain the picture,
+and the committed fixture is not it.
+
+### 53.4 The concrete next step this points at
+
+`fixtures/oracle/frame_600/frame_600_screen.png` exists, so MAME *did* compose a
+screen at frame 600. The missing artefact is **MAME's VRAM at the same instant the
+screenshot was taken**. `tools/mame-gsp-state-snapshot` already returns
+`dpystart`/`dpytap`/`dpystart`/`dpyadr` — it needs the VRAM share from the same
+frame to be a complete pair. Until that pair exists, no scanout-parity claim is
+reachable from committed evidence, and §50's percentage differences should be
+read as "our output differs from MAME's" with no attribution.
