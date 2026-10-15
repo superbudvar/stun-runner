@@ -38,6 +38,8 @@ Environment:
   STUNRUN_REPLAY_STATE_DIR  Optional final VRAM/palette dump for comparison.
   STUNRUN_REPLAY_DISPLAY_SNAPSHOT  Optional MAME state-snapshot result.json;
                       exact-frame display registers override RTL shadow values.
+  STUNRUN_REPLAY_STAGE_VRAM  Optional 512 KiB pre-release staged VRAM dump.
+  STUNRUN_GSP_REPLAY_VCLK=1  Experimental 6 MHz VCLK for the RTL video domain.
   STUNRUN_IN0        Overrides the port value chosen by --service.
   STUNRUN_FRAME_LOG=N   Print lit=/colours= every N frames. Use this to see
                       when a screen appears or vanishes -- the terminal
@@ -70,14 +72,18 @@ done
 
 if [[ "$MODE" == "gsp-replay" ]]; then
     BIN="$BUILD_DIR/stunrun-gsp-replay"
-    if [[ ! -x "$BIN" ]]; then "$ROOT/build.sh"; fi
-    if [[ ! -x "$BIN" ]]; then
-        printf 'run.sh: GSP replay executable unavailable; build with Verilator and STUNRUN_GSP_RTL=1\n' >&2
-        exit 3
-    fi
     if [[ ! -f "$REPLAY_DIR/gsp-upload-events.txt" ]]; then
         printf 'run.sh: missing %s/gsp-upload-events.txt\n' "$REPLAY_DIR" >&2
         exit 2
+    fi
+    if [[ "$WANT_RTL" == 1 ]]; then
+        "$ROOT/build.sh"
+    else
+        "$ROOT/build.sh" --no-rtl
+    fi
+    if [[ ! -x "$BIN" ]]; then
+        printf 'run.sh: GSP replay executable unavailable; build with Verilator and STUNRUN_GSP_RTL=1\n' >&2
+        exit 3
     fi
     exec "$BIN" "$REPLAY_DIR"
 fi
@@ -88,13 +94,11 @@ if [[ ! -d "$ROM_DIR" ]]; then
     exit 2
 fi
 
-# The GSP core is the point of the live window. If it is missing, say so BEFORE
-# opening a window, because otherwise the launch succeeds and the user is left
-# looking at an empty share with no explanation.
+# Reconfigure/build incrementally on every launch so an existing but stale
+# binary can never hide a source fix. This matters especially for rendering:
+# a valid-looking old executable leaves the user staring at the old bad frame.
 if [[ "$WANT_RTL" == 1 ]]; then
-    if [[ ! -x "$BIN" ]]; then
-        "$ROOT/build.sh"
-    fi
+    "$ROOT/build.sh"
     if ! grep -qa 'gsp-rtl=bound' "$BIN" 2>/dev/null; then
         printf 'run.sh: the TMS34010 GSP core is NOT in %s\n' "$BIN" >&2
         printf '  The window would open showing no GSP output at all.\n' >&2
@@ -102,7 +106,7 @@ if [[ "$WANT_RTL" == 1 ]]; then
         printf '  Or accept the native software path:  ./run.sh --no-rtl\n' >&2
         exit 3
     fi
-elif [[ ! -x "$BIN" ]]; then
+else
     WANT_RTL=0 "$ROOT/build.sh" --no-rtl
 fi
 

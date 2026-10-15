@@ -66,7 +66,7 @@
 --   STUNRUN_GSP_UPLOAD_OUT         output directory (required)
 --   STUNRUN_GSP_UPLOAD_FRAMES      bounded run length in frames (default 600)
 --   STUNRUN_GSP_UPLOAD_CAP         ring capacity in events (default 800000;
---                                11 numbers each, so ~700k events cost well over
+--                                12 numbers each, so ~700k events cost well over
 --                                100 MB of Lua memory -- and the ring keeps the
 --                                FIRST cap events, so a boundary beyond it is
 --                                reported as truncated rather than hidden)
@@ -78,7 +78,7 @@ local cap = tonumber(os.getenv('STUNRUN_GSP_UPLOAD_CAP') or '800000')
 
 local machine = manager.machine
 
-local WIDTH = 11
+local WIDTH = 12
 local buf = {}
 for index = 1, cap * WIDTH do buf[index] = 0 end
 local stored = 0
@@ -155,6 +155,11 @@ local function emit(kind, address, data, mask, derived_destination)
     buf[b + 9] = a0.value
     buf[b + 10] = a1.value
     buf[b + 11] = a2.value
+    -- Global emulated machine time, rounded to ns. At 48 MHz one GSP cycle is
+    -- 20.8 ns; double->ns rounding is much finer than that and keeps the log
+    -- deterministic. This is sampled in the same callback as the write, not
+    -- inferred later from frame/sequence (which loses the CPU/GSP interleave).
+    buf[b + 12] = math.floor(machine.time:as_double() * 1000000000 + 0.5)
     stored = stored + 1
     if kind == KIND_HSTDAT and derived_destination ~= nil then
         if dest_lo == nil or derived_destination < dest_lo then
@@ -239,10 +244,10 @@ local function write_event_log()
         'cannot open events file')
     for index = 0, stored - 1 do
         local b = index * WIDTH
-        file:write(string.format('%d %d %s %08X %08X %08X %08X %08X %08X %08X %08X\n',
+        file:write(string.format('%d %d %s %08X %08X %08X %08X %08X %08X %08X %08X %.0f\n',
             buf[b + 1], buf[b + 2], names[buf[b + 3]], buf[b + 4], buf[b + 5],
             buf[b + 6], buf[b + 7], buf[b + 8], buf[b + 9], buf[b + 10],
-            buf[b + 11]))
+            buf[b + 11], buf[b + 12]))
     end
     file:close()
 end
@@ -312,8 +317,9 @@ emu.register_frame_done(function()
     end
     report_writer_pcs()
     print(string.format(
-        'M1_GSP_UPLOAD_DONE frames=%d seq=%d stored=%d dropped=%d release_seq=%d release_frame=%d hstdat_writes=%d dest_lo=%08X dest_hi=%08X tap_installs=%d',
+        'M1_GSP_UPLOAD_DONE frames=%d seq=%d stored=%d dropped=%d release_seq=%d release_frame=%d hstdat_writes=%d dest_lo=%08X dest_hi=%08X tap_installs=%d time_ns=%.0f',
         frame, seq, stored, dropped, release_seq, release_frame, hstdat_writes,
-        dest_lo or 0, dest_hi or 0, tap_install_count))
+        dest_lo or 0, dest_hi or 0, tap_install_count,
+        math.floor(machine.time:as_double() * 1000000000 + 0.5)))
     machine:exit()
 end)

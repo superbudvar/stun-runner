@@ -8,6 +8,7 @@ extern "C" {
 #include <SDL2/SDL.h>
 
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -37,6 +38,7 @@ struct oracle_display_t {
     unsigned heblnk;
     unsigned hsblnk;
     unsigned fine_scroll;
+    uint64_t time_ns;
 };
 
 bool json_uint(const std::string &object, const char *name, unsigned *value)
@@ -84,7 +86,7 @@ bool read_oracle_display_snapshots(
         (*snapshots)[frame] = {
             static_cast<uint16_t>(dpyadr), static_cast<uint16_t>(dpytap),
             static_cast<uint16_t>(dpystart), static_cast<uint16_t>(dpyctl),
-            heblnk, hsblnk, fine_scroll
+            heblnk, hsblnk, fine_scroll, 0u
         };
     }
     return !snapshots->empty();
@@ -102,14 +104,22 @@ bool write_blob(const std::filesystem::path &path, const uint8_t *bytes,
 
 bool parse_event(const char *line, unsigned long long *seq, unsigned *frame,
                  char *kind, unsigned *address, unsigned *data,
-                 unsigned *mask, unsigned *destination)
+                 unsigned *mask, unsigned *destination,
+                 bool *has_timestamp, uint64_t *time_ns)
 {
     unsigned pc, a0, a1, a2;
+    double event_time_ns = 0.0;
     char extra;
-    int n = std::sscanf(line, "%llu %u %15s %x %x %x %x %x %x %x %x %c",
+    int n = std::sscanf(line, "%llu %u %15s %x %x %x %x %x %x %x %x %lf %c",
         seq, frame, kind, address, data, mask, destination, &pc, &a0, &a1,
-        &a2, &extra);
-    return n == 11;
+        &a2, &event_time_ns, &extra);
+    *has_timestamp = n == 12;
+    if (n != 11 && n != 12) return false;
+    if (*has_timestamp) {
+        if (!std::isfinite(event_time_ns) || event_time_ns < 0.0) return false;
+        *time_ns = static_cast<uint64_t>(std::llround(event_time_ns));
+    }
+    return true;
 }
 
 bool host_reg_from_event(const char *kind, unsigned address, unsigned *reg)
@@ -142,7 +152,10 @@ bool stage_host_event(gsp_board_t *target, const char *kind, unsigned address,
 bool read_summary_count(const char *capture_dir, unsigned long long *stored,
                         unsigned long long *dropped,
                         unsigned long long *sequence,
-                        unsigned long long *release_seq)
+                        unsigned long long *release_seq,
+                        unsigned *capture_frames,
+                        bool *has_timestamps,
+                        uint64_t *end_time_ns)
 {
     const std::string path = std::string(capture_dir) + "/result.json";
     std::ifstream input(path);
@@ -153,8 +166,13 @@ bool read_summary_count(const char *capture_dir, unsigned long long *stored,
     }
     const std::string json((std::istreambuf_iterator<char>(input)),
                            std::istreambuf_iterator<char>());
-    if (json.find("\"schema\": \"stunrun-gsp-program-upload-result/v1\"") ==
+    if (json.find("\"schema\": \"stunrun-gsp-program-upload-result/v2\"") !=
         std::string::npos) {
+        *has_timestamps = true;
+    } else if (json.find("\"schema\": \"stunrun-gsp-program-upload-result/v1\"") !=
+               std::string::npos) {
+        *has_timestamps = false;
+    } else {
         std::fprintf(stderr, "gsp-replay: unsupported capture manifest schema\n");
         return false;
     }
@@ -173,9 +191,18 @@ bool read_summary_count(const char *capture_dir, unsigned long long *stored,
         *value = std::strtoull(match[1].str().c_str(), nullptr, 10);
         return true;
     };
-    return field("stored", stored) && field("dropped", dropped) &&
-           field("seq", sequence) &&
-           field("release_seq", release_seq);
+    unsigned long long frames;
+    if (!field("frames", &frames) ||
+        !field("stored", stored) || !field("dropped", dropped) ||
+        !field("seq", sequence) || !field("release_seq", release_seq))
+        return false;
+    *capture_frames = static_cast<unsigned>(frames);
+    if (*has_timestamps) {
+        unsigned long long end_ns;
+        if (!field("end_time_ns", &end_ns)) return false;
+        *end_time_ns = static_cast<uint64_t>(end_ns);
+    }
+    return true;
 }
 
 int run(const char *capture_dir)
@@ -192,9 +219,15 @@ int run(const char *capture_dir)
     unsigned long long expected_records = 0, dropped_records = 0;
     unsigned long long summary_sequence = 0;
     unsigned long long release_seq = 0;
+    unsigned capture_frames = 0;
+    bool has_timestamps = false;
+    uint64_t capture_end_time_ns = 0;
     if (!read_summary_count(capture_dir, &expected_records, &dropped_records,
-                            &summary_sequence, &release_seq) ||
+                            &summary_sequence, &release_seq, &capture_frames,
+                            &has_timestamps,
+                            &capture_end_time_ns) ||
         expected_records == 0 || summary_sequence != expected_records ||
+        capture_frames == 0 ||
         dropped_records != 0 || release_seq == 0 ||
         release_seq > expected_records) {
         std::fprintf(stderr,
@@ -214,6 +247,8 @@ int run(const char *capture_dir)
     unsigned long long expected_seq = 1, records = 0;
     unsigned last_frame = 0, staged_host_events = 0;
     unsigned release_frame = 0, release_data = 0;
+    uint64_t last_input_time_ns = 0, release_time_ns = 0;
+    bool have_input_time = false;
     bool reset_released = false, saw_reset = false, saw_release = false;
     bool malformed = false;
 
@@ -226,9 +261,14 @@ int run(const char *capture_dir)
     while (getline(&line, &line_cap, events) >= 0) {
         unsigned long long seq = 0;
         unsigned frame, address, data, mask, destination;
+        uint64_t event_time_ns = 0;
+        bool event_has_timestamp = false;
         char kind[16];
         if (!parse_event(line, &seq, &frame, kind, &address, &data, &mask,
-                         &destination) || seq != expected_seq ||
+                         &destination, &event_has_timestamp, &event_time_ns) ||
+            event_has_timestamp != has_timestamps ||
+            (has_timestamps && have_input_time &&
+             event_time_ns < last_input_time_ns) || seq != expected_seq ||
             (records && frame < last_frame)) {
             std::fprintf(stderr,
                 "gsp-replay: malformed/out-of-order event at record %llu (expected seq %llu)\n",
@@ -239,6 +279,10 @@ int run(const char *capture_dir)
         ++expected_seq;
         ++records;
         last_frame = frame;
+        if (has_timestamps) {
+            last_input_time_ns = event_time_ns;
+            have_input_time = true;
+        }
         if (seq < release_seq) {
             if (!std::strcmp(kind, "GSPRES")) {
                 if (destination > 1u) { malformed = true; break; }
@@ -260,6 +304,7 @@ int run(const char *capture_dir)
             }
             release_frame = frame;
             release_data = data;
+            if (has_timestamps) release_time_ns = event_time_ns;
             saw_release = true;
         } else {
             if (!std::strcmp(kind, "GSPRES")) {
@@ -287,6 +332,17 @@ int run(const char *capture_dir)
         return 2;
     }
     std::fclose(events);
+    const char *stage_vram_path = std::getenv("STUNRUN_REPLAY_STAGE_VRAM");
+    if (stage_vram_path && stage_vram_path[0] &&
+        !write_blob(stage_vram_path, board.vram, GSP_BOARD_VRAM_BYTES)) {
+        std::fprintf(stderr, "gsp-replay: failed to write staged VRAM %s\n",
+                     stage_vram_path);
+        gsp_rtl_driver_shutdown();
+        return 2;
+    }
+    if (stage_vram_path && stage_vram_path[0])
+        std::printf("gsp-replay: staged pre-release VRAM captured at %s\n",
+                    stage_vram_path);
     /* Unlike the live-shell optimization, replay must not infer a STOP from
      * host-port silence: the capture supplies frame boundaries, so clock the
      * core for the full interval by default. A caller can still explicitly
@@ -351,8 +407,9 @@ int run(const char *capture_dir)
     std::fprintf(deltas,
         "# GSP-only VRAM byte changes between frame-ordered RTL steps: frame offset old new\n");
     std::fprintf(observations,
-        "# frame-ordered post-release replay; no MC68010 cycles in source capture\n"
-        "# frame, GSP-only word-write delta, GSP-only VRAM-write delta, HINT asserts, clears, asserted\n");
+        "# post-release replay; timing=%s; MAME event time converted at 48MHz when present\n"
+        "# frame, GSP-only word-write delta, GSP-only VRAM-write delta, HINT asserts, clears, asserted\n",
+        has_timestamps ? "MAME-time-ns" : "frame-sequence-legacy");
     const uint64_t baseline_word_writes = board.word_writes;
     const uint64_t baseline_vram_writes = board.vram_writes;
     auto render_checkpoint = [&](unsigned frame, const char *path) -> bool {
@@ -363,8 +420,9 @@ int run(const char *capture_dir)
         gsp_rtl_driver_get_display_regs(&dpystrt, &dpyadr, &dpytap, &dpyctl);
         std::fprintf(observations,
             "# display frame=%u DPYSTRT=%04x DPYADR=%04x DPYTAP=%04x "
-            "DPYCTL=%04x core-set=%x\n",
-            frame, dpystrt, dpyadr, dpytap, dpyctl, seen);
+            "DPYCTL=%04x core-set=%x GSP_PC=%08x\n",
+            frame, dpystrt, dpyadr, dpytap, dpyctl, seen,
+            gsp_rtl_driver_get_pc());
         /* Never let the driver's illustrative frame-600 initializer masquerade
          * as GSP state. MAME's reset read is DPYSTRT=FFFF, DPYTAP=0,
          * DPYCTL=F010 (§30.4); DPYADR is timing-generator state and zero
@@ -417,8 +475,10 @@ int run(const char *capture_dir)
         if (backends.video.present) backends.video.present(backends.video.user);
         unsigned lit = 0, colours = 0;
         stunrun_render_content_stats(&renderer, &lit, &colours);
-        printf("gsp-replay checkpoint frame=%u png=%s lit=%u colours=%u scanout=%s\n",
-            frame, path, lit, colours, scanout_source);
+        printf("gsp-replay checkpoint frame=%u png=%s lit=%u colours=%u "
+               "scanout=%s gsp_pc=%08x\n",
+            frame, path, lit, colours, scanout_source,
+            gsp_rtl_driver_get_pc());
         return true;
     };
     auto step_and_record = [&](unsigned frame, uint64_t cycles) {
@@ -434,16 +494,41 @@ int run(const char *capture_dir)
         }
         std::fprintf(observations, "# frame=%u changed_vram_bytes=%u\n", frame, changed);
     };
+    auto finish_frame = [&](unsigned frame) {
+        uint32_t asserts, clears; int asserted;
+        gsp_rtl_driver_hint_observation(&asserts, &clears, &asserted);
+        std::fprintf(observations, "%u %llu %llu %u %u %d\n", frame,
+            (unsigned long long)(board.word_writes - baseline_word_writes),
+            (unsigned long long)(board.vram_writes - baseline_vram_writes),
+            asserts, clears, asserted);
+        if (frame % 30u == 0u) {
+            char path[1024];
+            const char *base = std::getenv("STUNRUN_REPLAY_PNG");
+            if (!base) base = "gsp-replay-frame.png";
+            std::snprintf(path, sizeof(path), "%s.frame-%04u.png", base, frame);
+            if (!render_checkpoint(frame, path)) malformed = true;
+        }
+    };
+    auto cycles_for_ns = [](uint64_t delta_ns) {
+        /* 48 MHz = 48 GSP cycles per microsecond. Round only after scaling. */
+        return (delta_ns * 48ULL + 500ULL) / 1000ULL;
+    };
     unsigned current_frame = release_frame;
     last_frame = release_frame;
+    uint64_t replay_time_ns = release_time_ns;
     unsigned host_events = 0, reset_events = 0;
     malformed = false;
     for (const std::string &row : post_release_rows) {
         unsigned long long seq = 0;
         unsigned frame, address, data, mask, destination;
+        uint64_t event_time_ns = 0;
+        bool event_has_timestamp = false;
         char kind[16];
         if (!parse_event(row.c_str(), &seq, &frame, kind, &address, &data,
-                         &mask, &destination) || frame < last_frame) {
+                         &mask, &destination, &event_has_timestamp,
+                         &event_time_ns) ||
+            event_has_timestamp != has_timestamps || frame < last_frame ||
+            (has_timestamps && event_time_ns < replay_time_ns)) {
             std::fprintf(stderr,
                 "gsp-replay: malformed/out-of-order post-release event seq=%llu\n",
                 seq);
@@ -451,26 +536,33 @@ int run(const char *capture_dir)
             break;
         }
         if (frame != current_frame) {
-            step_and_record(current_frame,
-                (uint64_t)(frame - current_frame) *
-                    MAME_GSP_CYCLES_PER_CPU_FRAME);
-            uint32_t asserts, clears; int asserted;
-            gsp_rtl_driver_hint_observation(&asserts, &clears, &asserted);
-            std::fprintf(observations, "%u %llu %llu %u %u %d\n", current_frame,
-                (unsigned long long)(board.word_writes - baseline_word_writes),
-                (unsigned long long)(board.vram_writes - baseline_vram_writes),
-                asserts, clears, asserted);
-            if (current_frame % 30u == 0u) {
-                char path[1024];
-                const char *base = std::getenv("STUNRUN_REPLAY_PNG");
-                if (!base) base = "gsp-replay-frame.png";
-                std::snprintf(path, sizeof(path), "%s.frame-%04u.png", base,
-                              current_frame);
-                if (!render_checkpoint(current_frame, path)) malformed = true;
+            if (!has_timestamps) {
+                step_and_record(current_frame,
+                    (uint64_t)(frame - current_frame) *
+                        MAME_GSP_CYCLES_PER_CPU_FRAME);
+            } else {
+                /* If there is an oracle screenshot/state at this exact frame,
+                 * stop at its MAME timestamp before rendering. Otherwise the
+                 * first event in the next frame is the best available cut. */
+                uint64_t cut_ns = event_time_ns;
+                const auto snap = oracle_displays.find(current_frame);
+                if (snap != oracle_displays.end() &&
+                    snap->second.time_ns >= replay_time_ns &&
+                    snap->second.time_ns <= event_time_ns)
+                    cut_ns = snap->second.time_ns;
+                step_and_record(current_frame,
+                                cycles_for_ns(cut_ns - replay_time_ns));
+                replay_time_ns = cut_ns;
             }
+            finish_frame(current_frame);
             last_frame = frame;
             current_frame = frame;
             if (malformed) break;
+        }
+        if (has_timestamps) {
+            step_and_record(current_frame,
+                            cycles_for_ns(event_time_ns - replay_time_ns));
+            replay_time_ns = event_time_ns;
         }
         if (std::strcmp(kind, "GSPRES") == 0) {
             if (destination > 1u ||
@@ -503,7 +595,21 @@ int run(const char *capture_dir)
         gsp_rtl_driver_shutdown();
         return 2;
     }
-    step_and_record(current_frame, 200000);
+    if (has_timestamps) {
+        uint64_t target_time_ns = capture_end_time_ns;
+        const auto snap = oracle_displays.find(current_frame);
+        if (snap != oracle_displays.end() &&
+            snap->second.time_ns >= replay_time_ns)
+            target_time_ns = snap->second.time_ns;
+        if (target_time_ns > replay_time_ns) {
+            step_and_record(current_frame,
+                            cycles_for_ns(target_time_ns - replay_time_ns));
+            replay_time_ns = target_time_ns;
+        }
+        current_frame = capture_frames;
+    } else {
+        step_and_record(current_frame, 200000);
+    }
     uint32_t asserts, clears; int asserted;
     gsp_rtl_driver_hint_observation(&asserts, &clears, &asserted);
     std::fprintf(observations, "%u %llu %llu %u %u %d\n", current_frame,
@@ -526,14 +632,38 @@ int run(const char *capture_dir)
     unsigned lit = 0, colours = 0;
     stunrun_render_content_stats(&renderer, &lit, &colours);
     printf("gsp-replay: staged-host=%u post-release-host=%u post-release-reset=%u "
-           "frame=%u timing=frame-sequence\n",
-        staged_host_events, host_events, reset_events, current_frame);
+           "frame=%u timing=%s\n",
+        staged_host_events, host_events, reset_events, current_frame,
+        has_timestamps ? "MAME-time-ns" : "frame-sequence-legacy");
     printf("gsp-replay: rendered %s lit=%u colours=%u rtl-word-writes=%llu vram-writes=%llu\n",
         image, lit, colours,
         (unsigned long long)(board.word_writes - baseline_word_writes),
         (unsigned long long)(board.vram_writes - baseline_vram_writes));
     printf("gsp-replay: HINT/INTOUT asserts=%u clears=%u currently=%d; host read responses absent from oracle capture\n",
         asserts, clears, asserted);
+    uint64_t vclk_edges = 0;
+    int vclk_enabled = 0;
+    gsp_rtl_driver_video_clock_observation(&vclk_edges, &vclk_enabled);
+    std::fprintf(observations, "# replay-vclk enabled=%d rising_edges=%llu\n",
+                 vclk_enabled, (unsigned long long)vclk_edges);
+    printf("gsp-replay: replay VCLK enabled=%d rising_edges=%llu\n",
+           vclk_enabled, (unsigned long long)vclk_edges);
+    for (unsigned slot = 0; slot < 2; ++slot) {
+        gsp_rtl_word_watch_t watch{};
+        gsp_rtl_driver_word_watch(slot, &watch);
+        const uint32_t address = slot == 0 ? 0xFFF9FC00u : 0xFFFCFC00u;
+        const uint16_t final_value = gsp_board_read16(&board, address);
+        std::fprintf(observations,
+            "# GSP_WORD addr=%08x reads=%llu last_read=%04x read_pc=%08x "
+            "writes=%llu last_write=%04x write_pc=%08x final=%04x\n",
+            address, (unsigned long long)watch.reads, watch.last_read,
+            watch.last_read_pc, (unsigned long long)watch.writes,
+            watch.last_write, watch.last_write_pc, final_value);
+        std::printf("gsp-replay: GSP_WORD %08x reads=%llu last=%04x "
+                    "writes=%llu last=%04x final=%04x\n",
+            address, (unsigned long long)watch.reads, watch.last_read,
+            (unsigned long long)watch.writes, watch.last_write, final_value);
+    }
     const char *state_dir = std::getenv("STUNRUN_REPLAY_STATE_DIR");
     if (state_dir && state_dir[0]) {
         std::error_code ec;

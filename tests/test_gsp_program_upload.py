@@ -52,7 +52,7 @@ def sample_log(**overrides):
         "done": "M1_GSP_UPLOAD_DONE frames=600 seq=701877 stored=400000 "
                 "dropped=301877 release_seq=631205 release_frame=405 "
                 "hstdat_writes=697202 dest_lo=00000000 dest_hi=FF800000 "
-                "tap_installs=1",
+                "tap_installs=1 time_ns=9987550000",
     }
     fields.update(overrides)
     return "\n".join(value for value in fields.values() if value) + "\n"
@@ -72,6 +72,7 @@ class ProgramUploadCaptureTests(unittest.TestCase):
         # Overflow must stay visible: a truncated stream looks identical to a
         # matching one unless the loss is reported.
         self.assertEqual(parsed["done"]["tap_installs"], 1)
+        self.assertEqual(parsed["done"]["end_time_ns"], 9987550000)
         self.assertEqual(parsed["taps_installed"]["seq_at_install"], 0)
         self.assertEqual(parsed["writer_pc_stats"][0]["kind"], "HSTDAT")
         self.assertEqual(parsed["writer_pc_stats"][0]["destination_first"], 0xFF800000)
@@ -125,6 +126,9 @@ class ProgramUploadCaptureTests(unittest.TestCase):
     def test_events_use_a_preallocated_ring_not_growth(self):
         text = LUA.read_text(encoding="utf-8")
         self.assertIn("for index = 1, cap * WIDTH do buf[index] = 0 end", text)
+        self.assertEqual(self.tool.SCHEMA, "stunrun-gsp-program-upload-result/v2")
+        self.assertIn('"time_unit": "nanoseconds since MAME machine start"',
+                      CAPTURE.read_text(encoding="utf-8"))
         # `emit` is the per-event path. Pass-through callbacks are not coroutines
         # and fire once per access, so anything per-event is a hazard by
         # construction. Extract the WHOLE body: stopping at the first `end` would
@@ -137,6 +141,8 @@ class ProgramUploadCaptureTests(unittest.TestCase):
         # No table constructor either: growing or allocating is the failure.
         self.assertNotIn("{", emit)
         self.assertIn("buf[b + 11] = a2.value", emit)
+        self.assertIn("buf[b + 12] =", emit)
+        self.assertIn("machine.time:as_double()", emit)
         # The once-per-run boundary print is fine; it must not be per event.
         self.assertIn("dropped = dropped + 1", emit)
         self.assertIn("if stored >= cap then", emit)

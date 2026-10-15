@@ -61,6 +61,13 @@ static bool                   s_gsp_halted = true;
 /* Set once the core has stepped a real budget; until then musashi's share is
  * authoritative and must be copied in, or the board starts empty. */
 static bool                   s_core_ran = false;
+/* Optional replay-only VCLK experiment. MAME's STUN Runner multisync screen
+ * uses a 12 MHz pixel clock with 2 pixels/VCLK; against the 48 MHz GSP core,
+ * VCLK therefore has an 8-core-cycle period (toggle every four core edges). */
+static bool                   s_replay_vclk_enabled = false;
+static unsigned               s_replay_vclk_divider = 0;
+static bool                   s_replay_vclk_level = false;
+static uint64_t               s_replay_vclk_rising_edges = 0;
 
 /* ---- HSTCTLL.INTOUT, the GSP-to-host interrupt ------------------------
  *
@@ -121,6 +128,8 @@ static uint32_t s_io_distinct = 0;
 static uint32_t s_io_overflow = 0;
 static uint32_t s_io_addr[GSP_RTL_INTOUT_IO_MAX];
 static uint32_t s_io_count[GSP_RTL_INTOUT_IO_MAX];
+static constexpr uint32_t s_watch_addr[2] = {0xFFF9FC00u, 0xFFFCFC00u};
+static gsp_rtl_word_watch_t s_word_watch[2] = {};
 
 static void io_addr_note(uint32_t addr)
 {
@@ -310,10 +319,27 @@ static void step_one(bool *cycle_pending)
         const unsigned kind = s_top->cycle_kind_o & 0xf;
         const uint32_t a = static_cast<uint32_t>(s_top->cycle_addr_o);
         if (kind == 1) {  /* KIND_WORD_WRITE */
-            gsp_board_write16(s_board, a,
-                              static_cast<uint16_t>(s_top->cycle_wdata_o));
+            const uint16_t value = static_cast<uint16_t>(s_top->cycle_wdata_o);
+            for (unsigned i = 0; i < 2; ++i) {
+                if (a == s_watch_addr[i]) {
+                    s_word_watch[i].writes++;
+                    s_word_watch[i].last_write = value;
+                    s_word_watch[i].last_write_pc =
+                        static_cast<uint32_t>(s_top->pc_o);
+                }
+            }
+            gsp_board_write16(s_board, a, value);
         } else if (kind == 0) {  /* KIND_WORD_READ */
-            s_top->cycle_rdata_i = gsp_board_read16(s_board, a);
+            const uint16_t value = gsp_board_read16(s_board, a);
+            for (unsigned i = 0; i < 2; ++i) {
+                if (a == s_watch_addr[i]) {
+                    s_word_watch[i].reads++;
+                    s_word_watch[i].last_read = value;
+                    s_word_watch[i].last_read_pc =
+                        static_cast<uint32_t>(s_top->pc_o);
+                }
+            }
+            s_top->cycle_rdata_i = value;
         }
         s_top->cycle_ack_i = 1;
         *cycle_pending = false;
@@ -321,6 +347,19 @@ static void step_one(bool *cycle_pending)
         s_top->cycle_ack_i = 0;
     }
     if (!*cycle_pending && s_top->cycle_req_o) *cycle_pending = true;
+
+    if (s_replay_vclk_enabled) {
+        if (s_top->vclk_rst_i) {
+            s_replay_vclk_divider = 0;
+            s_replay_vclk_level = false;
+            s_top->vclk_i = 0;
+        } else if (++s_replay_vclk_divider >= 4u) {
+            s_replay_vclk_divider = 0;
+            s_replay_vclk_level = !s_replay_vclk_level;
+            s_top->vclk_i = s_replay_vclk_level ? 1 : 0;
+            if (s_replay_vclk_level) s_replay_vclk_rising_edges++;
+        }
+    }
 
     s_top->clk = 1;
     s_top->eval();
@@ -474,8 +513,15 @@ static void gsp_rtl_driver_initialize(gsp_board_t *board,
 {
     if (s_init_done) return;
     s_board = board;
+    const char *vclk_env = std::getenv("STUNRUN_GSP_REPLAY_VCLK");
+    s_replay_vclk_enabled = replay && vclk_env &&
+                            std::strcmp(vclk_env, "0") != 0;
+    s_replay_vclk_divider = 0;
+    s_replay_vclk_level = false;
+    s_replay_vclk_rising_edges = 0;
     s_hint_asserts = s_hint_clears = 0;
     s_hint_asserted = 0;
+    std::memset(s_word_watch, 0, sizeof(s_word_watch));
     s_hstctll = 0;
     s_hstctll_proc_writes = 0;
     s_hstctll_host_writes = 0;
@@ -783,6 +829,11 @@ void gsp_rtl_driver_get_display_regs(uint16_t *dpystrt,
     if (dpyctl)  *dpyctl  = s_dpy_regs[S_DPYCTL];
 }
 
+uint32_t gsp_rtl_driver_get_pc(void)
+{
+    return s_top ? static_cast<uint32_t>(s_top->pc_o) : 0u;
+}
+
 /* Bit n set means s_dpy_regs[n] is the core's own value rather than the
  * initialiser. Callers that report display registers must print this beside
  * them: a register value with no provenance is a guess wearing a number. */
@@ -806,6 +857,19 @@ void gsp_rtl_driver_hint_observation(uint32_t *asserts, uint32_t *clears,
     if (asserts) *asserts = s_hint_asserts;
     if (clears) *clears = s_hint_clears;
     if (asserted) *asserted = s_hint_asserted;
+}
+
+void gsp_rtl_driver_video_clock_observation(uint64_t *rising_edges,
+                                            int *enabled)
+{
+    if (rising_edges) *rising_edges = s_replay_vclk_rising_edges;
+    if (enabled) *enabled = s_replay_vclk_enabled ? 1 : 0;
+}
+
+void gsp_rtl_driver_word_watch(unsigned slot, gsp_rtl_word_watch_t *out)
+{
+    if (!out || slot >= 2u) return;
+    *out = s_word_watch[slot];
 }
 
 int gsp_rtl_driver_intout_level(void)

@@ -42,7 +42,7 @@ It also does not pretend to know more than it observed:
 * whether the uploaded image is executable code is NOT decided by this tool.
 
 The event ring keeps the FIRST ``--cap`` events (default 800000, which covers a
-600-frame run's 701877 events at 11 numbers each). If the halt release falls past
+600-frame run's 701877 events at 12 numbers each). If the halt release falls past
 that window the tool fails rather than handing back a log that stops before the
 boundary.
 
@@ -64,7 +64,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
 
-SCHEMA = "stunrun-gsp-program-upload-result/v1"
+SCHEMA = "stunrun-gsp-program-upload-result/v2"
 
 # A memory-tap callback in this MAME build may only assign into preallocated
 # slots. Retaining Lua tables or writing files from inside one segfaults; see the
@@ -89,6 +89,7 @@ DONE = re.compile(
     r"M1_GSP_UPLOAD_DONE frames=(\d+) seq=(\d+) stored=(\d+) dropped=(\d+) "
     r"release_seq=(\d+) release_frame=(-?\d+) hstdat_writes=(\d+) "
     r"dest_lo=([0-9A-Fa-f]+) dest_hi=([0-9A-Fa-f]+) tap_installs=(\d+)"
+    r"(?: time_ns=(\d+))?"
 )
 TRUNCATED = re.compile(
     r"M1_GSP_UPLOAD_TRUNCATED release_seq=(\d+) stored=(\d+)")
@@ -137,6 +138,8 @@ def parse_log(text):
             "destination_low": int(DONE.search(text).group(8), 16),
             "destination_high": int(DONE.search(text).group(9), 16),
             "tap_installs": int(DONE.search(text).group(10)),
+            "end_time_ns": (None if DONE.search(text).group(11) is None else
+                            int(DONE.search(text).group(11))),
         },
     }
 
@@ -226,6 +229,14 @@ def main() -> int:
 
     result = {
         "schema": SCHEMA,
+        "event_stream": {
+            "schema": "stunrun-gsp-host-events/v2",
+            "columns": ["seq", "frame", "kind", "address", "data", "mask",
+                        "destination", "pc", "a0", "a1", "a2", "time_ns"],
+            "time_unit": "nanoseconds since MAME machine start",
+            "time_source": "machine.time:as_double() sampled inside each MAME memory tap",
+            "timing_note": "MAME emulated wall-time; host events must be applied in seq order at time_ns",
+        },
         "frames": args.frames, "cap": args.cap, "mame_path": args.mame,
         "returncode": completed.returncode, "lua_errors": lua_errors,
         "release": parsed["release"],

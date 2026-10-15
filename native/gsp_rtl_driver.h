@@ -116,6 +116,9 @@ void gsp_rtl_driver_get_display_regs(uint16_t *dpystrt,
                                      uint16_t *dpytap,
                                      uint16_t *dpyctl);
 
+/* Current TMS34010 PC in the core's bit-addressed program space. */
+uint32_t gsp_rtl_driver_get_pc(void);
+
 /* Provenance for the values above: bit n set (bit 0 DPYSTRT, 1 DPYADR,
  * 2 DPYTAP, 3 DPYCTL) means that register is the CORE's own value. A clear bit
  * means it is still the initialiser this driver was built with. Print it
@@ -136,6 +139,23 @@ void gsp_rtl_driver_intenb_observation(uint32_t *writes, uint32_t *rises,
  * gsp_rtl_driver_intout_level() below for IPL2. */
 void gsp_rtl_driver_hint_observation(uint32_t *asserts, uint32_t *clears,
                                      int *asserted);
+/* Replay-only video-clock probe. In this RTL the H/V counters and DPYADR live
+ * in the separate VCLK domain; the native driver normally leaves VCLK static.
+ * STUNRUN_GSP_REPLAY_VCLK=1 toggles it at the MAME-derived 6 MHz rate. */
+void gsp_rtl_driver_video_clock_observation(uint64_t *rising_edges,
+                                            int *enabled);
+
+/* Focused GSP local-bus observations for the two frame-450 queue/poll words
+ * identified by the MAME write trace. These are bit-addressed GSP addresses. */
+typedef struct gsp_rtl_word_watch {
+    uint64_t reads;
+    uint64_t writes;
+    uint16_t last_read;
+    uint16_t last_write;
+    uint32_t last_read_pc;
+    uint32_t last_write_pc;
+} gsp_rtl_word_watch_t;
+void gsp_rtl_driver_word_watch(unsigned slot, gsp_rtl_word_watch_t *out);
 
 /* ---- HSTCTLL.INTOUT: the GSP-to-host interrupt, the IPL2 source -------
  *
