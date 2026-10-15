@@ -10176,3 +10176,192 @@ verifiable C unit under the larger option `stun-runner-alo`; the next bounded
 slice is to disassemble the remaining worker branches and promote a raw field to
 a named field only where its GSP register use proves that name. C-vs-ADSP-emulator
 remains open.
+
+## 57. Retraction: the worker is FILL/XY, not a bitmap/PIXBLT decoder
+
+This section supersedes the positive conclusion in §55.3–55.4 and the mask
+uncertainty in §56.2. Those interpretations were wrong. The evidence was a
+register resemblance plus two constants; I did not follow the instruction stream
+to the operation that consumed them.
+
+### 57.1 What the complete branch actually does
+
+The exact code around the selector is:
+
+```asm
+00345150: MOVE  A4,A0
+00345160: ANDI  C00h,A0
+00345190: JREQ  345230h          ; selector 0 -> low-byte sub-branch
+003451a0: CMPI  C00h,A0
+003451c0: JREQ  345800h          ; selector C00 -> alternate worker
+003451d0: CMPI  400h,A0
+003451f0: JREQ  3452A0h          ; selector 400 -> load COLOR1_B
+00345200: MOVI  1010101h,B9      ; selector 800 -> COLOR1_A
+00345230: MOVE  A4,A0
+00345240: ANDI  FFh,A0
+00345270: CMPI  4h,A0
+00345290: JRNE  3452D0h          ; selector 0, low byte != 4: keep B9=A12
+003452A0: MOVI  15151515h,B9      ; selector 0 / low byte 4: COLOR1_B
+```
+
+The complete action table, now implemented in `payload_codec.c`:
+
+| `(control & 0x0C00)` | `(control & 0x00FF)` | observed action |
+|---:|---:|---|
+| `0x0000` | `0x0004` | load `0x15151515` into B9 |
+| `0x0000` | anything else | retain B9=A12 (set at `$FFF450C0`) |
+| `0x0400` | any | load `0x15151515` into B9 |
+| `0x0800` | any | load `0x01010101` into B9 |
+| `0x0C00` | any | branch to alternate worker `$FFF45800` |
+
+These are **B9/COLOR1 setup actions**. `docs/tms34010-reference.md` §2.2 identifies
+B9 as COLOR1; §3.3's PIXBLT operands do not apply just because one setup value
+looks like a bit pattern.
+
+### 57.2 The instruction that resolves the ambiguity: `FILL XY`
+
+The primary worker does not execute PIXBLT. Its actual inner loop is:
+
+```asm
+00345430: MOVE  B0,B2
+00345440: MOVE  A6,B7
+00345450: JR    3454A0h
+00345460: ADD   A9,A0
+00345470: ADDC  B1,B0
+00345480: ADD   A7,A4
+00345490: ADDC  A8,A6
+003454A0: MOVE  B0,B2
+003454B0: MOVE  A6,B7
+003454C0: SUBXY B2,B7
+003454D0: JRV   345500h
+003454E0: FILL  XY
+003454F0: RL    4h,B9
+00345500: DSJS  A10,345460h
+```
+
+The two stored COLOR1 values are used in a path whose raster operation is `FILL
+XY`; this is not evidence of a one-bit source bitmap, SADDR, or PIXBLT. The loop
+updates XY-addressed state and repeats fills. That proves an **XY/FILL drawing
+worker**, not the geometric meaning of each parameter.
+
+The `MOVE A8,B0` at `$FFF45100` was prematurely labelled `SADDR` in §55.2. The
+worker later executes FILL XY, and the captured path does not demonstrate that
+this word is used as a PIXBLT source address. The C accessor has been renamed
+from `saddr` to `field_a8_initial`; no source-address semantics are assigned.
+
+### 57.3 What is established now
+
+* Record stride and framing: 8 words, `base + index*16`, record 0 begins at
+  offset 0 (§54 correction, §55.1).
+* Control word bits: bit 15 skip path, bit 12 alternate path, bits 10-11 choose
+  the B9 setup branch, and the low byte compares with 4 (§55.2 and table above).
+* Word 1 is loaded into A8 and B0; word 2 is loaded into A6. Later words are
+  consumed into A8/A7/A9/A10 on the primary worker, but their geometric meanings
+  are not established.
+* The primary worker executes `FILL XY`; it loads either `0x01010101` or
+  `0x15151515` into B9/COLOR1, or inherits B9 from A12.
+* The control/action table is now reflected in `reproduction/gsp/payload_codec.c`
+  as code-path outcomes, not as a guessed image decoder.
+
+### 57.4 What remains unknown
+
+The mapping from words to XY origin, extent, repeat count, colour, or other shape
+parameters; whether the fills represent rectangles, strips, masks or another
+higher-level primitive; what the bit-12 branch `$FFF45A10` does; and what the
+bit-15 branch `$FFF44D50` does. No word should be called a vertex or a slope until
+a consumer instruction proves that meaning.
+
+This still moves `stun-runner-alo` forward: the payload is not a raw PIXBLT
+source list. It contains descriptors consumed by an XY/FILL drawing routine.
+A C replacement may be practical, but it needs the remaining parameter semantics
+and an output comparison against MAME before it can be considered a replacement.
+
+## 58. Further disassembly: the control word's outer branches and the FILL worker
+
+§57 followed the B9 selector but missed the branches which happen BEFORE that
+selector. Continuing `tools/disasm-gsp` from the actual uploaded image exposed two
+more facts and another necessary correction to §55.
+
+### 58.1 Skip and mode branches
+
+The beginning of `$FFF45090` is:
+
+```asm
+00345090: MOVE  *A5+,A4,0      ; word 0
+003450a0: BTST  Fh,A4
+003450b0: JRNE  344D50h
+003450c0: MOVE  A12,B9
+003450d0: BTST  Ch,A4
+003450e0: JRNE  344D60h
+```
+
+The targets are now resolved:
+
+```text
+$FFF44D50: RETS
+$FFF44D60: JA $FFF48FC0
+```
+
+Therefore bit 15 is **skip this record / return**, not "end the whole list" (that
+was §55's label and was unsupported). Bit 12 is **dispatch to the other worker**
+`$FFF48FC0`, not a generic mode flag. That worker begins with register saves,
+sets a host-visible status word at `$C0000150`, and validates subsequent stream
+words against bounds before continuing. Its payload semantics remain unexamined.
+
+### 58.2 The primary path really fills XY regions
+
+The ordinary path proceeds through the B9 selector, then uses `FILL XY` in this
+loop:
+
+```asm
+00345430: MOVE  B0,B2
+00345440: MOVE  A6,B7
+00345460: ADD   A9,A0
+00345470: ADDC  B1,B0
+00345480: ADD   A7,A4
+00345490: ADDC  A8,A6
+003454a0: MOVE  B0,B2
+003454b0: MOVE  A6,B7
+003454c0: SUBXY B2,B7
+003454d0: JRV   345500h
+003454e0: FILL  XY
+003454f0: RL    4h,B9
+00345500: DSJS  A10,345460h
+```
+
+This is an XY-addressed fill region with an inner loop and a shifted B9/COLOR1
+value. The 32-bit-looking values loaded after this loop at `$FFF45510` onward
+feed A7/A9/A10 and the next repeated pass. **It may be describing geometric
+extents**, but I do not yet know which record word is origin, width, height,
+repeat count, or edge delta. That is the next field-tracing question.
+
+### 58.3 Corrections applied to code
+
+`reproduction/gsp/payload_codec.c` now decodes the *observed branch outcomes*,
+not an expand-mask guess:
+
+* bit 15 -> skip / RETS;
+* bit 12 -> alternate validator/worker `$FFF48FC0`;
+* otherwise, (bits 10-11, low byte) choose inherit/set COLOR1 A/set COLOR1 B or
+  the selector's `$FFF45800` alternate path.
+
+The control-word accessor receives only the record, so it cannot know external
+`A13` bit 3, which the handler also tests before entering `$FFF45800`. That
+external gate is named in the implementation instead of silently ignored.
+
+Also renamed word 1's accessor from `saddr` to `field_a8_initial`. It is loaded
+into A8 and B0, but because the operative graphics instruction is FILL XY, the
+PIXBLT architectural name SADDR did not establish the payload meaning. The
+codec now calls the two constants B9/COLOR1 values, not colour-expand masks.
+
+Negative controls rebuilt before test: wrong 0x400 action, wrong 0x800 action,
+ignore low-byte==4, and lose the 0xC00 alternate path all FAILED; restored PASSED.
+
+### 58.4 Still open, now sharply scoped
+
+Disassemble and trace the *primary FILL worker's* word3-6 updates into A8/A6,
+A7/A9/A10, B0/B1/B2/B7, and determine the resulting FILL rectangle edges.
+Separately follow the `$FFF48FC0` validator/worker and the `$FFF45800` alternate
+fill path. Only after that can a C implementation emit the same FILL operations
+from the upstream SOM payload rather than copying a record format whose shape
+semantics remain unknown.

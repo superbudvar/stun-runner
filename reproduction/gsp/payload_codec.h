@@ -17,24 +17,22 @@
  *  - Word 0 is a control word, consumed into A4 at $FFF45090:
  *        BTST Fh,A4    bit 15    -> JRNE, a skip/end select
  *        BTST Ch,A4    bit 12    -> JRNE, a second mode select
- *        ANDI C00h,A0  bits 10-11 -> one branch of the expand-mask select
- *        ANDI FFh,A0   bits 0-7   -> CMPI 4h, a second branch
- *  - Word 1 is loaded into A8 and then moved to B0, which is the PIXBLT source
- *    address SADDR (docs/tms34010-reference.md:1152).
+ *        ANDI C00h,A0  bits 10-11 -> selects one of four code paths
+ *        ANDI FFh,A0   bits 0-7   -> CMPI 4h on one of those paths
+ *  - Word 1 is loaded into A8 and then moved to B0. The handler later executes
+ *    FILL XY, not PIXBLT; B0's architectural PIXBLT role does not prove this
+ *    payload field is a source address.
  *  - Word 2 is loaded into A6.
- *  - Two colour-expand masks are loaded into B9: 0x01010101 at $00345200 and
- *    0x15151515 at $003452A0.
+ *  - The worker sets B9/COLOR1 to either 0x01010101 at $00345200 or
+ *    0x15151515 at $003452A0, depending on the control-word branch.
  *
  * WHAT IS DELIBERATELY NOT CLAIMED.
  *
- *  - Which mask a given control word selects. The two branches are reached by
- *    different tests (`JREQ 345230h` after `ANDI C00h,A0`, and `JREQ 3452A0h`
- *    later), and neither $345230 nor the code between $003451A0 and $003451F0
- *    has been disassembled. Guessing a predicate here would be inventing
- *    behaviour, so `expand_mask` is left unset and documented as unresolved
- *    rather than filled in with the most plausible reading.
+ *  - The geometric meanings of the fields. They are consumed by XY addressing
+ *    and FILL XY, but have not been tied to origin/extent/other shape terms.
  *  - That words 3..7 mean anything.
- *  - That the masks correspond to particular pixel widths.
+ *  - That these COLOR1 values correspond to particular pixel widths or
+ *    expansion modes.
  */
 #ifndef STUNRUN_GSP_PAYLOAD_CODEC_H
 #define STUNRUN_GSP_PAYLOAD_CODEC_H
@@ -49,11 +47,15 @@ extern "C" {
 /* Observed record size. Changing this is a finding, not a refactor. */
 #define STUNRUN_GSP_PAYLOAD_RECORD_WORDS 8u
 
-/* The two colour-expand masks the consumer loads into B9. Which one applies to
- * a given record is UNRESOLVED; see the header. */
-#define STUNRUN_GSP_PAYLOAD_MASK_A 0x01010101u
-#define STUNRUN_GSP_PAYLOAD_MASK_B 0x15151515u
-#define STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE 0u
+/* The two B9/COLOR1 values loaded by the observed control-word branches. */
+#define STUNRUN_GSP_PAYLOAD_COLOR1_A 0x01010101u
+#define STUNRUN_GSP_PAYLOAD_COLOR1_B 0x15151515u
+#define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_INHERIT 0u
+#define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_A   1u
+#define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_B   2u
+#define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SELECTOR_ALT 3u
+#define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SKIP    4u
+#define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_MODE_ALT 5u
 
 /* Control-word masks, named for the instruction that uses them rather than for
  * a meaning we have not established. */
@@ -76,8 +78,9 @@ typedef struct stunrun_gsp_payload_control {
     int      mode;    /* bit 12, per BTST Ch,A4 */
     uint16_t expand;  /* bits 10-11, per ANDI C00h,A0 */
     uint16_t low8;    /* bits 0-7, per ANDI FFh,A0 */
-    /* Always STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE: the predicate is unresolved. */
-    uint32_t expand_mask;
+    /* Result of literal control flow. Selector actions assume the bit-15
+     * skip, bit-12 mode, and external A13 bit-3 gates were not taken. */
+    uint8_t color_action;
 } stunrun_gsp_payload_control_t;
 
 /* Split a word stream into records.
@@ -99,7 +102,8 @@ size_t stunrun_gsp_payload_encode(const stunrun_gsp_payload_record_t *records,
 
 /* Field accessors: the literal words the consumer loads at $FFF45090. */
 uint16_t stunrun_gsp_payload_control_word(const stunrun_gsp_payload_record_t *r);
-uint16_t stunrun_gsp_payload_saddr(const stunrun_gsp_payload_record_t *r);
+uint16_t stunrun_gsp_payload_field_a8_initial(
+    const stunrun_gsp_payload_record_t *r);
 uint16_t stunrun_gsp_payload_field_a6(const stunrun_gsp_payload_record_t *r);
 
 /* Read one of the unmapped words (index 3..7). Reachable so a caller can carry
@@ -108,8 +112,7 @@ uint16_t stunrun_gsp_payload_field_a6(const stunrun_gsp_payload_record_t *r);
 uint16_t stunrun_gsp_payload_unmapped(const stunrun_gsp_payload_record_t *r,
                                       size_t index);
 
-/* Derive the control word's observed selects. expand_mask is deliberately left
- * at STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE; see the header for why. */
+/* Derive the control word's literal tests and resulting B9 setup action. */
 stunrun_gsp_payload_control_t stunrun_gsp_payload_control(
     const stunrun_gsp_payload_record_t *r);
 

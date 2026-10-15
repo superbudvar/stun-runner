@@ -47,10 +47,10 @@ int main(void)
     check(n == 0u);                       /* capacity must not be exceeded */
 
     check(stunrun_gsp_payload_control_word(&rec[0]) == 0x0014u);
-    check(stunrun_gsp_payload_saddr(&rec[0]) == 0x1615u);
+    check(stunrun_gsp_payload_field_a8_initial(&rec[0]) == 0x1615u);
     check(stunrun_gsp_payload_field_a6(&rec[0]) == 0x171Fu);
     check(stunrun_gsp_payload_control_word(&rec[1]) == 0x00FFu);
-    check(stunrun_gsp_payload_saddr(&rec[1]) == 0x11FFu);
+    check(stunrun_gsp_payload_field_a8_initial(&rec[1]) == 0x11FFu);
     check(stunrun_gsp_payload_field_a6(&rec[1]) == 0x11FFu);
 
     /* The header record's tail words are zero and must survive untouched. */
@@ -71,7 +71,7 @@ int main(void)
     check(ctl.expand == 0x0000u);
     check(ctl.low8 == 0x0014u);
 
-    /* Each bit is asserted on its own, so a mask that silently covered a
+    /* Each bit is asserted on its own, so a bit mask that silently covered a
      * neighbour cannot pass. */
     rec[0].raw[0] = 0x8000u;
     check(stunrun_gsp_payload_control(&rec[0]).skip == 1);
@@ -88,28 +88,43 @@ int main(void)
     rec[0].raw[0] = 0x0005u;
     check(stunrun_gsp_payload_control(&rec[0]).low8 == 0x0005u);
 
-    /* Bit 15 and bit 12 together, which no single-bit case produces. */
+    /* Bit 15 and bit 12 together, which no single-bit case produces. The
+     * outer branch priority is also asserted in color_action below. */
     rec[0].raw[0] = 0x9000u;
     ctl = stunrun_gsp_payload_control(&rec[0]);
     check(ctl.skip == 1 && ctl.mode == 1);
 
-    /* --- the unresolved predicate stays unresolved -------------------------- */
-    /* If someone later fills in a guess for which expand mask a control word
-     * selects, this fails and forces the finding to be written up first. */
-    check(stunrun_gsp_payload_control(&rec[0]).expand_mask ==
-          STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE);
+    /* --- B9 setup branch, directly from $FFF45160-$FFF452A0 ------------------ */
+    rec[0].raw[0] = 0x0014u; /* C00=0, low8!=4: retain B9=A12 */
+    check(stunrun_gsp_payload_control(&rec[0]).color_action ==
+          STUNRUN_GSP_PAYLOAD_COLOR_ACTION_INHERIT);
     rec[0].raw[0] = 0x0004u;
-    check(stunrun_gsp_payload_control(&rec[0]).expand_mask ==
-          STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE);
-    check(STUNRUN_GSP_PAYLOAD_MASK_A == 0x01010101u);
-    check(STUNRUN_GSP_PAYLOAD_MASK_B == 0x15151515u);
+    check(stunrun_gsp_payload_control(&rec[0]).color_action ==
+          STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_B);
+    rec[0].raw[0] = 0x0400u;
+    check(stunrun_gsp_payload_control(&rec[0]).color_action ==
+          STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_B);
+    rec[0].raw[0] = 0x0800u;
+    check(stunrun_gsp_payload_control(&rec[0]).color_action ==
+          STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_A);
+    rec[0].raw[0] = 0x0C00u;
+    check(stunrun_gsp_payload_control(&rec[0]).color_action ==
+          STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SELECTOR_ALT);
+    rec[0].raw[0] = 0x1000u;
+    check(stunrun_gsp_payload_control(&rec[0]).color_action ==
+          STUNRUN_GSP_PAYLOAD_COLOR_ACTION_MODE_ALT);
+    rec[0].raw[0] = 0x8000u;
+    check(stunrun_gsp_payload_control(&rec[0]).color_action ==
+          STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SKIP);
+    check(STUNRUN_GSP_PAYLOAD_COLOR1_A == 0x01010101u);
+    check(STUNRUN_GSP_PAYLOAD_COLOR1_B == 0x15151515u);
 
     /* --- unmapped accessor bounds ------------------------------------------ */
     check(stunrun_gsp_payload_unmapped(&rec[0], 2u) == 0u);   /* mapped word */
     check(stunrun_gsp_payload_unmapped(&rec[0], 8u) == 0u);   /* past the end */
     check(stunrun_gsp_payload_unmapped(NULL, 3u) == 0u);
     check(stunrun_gsp_payload_control_word(NULL) == 0u);
-    check(stunrun_gsp_payload_saddr(NULL) == 0u);
+    check(stunrun_gsp_payload_field_a8_initial(NULL) == 0u);
 
     /* --- malformed input is rejected loudly --------------------------------- */
     check(stunrun_gsp_payload_decode(k_real64, 63u, rec, 8u, &n) == 0u);

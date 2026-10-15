@@ -67,7 +67,8 @@ uint16_t stunrun_gsp_payload_control_word(const stunrun_gsp_payload_record_t *r)
     return word(r, 0u);
 }
 
-uint16_t stunrun_gsp_payload_saddr(const stunrun_gsp_payload_record_t *r)
+uint16_t stunrun_gsp_payload_field_a8_initial(
+    const stunrun_gsp_payload_record_t *r)
 {
     return word(r, 1u);
 }
@@ -100,6 +101,47 @@ stunrun_gsp_payload_control_t stunrun_gsp_payload_control(
     c.mode = (int)((w >> STUNRUN_GSP_CTL_MODE_BIT) & 1u);
     c.expand = (uint16_t)(w & STUNRUN_GSP_CTL_EXPAND_MASK);
     c.low8 = (uint16_t)(w & STUNRUN_GSP_CTL_LOW8_MASK);
-    c.expand_mask = STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE;
+    /* The handler branches first on bit 15 (skip/return), then bit 12 (jump
+     * to alternate routine $FFF48FC0). Only with both clear does it reach the
+     * B9/COLOR1 selector at $FFF45160-$FFF452A0. The selector is also bypassed
+     * when external state A13 bit 3 is set; this record-only function cannot
+     * observe A13 and reports the per-record action assuming that gate is clear.
+     *
+     * Literal B9/COLOR1 branch tree:
+     *
+     *   (ctl & 0x0c00) == 0:
+     *       (ctl & 0x00ff) == 4 -> load COLOR1_B at $3452A0
+     *       otherwise           -> retain B9=A12 (set at $450C0)
+     *   (ctl & 0x0c00) == 0x0400 -> load COLOR1_B at $3452A0
+     *   (ctl & 0x0c00) == 0x0800 -> load COLOR1_A at $345200
+     *   (ctl & 0x0c00) == 0x0c00 -> branch to alternate worker $FFF45800
+     *
+     * These are observed code paths, not claims about geometric meaning or
+     * pixel size. */
+    if (c.skip) {
+        c.color_action = STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SKIP;
+        return c;
+    }
+    if (c.mode) {
+        c.color_action = STUNRUN_GSP_PAYLOAD_COLOR_ACTION_MODE_ALT;
+        return c;
+    }
+
+    switch (c.expand) {
+    case 0x0000u:
+        c.color_action = c.low8 == STUNRUN_GSP_CTL_LOW8_VALUE
+            ? STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_B
+            : STUNRUN_GSP_PAYLOAD_COLOR_ACTION_INHERIT;
+        break;
+    case 0x0400u:
+        c.color_action = STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_B;
+        break;
+    case 0x0800u:
+        c.color_action = STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_A;
+        break;
+    default:
+        c.color_action = STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SELECTOR_ALT;
+        break;
+    }
     return c;
 }
