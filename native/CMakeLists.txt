@@ -62,6 +62,16 @@ add_executable(stunrun-fullscreen-quad-test
 target_include_directories(stunrun-fullscreen-quad-test PRIVATE ../backend)
 set_target_properties(stunrun-fullscreen-quad-test PROPERTIES C_STANDARD 99)
 add_test(NAME backend-fullscreen-quad-c COMMAND stunrun-fullscreen-quad-test)
+# The GSP handoff interrupt (ROM $0002143C). Ported to C so its effects are
+# observable and adjustable without editing ROM; the default shell still runs
+# the original 68k path.
+add_executable(stunrun-gsp-handoff-irq-slice-test
+  ../reproduction/maincpu/gsp_handoff_irq.c
+  ../reproduction/maincpu/gsp_handoff_irq_test.c)
+target_include_directories(stunrun-gsp-handoff-irq-slice-test PRIVATE
+  ../reproduction/maincpu)
+set_target_properties(stunrun-gsp-handoff-irq-slice-test PROPERTIES C_STANDARD 99)
+add_test(NAME gsp-handoff-irq-slice-c COMMAND stunrun-gsp-handoff-irq-slice-test)
 add_executable(stunrun-fake-ports-test fake_ports.c fake_ports_test.c)
 target_include_directories(stunrun-fake-ports-test PRIVATE .)
 set_target_properties(stunrun-fake-ports-test PROPERTIES C_STANDARD 99)
