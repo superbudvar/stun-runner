@@ -142,6 +142,55 @@ static unsigned long g_gsp_rtl_obs_seen, g_gsp_rtl_obs_fwd, g_gsp_rtl_obs_noack;
 static unsigned long g_gsp_rtl_obs_hstdat, g_gsp_rtl_obs_hstdat_nz, g_gsp_rtl_obs_hstadr_nz;
 static unsigned long g_gsp_rtl_obs_hstctl_nz, g_gsp_rtl_obs_hstctl_rel;
 static uint32_t g_gsp_rtl_obs_last_adr = 0;
+
+/* Forward declarations: both are defined further down with the rest of the
+ * shell's frame state, but the IPL2 seam below needs them. */
+static musashi_cpu_t *g_cpu;
+static unsigned frame;
+
+/* IPL2 -- the GSP's own HSTCTLL.INTOUT, delivered to the MC68010.
+ *
+ * MAME: tms34010.cpp:1682-1685, inside `case REG_HSTCTLL` at :1661, calls
+ * m_output_int_cb(1) on a RISING edge of HSTCTLL bit 7 and m_output_int_cb(0)
+ * on the falling edge; harddriv.cpp:1489 binds that
+ * callback to hdgsp_irq_gen and harddriv_m.cpp:97 turns it into
+ * m_maincpu->set_input_line(3, m_gsp_irq_state ? ASSERT_LINE : CLEAR_LINE).
+ * Level index 3 is IPL2, whose autovector is vector 27 = 24 + 3, and with
+ * VBR = $00020000 that table slot holds $0002143C -- the handler that writes
+ * $FFFF to $FFDB48 and ACKNOWLEDGES the GSP's request (it clears HSTCTL bit 7,
+ * INTOUT, which drops the INT line this handler arrived on). It does not touch
+ * HLT: $FF7F preserves bit 15. See findings 48.2.  M68K_EMULATE_INT_ACK is off in
+ * third_party/musashi/m68kconf.h, so Musashi clears the line itself after each
+ * delivery exactly as MAME's 68010 does; re-assertion needs a new edge, which
+ * is why this is edge-driven and not "assert while the bit is set".
+ *
+ * Note this is NOT the HINT pin the driver also observes.  HINT
+ * (tms34010_io_regs.sv:492, io_reg[HSTCTLL][7]) and INT are distinct signals on
+ * the real TMS34010, and the RTL has no INT output at all; the level below is
+ * HSTCTLL.INTOUT itself, reconstructed with MAME's own equations.
+ */
+static int g_gsp_rtl_intout_applied = -1;   /* -1 = never applied */
+static unsigned long g_gsp_rtl_ipl2_asserts, g_gsp_rtl_ipl2_clears;
+
+/* Apply the current INTOUT level to the MC68010, on a change only. */
+static void gsp_rtl_apply_intout(void)
+{
+    int lvl;
+    if (!g_gsp_rtl_ready || !g_cpu) return;
+    lvl = gsp_rtl_driver_intout_level();
+    if (lvl == g_gsp_rtl_intout_applied) return;
+    g_gsp_rtl_intout_applied = lvl;
+    if (lvl) g_gsp_rtl_ipl2_asserts++;
+    else g_gsp_rtl_ipl2_clears++;
+    printf("shell: gsp-rtl intout edge frame=%u level=%u sr=0x%04X "
+           "imask=0x%X pc=0x%08lX\n",
+           frame, lvl, (unsigned)musashi_cpu_get_reg(g_cpu, "sr"),
+           (unsigned)((musashi_cpu_get_reg(g_cpu, "sr") >> 8) & 7u),
+           (unsigned long)musashi_cpu_get_pc(g_cpu));
+    if (lvl) musashi_cpu_set_irq(g_cpu, 3u);
+    else musashi_cpu_clear_irq(g_cpu, 3u);
+}
+
 static void gsp_rtl_bus_observer(void *ctx,
                                  const musashi_gsp_bus_event_t *ev)
 {
@@ -167,6 +216,12 @@ static void gsp_rtl_bus_observer(void *ctx,
         int rc = gsp_rtl_driver_host_write(r0, ev->data);
         if (rc == 0) g_gsp_rtl_obs_fwd++;
         else if (rc == -2) g_gsp_rtl_obs_noack++;
+        /* A host HSTCTL write is the only way INTOUT can be CLEARED, and
+         * gsp_rtl_driver_host_write() also clocks the core a bounded number of
+         * cycles -- so a set can land here too.  Re-read the level after every
+         * forwarded write rather than only at the frame boundary: otherwise the
+         * clear would be held for a whole frame after the 68010 issued it. */
+        gsp_rtl_apply_intout();
     }
 }
 #endif
@@ -1831,6 +1886,14 @@ static int run_walk(void)
             musashi_gsp_memory_t mem;
             if (musashi_cpu_gsp_memory(g_cpu, &mem) == 0) {
                 GSP_RTL_SYNC_AND_STEP(mem);
+#ifdef STUNRUN_GSP_RTL
+                /* The GSP has just been clocked for a frame, so any INTOUT edge
+                 * it produced is settled: deliver it before the 68010 runs again.
+                 * This is one frame later than MAME, where the two processors run
+                 * concurrently -- a fidelity limit of the frame-stepped shape,
+                 * not of the signal. */
+                gsp_rtl_apply_intout();
+#endif
             }
             if (render_live_gsp_frame() == 0) {
                 g_live_video_presented++;
@@ -2265,8 +2328,34 @@ static int run_walk(void)
         uint16_t last = 0;
         gsp_rtl_driver_intenb_observation(&writes, &rises, &falls, &last);
         printf("shell: gsp-rtl INTENB IO writes=%u bit7-rises=%u "
-               "bit7-falls=%u last=0x%04x (observation only)\n",
+               "bit7-falls=%u last=0x%04x (observation only; NOT the INT source)\n",
                writes, rises, falls, last);
+    }
+    {
+        gsp_rtl_intout_obs_t io;
+        uint32_t i;
+        gsp_rtl_driver_intout_observation(&io);
+        printf("shell: gsp-rtl HSTCTLL.INTOUT level=%u rises=%u falls=%u "
+               "ipl2-asserts=%lu ipl2-clears=%lu\n",
+               (unsigned)io.level, io.rises, io.falls,
+               g_gsp_rtl_ipl2_asserts, g_gsp_rtl_ipl2_clears);
+        printf("shell: gsp-rtl INTOUT set-by=%u data=0x%04X clear-by=%u "
+               "data=0x%04X\n",
+               io.set_writer, io.set_data, io.clear_writer, io.clear_data);
+        printf("shell: gsp-rtl HSTCTLL shadow=0x%04x rtl-io-reg=0x%04x "
+               "rtl-signal=%s mismatch=%u "
+               "(proc-writes=%u host-hstctl-writes=%u "
+               "mame-rule-0xC000000F=%u)\n",
+               io.shadow, io.rtl_io_reg, io.rtl_available ? "exposed" : "absent",
+               io.mismatch, io.proc_hstctll_writes, io.host_hstctl_writes,
+               io.mame_rule_hstctll_writes);
+        printf("shell: gsp-rtl GSP-local I/O writes=%u distinct=%u overflow=%u\n",
+               io.io_writes, io.io_distinct, io.io_overflow);
+        for (i = 0; i < io.io_distinct && i < GSP_RTL_INTOUT_IO_MAX; i++)
+            printf("shell: gsp-rtl   io-addr 0x%06X count=%u (rtl idx 0x%02X, "
+                   "mame offset 0x%03X)\n",
+                   io.io_addr[i], io.io_count[i], io.io_addr[i] >> 4,
+                   io.io_addr[i]);
     }
     printf("shell: gsp-rtl board vram nonzero words=%u\n",
            gsp_board_vram_nonzero_words(&g_gsp_rtl_board));
@@ -2307,9 +2396,13 @@ static int run_walk(void)
         } else {
             for (i = 0; i < n; i++) {
                 printf("shell: write-watch addr=0x%08X writes=%lu "
-                       "last_pc=0x%08X last_value=0x%04X width=%u\n",
+                       "last_pc=0x%08X last_value=0x%04X width=%u "
+                       "nonzero-writes=%lu nonzero-last-pc=0x%08X "
+                       "nonzero-last-value=0x%04X\n",
                        w[i].address, (unsigned long)w[i].writes,
-                       w[i].last_pc, w[i].last_value, w[i].last_width_bits);
+                       w[i].last_pc, w[i].last_value, w[i].last_width_bits,
+                       (unsigned long)w[i].nonzero_writes,
+                       w[i].nonzero_last_pc, w[i].nonzero_last_value);
                 if (w[i].writes == 0u)
                     printf("shell: write-watch note: 0x%08X was NEVER written "
                            "by the emulated 68010 in this run.\n", w[i].address);

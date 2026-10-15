@@ -100,6 +100,24 @@ static void write_watch_note(uint32_t address, uint16_t value,
         s_watch[i].last_pc = s_insn_start;
         s_watch[i].last_value = value;
         s_watch[i].last_width_bits = (uint8_t)width_bits;
+        /* Separate the writes that actually put something in the word.
+         *
+         * `last_pc` is the LAST writer, which for a flag like $FFDB48 is the
+         * routine that CLEARS it after the wait ($02F23A), so on its own it
+         * cannot show that the level-3 handler wrote $FFFF: the value and the
+         * writer of the non-zero store are both one event earlier. The frame
+         * sampler cannot cover it either -- it reads at the frame boundary and
+         * this word is set and cleared inside one frame.
+         *
+         * So keep the non-zero writes separately: how many, and the most recent
+         * one's value and writing instruction. A boot clear (`clr.l (A0)+`) and
+         * a routine that only ever stores zero both report zero here, which is
+         * exactly the distinction being asked for. */
+        if (value != 0u) {
+            s_watch[i].nonzero_writes++;
+            s_watch[i].nonzero_last_pc = s_insn_start;
+            s_watch[i].nonzero_last_value = value;
+        }
     }
 }
 
@@ -754,6 +772,14 @@ void musashi_cpu_reset(musashi_cpu_t *cpu)
      * per-instruction observation currently works. */
     m68k_set_instr_hook_callback(cpu_override_dispatch);
 
+    /* m68k_init() does not clear m68ki_cpu.virq_state, and that bitmask now
+     * outlives a delivery (see musashi_cpu.h).  A line left set from a previous
+     * instance would be re-derived onto the CPU at its next board-side
+     * transition, i.e. an interrupt nobody on this board is driving.  Drive all
+     * seven off once: the last call is the one that leaves m_virq_state empty. */
+    for (unsigned line = 7; line >= 1u; line--)
+        musashi_cpu_clear_irq(cpu, line);
+
     m68k_pulse_reset();
 }
 
@@ -811,7 +837,13 @@ void musashi_cpu_set_irq(musashi_cpu_t *cpu, unsigned level)
             s_irq_watch.assert_level[level]++;
     }
     (void)cpu;
-    m68k_set_irq(level);
+    m68k_set_virq(level, 1);
+}
+
+void musashi_cpu_clear_irq(musashi_cpu_t *cpu, unsigned level)
+{
+    (void)cpu;
+    m68k_set_virq(level, 0);
 }
 
 uint32_t musashi_cpu_total_cycles(const musashi_cpu_t *cpu)
@@ -2178,10 +2210,17 @@ void m68k_write_memory_8(unsigned int address, unsigned int value)
         }
         break;
     case REGION_IRQACK:
-        /* Any write acks the periodic IRQ (harddriv_m.cpp:111-115 clears
-         * m_irq_state unconditionally, then update_interrupts drops line 5).
-         * Musashi's m68k_set_irq is level-driven, so dropping to 0 clears. */
-        musashi_cpu_set_irq(s_cpu, 0);
+        /* Any write acks the periodic IRQ.  harddriv_m.cpp:111-115
+         * (hd68k_irq_ack_w) clears m_irq_state and calls update_interrupts(),
+         * which re-drives ALL SIX lines (harddriv_m.cpp:94-100), so clearing
+         * one line can leave another asserted.  That is why this clears line 5
+         * specifically and goes through the per-line path rather than zeroing
+         * the CPU's interrupt level: with a single global level, an IPL2 that is
+         * still asserted would be discarded by the next IRQ5 pulse and by this
+         * ack, and the GSP's handshake would be lost with no trace.
+         * m68k_set_virq() is Musashi's transcription of MAME's
+         * m68000_musashi_device::set_irq_line (m68kcpu.cpp:708-735). */
+        musashi_cpu_clear_irq(s_cpu, 5);
         break;
     case REGION_ADC_CTRL:
         /* hd68k_adc_control_w() COMBINE_DATA(&m_adc_control): a byte write
@@ -2255,7 +2294,10 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
         stunrun_mem_write16_be(s_cpu->ports, offset, (uint16_t)value);
         break;
     case REGION_IRQACK:
-        musashi_cpu_set_irq(s_cpu, 0);
+        /* See the 16-bit word write above: this is hd68k_irq_ack_w clearing the
+         * periodic line (IPL5) and re-deriving every line, not a blanket
+         * zeroing of the CPU's interrupt level. */
+        musashi_cpu_clear_irq(s_cpu, 5);
         break;
     case REGION_ADSP_PROG:
         /* The main loop's handshake: it counts itself up in this RAM
@@ -2329,7 +2371,10 @@ void m68k_write_memory_32(unsigned int address, unsigned int value)
         stunrun_mem_write32_be(s_cpu->ports, offset, value);
         break;
     case REGION_IRQACK:
-        musashi_cpu_set_irq(s_cpu, 0);
+        /* See the 16-bit word write above: this is hd68k_irq_ack_w clearing the
+         * periodic line (IPL5) and re-deriving every line, not a blanket
+         * zeroing of the CPU's interrupt level. */
+        musashi_cpu_clear_irq(s_cpu, 5);
         break;
     case REGION_SOUND:
         /* harddriv.cpp:4806 main_command_w (8-bit device split). */

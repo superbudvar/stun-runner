@@ -185,8 +185,29 @@ void musashi_cpu_reset(musashi_cpu_t *cpu);
  * Returns actual cycles executed. */
 int musashi_cpu_run(musashi_cpu_t *cpu, int cycles);
 
-/* Assert an IRQ line (level 1-7) */
+/* Assert an IRQ line (level 1-7).
+ *
+ * The CPU holds SIX interrupt lines at once (harddriv_m.cpp:94-100 drives lines
+ * 1..6 from the MSP, the ADSP, the GSP, /LINKIRQ, the periodic timer and the
+ * DUART), and MAME keeps them as a bitmask:
+ * m68000_musashi_device::set_irq_line (m68kcpu.cpp:708-735) sets or clears one
+ * bit of `m_virq_state` and then re-derives `m_int_level` from the HIGHEST
+ * line still asserted.  A single global level cannot express that: asserting
+ * IPL5 would erase a pending IPL2, and dropping IPL5 would drop IPL2 too.
+ *
+ * So both entry points go through Musashi's m68k_set_virq(), which is a
+ * transcription of that same routine (m68kcpu.c:1080-1093), and callers drop a
+ * line with musashi_cpu_clear_irq() rather than by setting level 0.
+ *
+ * A delivered interrupt clears the CPU's level by itself -- M68K_EMULATE_INT_ACK
+ * is M68K_OPT_OFF (third_party/musashi/m68kconf.h:111), so
+ * m68ki_exception_interrupt() ends with `CPU_INT_LEVEL = 0`
+ * (third_party/musashi/m68kcpu.h:2155-2158).  Re-assertion therefore needs a
+ * new board-side transition, which is what the real hardware and MAME both do. */
 void musashi_cpu_set_irq(musashi_cpu_t *cpu, unsigned level);
+
+/* Deassert one IRQ line, leaving any other asserted line in charge. */
+void musashi_cpu_clear_irq(musashi_cpu_t *cpu, unsigned level);
 
 /* Peek the PC (for debugging / oracle comparison) */
 uint32_t musashi_cpu_get_pc(const musashi_cpu_t *cpu);
@@ -417,6 +438,13 @@ typedef struct musashi_write_watch {
     uint32_t writes;        /* bus writes overlapping [address, address+width) */
     uint32_t last_pc;       /* M68K_REG_PC during the most recent one */
     uint16_t last_value;    /* value carried by the most recent one */
+    /* Writes whose DATA was non-zero, counted and attributed separately.
+     * `last_pc` alone cannot answer "who set this flag": for a handshake word
+     * the most recent writer is usually the one that clears it, and the frame
+     * sampler misses a set-and-clear inside one frame. */
+    uint32_t nonzero_writes;
+    uint32_t nonzero_last_pc;
+    uint16_t nonzero_last_value;
     uint8_t  last_width_bits;
     uint8_t  in_use;
 } musashi_write_watch_t;

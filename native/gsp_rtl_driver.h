@@ -126,9 +126,77 @@ uint32_t gsp_rtl_driver_display_regs_seen(void);
  * Observation only; these are not wired to the MC68010 interrupt input. */
 void gsp_rtl_driver_intenb_observation(uint32_t *writes, uint32_t *rises,
                                        uint32_t *falls, uint16_t *last);
-/* Active-low HINT output, driven by HSTCTLL.INTOUT; observation only. */
+/* Active-low HINT output, driven by HSTCTLL.INTOUT; observation only.
+ *
+ * DO NOT WIRE THIS TO IPL2.  HINT is the host-side "hint" pin; on the real
+ * TMS34010 it is a different signal from INT, and MAME's external INT output
+ * follows HSTCTLL.INTOUT through tms34010.cpp:1827-1830 (processor side) and
+ * :1682-1685 (host side).  The RTL exposes only the HINT pin
+ * (tms34010_io_regs.sv:492); there is no INT output pin at all.  Use
+ * gsp_rtl_driver_intout_level() below for IPL2. */
 void gsp_rtl_driver_hint_observation(uint32_t *asserts, uint32_t *clears,
                                      int *asserted);
+
+/* ---- HSTCTLL.INTOUT: the GSP-to-host interrupt, the IPL2 source -------
+ *
+ * MAME asserts the GSP's INT pin on a RISING EDGE of HSTCTLL bit 7 (INTOUT)
+ * and deasserts it on the falling edge:
+ *
+ *   tms34010.cpp:1661-1678  (both arms of `case REG_HSTCTLL`, selected by
+ *                            m_external_host_access; host_control_w sets it for
+ *                            one write at :2039-2042)
+ *   tms34010.cpp:1682-1685  (the edge)
+ *       newreg = (oldreg & 0xfff8) | (data & 0x0007);   // host: MSGIN
+ *       newreg &= data | ~0x0080;                      // host: INTOUT clear-only
+ *       newreg |= data & 0x0008;                       // host: INTIN set-only
+ *   or, processor side:
+ *       newreg  = (oldreg & 0xff8f) | (data & 0x0070); // MSGOUT
+ *       newreg |= data & 0x0080;                       // INTOUT set-only
+ *       newreg &= data | ~0x0008;                      // INTIN clear-only
+ *       if (!(oldreg & 0x0080) && (newreg & 0x0080)) m_output_int_cb(1);
+ *       else if ((oldreg & 0x0080) && !(newreg & 0x0080)) m_output_int_cb(0);
+ *
+ * harddriv.cpp:1489 binds output_int to hdgsp_irq_gen, and
+ * harddriv_m.cpp:97 drives m_maincpu->set_input_line(3, ...), i.e. IPL2.
+ *
+ * The level reported here is a LEVEL, not an event: callers should apply it on
+ * a change, which is exactly what m_output_int_cb's caller does. */
+int gsp_rtl_driver_intout_level(void);
+
+/* Everything measured about INTOUT, for the report.  `mismatch` is the count of
+ * settled-state comparisons between this driver's HSTCTLL shadow and the RTL's
+ * own io_reg[IO_IDX_HSTCTLL] that disagreed; it must be 0 for the shadow to be
+ * a faithful account of the RTL, and is how we would notice a write path the
+ * bus trace cannot see (a host-indirect HSTCTLL access, say). */
+#define GSP_RTL_INTOUT_IO_MAX 48
+typedef struct gsp_rtl_intout_obs {
+    uint32_t proc_hstctll_writes;  /* processor-side writes the RTL decodes as HSTCTLL */
+    uint32_t host_hstctl_writes;   /* MC68010 HSTCTL writes that reach HSTCTLL's low byte */
+    /* Processor-side writes at 0xC000000F, which is the address MAME decodes as
+     * HSTCTLL (offset 15 in internal_regs_map) while the RTL decodes 0xC00000F0
+     * (index = addr[8:4]).  Reported so "which decode can reach HSTCTLL" is a
+     * measurement rather than an assumption; see gsp_rtl_driver.cpp. */
+    uint32_t mame_rule_hstctll_writes;
+    uint32_t rises;                /* INTOUT 0 -> 1 */
+    uint32_t falls;                /* INTOUT 1 -> 0 */
+    int      level;                /* current INTOUT, 0 or 1 */
+    /* Who moved the bit last: 0 none, 1 processor-side local-bus write,
+     * 2 MC68010 host HSTCTL write, 3 adopted from the RTL's own io_reg.
+     * `set_data`/`clear_data` are the word that moved it. */
+    uint32_t set_writer, clear_writer;
+    uint16_t set_data, clear_data;
+    uint16_t shadow;               /* this driver's HSTCTLL shadow */
+    uint16_t rtl_io_reg;           /* the RTL's own io_reg[HSTCTLL], when exposed */
+    uint32_t rtl_available;        /* 0 = Verilator did not expose io_reg */
+    uint32_t mismatch;             /* settled comparisons that disagreed */
+    uint32_t io_writes;            /* all processor-side I/O-space writes seen */
+    uint32_t io_distinct;          /* distinct I/O addresses in `io_addr` (capped) */
+    uint32_t io_overflow;          /* distinct addresses dropped past the cap */
+    uint32_t io_addr[GSP_RTL_INTOUT_IO_MAX];      /* distinct addresses */
+    uint32_t io_count[GSP_RTL_INTOUT_IO_MAX];     /* how many times each */
+} gsp_rtl_intout_obs_t;
+
+void gsp_rtl_driver_intout_observation(gsp_rtl_intout_obs_t *out);
 
 /* Shutdown and free the RTL. */
 void gsp_rtl_driver_shutdown(void);
