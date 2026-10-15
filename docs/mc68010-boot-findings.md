@@ -9590,3 +9590,126 @@ are both already known to differ from the oracle (§44's first divergence at
 oracle seq 224523). Whether the scanout geometry is independently wrong, or
 merely rendering a share the emulation has not filled correctly, is **not**
 separated by this measurement and must not be reported as if it were.
+
+## 51. What the 68010 waits on after the GSP release (`stun-runner-0yc`)
+
+### 51.1 The bead's hypothesis is refuted
+
+The bead proposed: "the ROM releases the GSP and then polls some GSP-visible
+condition that never becomes true, so it never proceeds."
+
+It does not. `$02FC60` polls **one main-RAM word**, `$FFDB48`:
+
+```asm
+02fc60: link    A6,#$0
+02fc68: move.l  ($8,A6), D4
+02fc6c: moveq   #$5, D2
+02fc6e: moveq   #$c, D3
+02fc70: clr.w   $608000.l
+02fc76: move.l  #$80000, D5      ; bounded budget: 524288 iterations
+02fc7c: movea.l #$ffdb48, A2
+02fc82: tst.w   (A2)             ; <<< the wait
+02fc84: bne     $2fcb6           ; satisfied -> return
+02fc86: move.l  D2,-(A7)
+02fc88: jsr     $22766.l         ; per-iteration service
+02fc8e: move.l  D5, D0
+02fc90: subq.l  #1, D5
+02fc92: tst.l   D0
+02fc94: addq.l  #4, A7
+02fc96: bne     $2fca4
+02fc98: move.l  D4,-(A7)         ; budget exhausted -> $308c4($c, arg)
+02fc9c: jsr     $308c4.l         ;   then KEEP LOOPING (bra $2fc82)
+02fca4: move.l  D2,-(A7)
+02fca6: jsr     $22766.l
+02fac: clr.w   $608000.l
+02fb2: addq.l  #4, A7
+02fb4: bra     $2fc82
+02fcb6: movem.l (-$14,A6), D2-D5/A2
+02fcbc: unlk    A6
+02fcbe: rts
+```
+
+`$FFDB48` is ordinary work RAM, **not** a GSP-visible register. Its only writer in
+the entire program is `$02143C` (§40.1) — the level-3 autovector that §47/§48
+just started delivering. So the condition is a RAM flag set by the interrupt we
+wired, not something the GSP exposes through the host window.
+
+Two consequences the bead did not anticipate:
+
+* **It is not a timeout.** The wait is bounded by `D5 = $80000`, and the budget
+  path is not a give-up: it calls `$308c4` and then *loops back to `$02fc82`*.
+  Measured, over 600 frames: `$02FC98` and `$0308C4` do not appear in the PC
+  histogram at all, and `$02FC82` ran 35,042 times against a 524,288 budget. The
+  budget was never reached, so the stall is not a failed timeout.
+* **It is satisfied now.** `$02FCB6` executes once (it executed zero times before
+  §47). The 68010 is no longer stuck here.
+
+### 51.2 The actual protocol around it
+
+`$02FC60` has exactly two callers, at ROM offsets `$02F16A` and `$02F212`
+(byte pattern `4e b9 00 02 fc 60`, found in `stunrun_maincpu.bin`). Both follow
+the same shape: set `HSTADR` from a table at `$4A88C` indexed by a byte × 8,
+poke `HSTDAT` at `$C0000C`, and test `HSTDAT` for a non-zero response.
+
+```asm
+; call site 1, $02F156
+02f156: tst.w   $c0000c.l       ; HSTDAT != 0 ?
+02f15c: beq     $02f19e
+02f15e: clr.w   $ffdb48.l       ; disarm the flag, then wait for it
+02f164: pea     $4a830.l
+02f16a: jsr     $02fc60.l
+...
+; call site 2, $02F20C
+02f20c: pea     $4a83c.l
+02f212: jsr     $02fc60.l       ; wait
+02f218: move.w  #$ffff, $c0000c.l
+02f232: move.l  (A0,D0.l), $c00002.l
+02f23a: clr.w   $ffdb48.l       ; disarm AFTER the wait
+02f240: move.w  D2, $c0000c.l   ; the real payload
+02f246: move.l  $ffff8014.l, $ffdb36.l   ; sample the tick counter for $FF9BAA
+```
+
+So `$FFDB48` is a **disarmable semaphore**, and `$02F23A` clearing it *after*
+`$02FC60` returns (rather than before, as at `$02F15E`) is what makes the next
+round's wait meaningful. `$FF9BAA` is the elapsed-tick record `$02143C` writes —
+same pairing as §45.
+
+### 51.3 Measured, 600 frames, headless
+
+PC histogram entries:
+
+```text
+0x02FC60   2      the wait routine is ENTERED twice
+0x02FCB6   1      but EXITS once
+0x02FC82   35042  poll iterations
+0x022766   70104  = 35042 x 2, so two service calls per iteration
+$02FC98 / $0308C4  absent: the budget never fired
+```
+
+**Two entries, one exit.** One of those calls is still spinning at the end of
+the run, and there is exactly **one** INTOUT rise in the whole 600 frames (§47:
+rise at frame 534, fall at 535). A semaphore that is set once and cleared once
+cannot satisfy a second wait. So the handshake is not stuck — it is
+**one-interrupt short**, and the GSP is expected to raise INTOUT repeatedly.
+§47 records MAME's cadence as every third frame from frame 131.
+
+I am **not** asserting *which* of the two entries is the spinning one. The write
+watch names `$02F23A` (call site 2, after its wait returned) as the last writer
+of `$FFDB48`, which places site 2 among the completed — but that leaves site 1's
+entry unaccounted for and I have not disambiguated it. Stated as UNKNOWN rather
+than guessed.
+
+### 51.4 What this changes
+
+The bead's "the GSP is released and then the machine stalls" reading is wrong in
+one direction and right in another. Wrong: nothing is stalled at `$02FC60`; it
+completes. Right: the machine still does not progress to a finished frame, but
+the blocker has moved — from *no interrupt at all* to *too few interrupts*.
+
+The next question is therefore on the GSP side, not the 68010 side: **why does
+our GSP raise INTOUT once instead of every third frame?** Candidates worth
+separating: the GSP is not re-entering the display-list routine that ends in the
+`HSTCTLL` write; or it is, and our host-port writes are not reaching it the way
+MAME's do. §47's unresolved 16× disagreement between the RTL and MAME over which
+bus address is `HSTCTLL` bears directly on the second candidate, which is why it
+stays on the list.
