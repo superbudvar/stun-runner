@@ -1,0 +1,120 @@
+/* GSP display-list payload codec: the 8-word record container observed in the
+ * SOM -> $810000 -> HSTDAT transfer.
+ *
+ * WHAT THIS IS. A faithful container codec plus named accessors for the fields
+ * the GSP consumer demonstrably assigns. It is NOT a semantic decoder: words 3
+ * through 7 are carried through untouched because the consumer paths that read
+ * them have not been disassembled. Preserving them raw is the honest position --
+ * see docs/mc68010-boot-findings.md sections 54 and 55.
+ *
+ * WHAT WAS MEASURED, and where each claim comes from.
+ *
+ *  - Records are 8 words, from offset 0, no header padding.
+ *      tools/disasm-gsp: `SLL 4h,A5 / ADD A1,A5` at $FFF45000 gives a 16-byte
+ *      stride. Independently, every `raw=` field in the committed captures is
+ *      exactly 64 or 128 words = 8 or 16 whole records, never a remainder
+ *      (findings 54.2 correction).
+ *  - Word 0 is a control word, consumed into A4 at $FFF45090:
+ *        BTST Fh,A4    bit 15    -> JRNE, a skip/end select
+ *        BTST Ch,A4    bit 12    -> JRNE, a second mode select
+ *        ANDI C00h,A0  bits 10-11 -> one branch of the expand-mask select
+ *        ANDI FFh,A0   bits 0-7   -> CMPI 4h, a second branch
+ *  - Word 1 is loaded into A8 and then moved to B0, which is the PIXBLT source
+ *    address SADDR (docs/tms34010-reference.md:1152).
+ *  - Word 2 is loaded into A6.
+ *  - Two colour-expand masks are loaded into B9: 0x01010101 at $00345200 and
+ *    0x15151515 at $003452A0.
+ *
+ * WHAT IS DELIBERATELY NOT CLAIMED.
+ *
+ *  - Which mask a given control word selects. The two branches are reached by
+ *    different tests (`JREQ 345230h` after `ANDI C00h,A0`, and `JREQ 3452A0h`
+ *    later), and neither $345230 nor the code between $003451A0 and $003451F0
+ *    has been disassembled. Guessing a predicate here would be inventing
+ *    behaviour, so `expand_mask` is left unset and documented as unresolved
+ *    rather than filled in with the most plausible reading.
+ *  - That words 3..7 mean anything.
+ *  - That the masks correspond to particular pixel widths.
+ */
+#ifndef STUNRUN_GSP_PAYLOAD_CODEC_H
+#define STUNRUN_GSP_PAYLOAD_CODEC_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Observed record size. Changing this is a finding, not a refactor. */
+#define STUNRUN_GSP_PAYLOAD_RECORD_WORDS 8u
+
+/* The two colour-expand masks the consumer loads into B9. Which one applies to
+ * a given record is UNRESOLVED; see the header. */
+#define STUNRUN_GSP_PAYLOAD_MASK_A 0x01010101u
+#define STUNRUN_GSP_PAYLOAD_MASK_B 0x15151515u
+#define STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE 0u
+
+/* Control-word masks, named for the instruction that uses them rather than for
+ * a meaning we have not established. */
+#define STUNRUN_GSP_CTL_SKIP_BIT    15u     /* BTST Fh,A4   */
+#define STUNRUN_GSP_CTL_MODE_BIT    12u     /* BTST Ch,A4   */
+#define STUNRUN_GSP_CTL_EXPAND_MASK 0x0C00u  /* ANDI C00h,A0 */
+#define STUNRUN_GSP_CTL_LOW8_MASK   0x00FFu  /* ANDI FFh,A0  */
+#define STUNRUN_GSP_CTL_LOW8_VALUE  0x0004u  /* CMPI 4h,A0   */
+
+/* First word whose meaning is unknown; everything from here on is carried raw. */
+#define STUNRUN_GSP_PAYLOAD_FIRST_UNMAPPED_WORD 3u
+
+typedef struct stunrun_gsp_payload_record {
+    uint16_t raw[STUNRUN_GSP_PAYLOAD_RECORD_WORDS];
+} stunrun_gsp_payload_record_t;
+
+typedef struct stunrun_gsp_payload_control {
+    uint16_t word;
+    int      skip;    /* bit 15, per BTST Fh,A4 */
+    int      mode;    /* bit 12, per BTST Ch,A4 */
+    uint16_t expand;  /* bits 10-11, per ANDI C00h,A0 */
+    uint16_t low8;    /* bits 0-7, per ANDI FFh,A0 */
+    /* Always STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE: the predicate is unresolved. */
+    uint32_t expand_mask;
+} stunrun_gsp_payload_control_t;
+
+/* Split a word stream into records.
+ *
+ * Rejects rather than guesses. A word count that is not a whole number of
+ * records, a NULL stream or output, or an undersized buffer all return 0 with
+ * *out_count set to 0. Returns the record count on success. */
+size_t stunrun_gsp_payload_decode(const uint16_t *words, size_t word_count,
+                                  stunrun_gsp_payload_record_t *records_out,
+                                  size_t record_capacity,
+                                  size_t *out_count);
+
+/* Re-emit records as a word stream: the exact inverse of decode, so that for any
+ * input decode accepted, encode(decode(x)) == x. Rejects the same inputs. */
+size_t stunrun_gsp_payload_encode(const stunrun_gsp_payload_record_t *records,
+                                  size_t record_count,
+                                  uint16_t *words_out, size_t word_capacity,
+                                  size_t *out_count);
+
+/* Field accessors: the literal words the consumer loads at $FFF45090. */
+uint16_t stunrun_gsp_payload_control_word(const stunrun_gsp_payload_record_t *r);
+uint16_t stunrun_gsp_payload_saddr(const stunrun_gsp_payload_record_t *r);
+uint16_t stunrun_gsp_payload_field_a6(const stunrun_gsp_payload_record_t *r);
+
+/* Read one of the unmapped words (index 3..7). Reachable so a caller can carry
+ * them; it asserts nothing about what they mean. Returns 0 for an out-of-range
+ * index or a NULL record. */
+uint16_t stunrun_gsp_payload_unmapped(const stunrun_gsp_payload_record_t *r,
+                                      size_t index);
+
+/* Derive the control word's observed selects. expand_mask is deliberately left
+ * at STUNRUN_GSP_PAYLOAD_EXPAND_MASK_NONE; see the header for why. */
+stunrun_gsp_payload_control_t stunrun_gsp_payload_control(
+    const stunrun_gsp_payload_record_t *r);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* STUNRUN_GSP_PAYLOAD_CODEC_H */

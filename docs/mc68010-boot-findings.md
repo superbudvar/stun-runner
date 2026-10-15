@@ -9944,6 +9944,30 @@ data record at word 9, not word 8: the envelope is an 8-word header followed by
 one extra word, then records on the 16-byte stride `record_parser` already
 assumes. `destination` steps by `0x10`, which is that same stride.
 
+**CORRECTED.** Every number above was taken from a mis-transcribed log line. All
+14 `raw=` fields across both experiments are **exactly 64 or 128 words** — 256 or
+512 hex characters, and no other length ever. That is the capture emitting the
+stream in fixed-width blocks, not a property of the payload.
+
+Re-measured from offset 0, the framing is clean and simpler than claimed:
+
+```text
+stream=00060002  f2-60-180   64 words  =  8 records of 8
+                 rec0: 0014 1615 171F 1013 0000 0000 0000 0000
+                 rec1: 00FF 11FF 11FF 11FF 11C4 11FF 22D9 2243
+stream=00060002  f2-60-300  128 words = 16 records of 8
+                 rec0,rec1 identical to the above
+```
+
+**There is no extra word and no nine-word offset.** Records are 8 words from
+offset 0, which is what `record_parser.h` already assumed — the "one extra word"
+was an artifact of counting a truncated line. The two experiments also agree on
+the first 64 words of the same stream, so the payload is stable across
+frames 60-180 and 60-300.
+
+`SLL 4h` in §55.1 is a *stride between* records, not a proof of their size, so
+that section is unaffected.
+
 ### 54.3 Refuted before it could mislead: PIXBLT is not 6/10-bit packed here
 
 I first decoded the data words as TMS34020-style PIXBLT (X in bits 15-10, Y in
@@ -10089,3 +10113,66 @@ Which record types exist beyond the branch at `0x344D50` / `0x344D60`; what
 `B8`, `B9` are used as DPTCH/COLOR0 in the paths not disassembled here; and the
 meaning of the constant `0xFFF71D20` at `$003452F0`. The disassembly above covers
 `$FFF45000-$FFF45800`; the rest of the consumer is unexamined.
+
+## 56. First C payload codec (`stun-runner-q9t`)
+
+A small C codec now exists at `reproduction/gsp/payload_codec.{h,c}` and its
+CTest is `gsp-payload-codec-c`. This is the **transport/payload container**,
+not a C geometry generator and not a renderer. The payload is bitmap primitive
+descriptors (§55); this slice carries real records without losing bits and names
+only the fields whose consumer register assignments have been disassembled.
+
+### 56.1 Input is an oracle vector, not a fixture we invented
+
+The test embeds all **64 words** from
+`reference/experiments/stunrun/display-list-service-f2-60-180/mame.log`,
+`M1_GSP_DL_CALL id=1 stream=00060002 raw=...`. That is 8 records × 8 words,
+verbatim from the MAME capture. It checks:
+
+* decode yields exactly 8 records;
+* record 0 words 0/1/2 are `0014` / `1615` / `171F` (control / SADDR / A6);
+* record 1 words 0/1/2 are `00FF` / `11FF` / `11FF`;
+* words the consumer has not explained (3..7) survive unchanged;
+* encode(decode(capture)) reproduces all 64 words byte-for-byte.
+
+Malformed framing is rejected: 63 words, 7 words, insufficient record capacity,
+NULL input or output. No partial outputs are accepted. The bit accessors are
+controlled individually (bit 15, bit 12, bits 10-11, bits 0-7) so neighbouring
+bits cannot accidentally hide a wrong mask.
+
+### 56.2 Deliberately bounded semantics
+
+`control()` extracts the bits literally tested by `BTST Fh,A4`, `BTST Ch,A4`,
+`ANDI C00h,A0`, `ANDI FFh,A0`. It **does not** decide which expand-mask applies:
+the relevant branches at `$FFF45230` and `$FFF452A0` have not both been followed
+through their full paths. `expand_mask` therefore stays NONE; the two loaded mask
+constants are exported only as observed constants. This makes the honest code
+slightly less convenient than a guess and keeps it falsifiable.
+
+Words 3..7 are named `unmapped`, not vertices or pitches. The future decoder is
+expected to replace those names only when a consumer instruction proves the
+meaning.
+
+### 56.3 Negative controls
+
+Each mutation was rebuilt before CTest (the §45.1 lesson), and `restored` was
+required to pass:
+
+```text
+wrong record size 7          FAILED
+swap SADDR word index        FAILED
+wrong skip-bit source        FAILED
+wrong mode-bit source        FAILED
+truncate unmapped tail       FAILED
+force an unmeasured mask     FAILED
+restored                     PASSED
+```
+
+### 56.4 What this does NOT do
+
+It does not generate bitmap records from track or object data, does not copy
+SOM data to the GSP, and does not reproduce the frame. It is the smallest
+verifiable C unit under the larger option `stun-runner-alo`; the next bounded
+slice is to disassemble the remaining worker branches and promote a raw field to
+a named field only where its GSP register use proves that name. C-vs-ADSP-emulator
+remains open.
