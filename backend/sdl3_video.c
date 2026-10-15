@@ -23,6 +23,7 @@
  * without requiring a GL context, use the sdl3_gpu backend instead.
  */
 #include "backend/backend.h"
+#include "fullscreen_quad.h"
 
 #include <SDL3/SDL.h>
 /* GLEW must be included BEFORE any other OpenGL headers.
@@ -88,7 +89,7 @@ typedef struct sdl3_video_backend {
     sdl3_gl_tex_t tex;
 
     /* Vertex layout for the fullscreen quad (2 verts × 3 floats × 2 = 12 floats) */
-    float quad_vertices[12];
+    float quad_vertices[STUNRUN_VIDEO_FULLSCREEN_QUAD_FLOATS];
 
     bool initialized;
 } sdl3_video_backend_t;
@@ -188,14 +189,7 @@ static GLuint link_program(const char *vert_src, const char *frag_src)
 static void build_quad(float *verts, uint32_t win_w, uint32_t win_h)
 {
     (void)win_w; (void)win_h;
-    /* 0: bottom-left */
-    verts[0]  = -1.0f; verts[1]  = -1.0f; verts[2]  = 0.0f; verts[3]  = 1.0f;
-    /* 1: top-left */
-    verts[4]  = -1.0f; verts[5]  =  1.0f; verts[6]  = 0.0f; verts[7]  = 0.0f;
-    /* 2: bottom-right */
-    verts[8]  =  1.0f; verts[9]  = -1.0f; verts[10] = 1.0f; verts[11] = 1.0f;
-    /* 3: top-right */
-    /* (triangle 1: 0,1,2  triangle 2: 1,3,2) */
+    stunrun_video_fullscreen_quad(verts);
 }
 
 static void sdl3_video_init_quad(sdl3_video_backend_t *b)

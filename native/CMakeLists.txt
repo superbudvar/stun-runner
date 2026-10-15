@@ -57,6 +57,11 @@ target_include_directories(stunrun-adsp-upload-slice-test PRIVATE
 set_target_properties(stunrun-adsp-upload-slice-test PROPERTIES C_STANDARD 99)
 enable_testing()
 add_test(NAME native-smoke COMMAND stunrun-native-smoke)
+add_executable(stunrun-fullscreen-quad-test
+  ../backend/fullscreen_quad_test.c)
+target_include_directories(stunrun-fullscreen-quad-test PRIVATE ../backend)
+set_target_properties(stunrun-fullscreen-quad-test PROPERTIES C_STANDARD 99)
+add_test(NAME backend-fullscreen-quad-c COMMAND stunrun-fullscreen-quad-test)
 add_executable(stunrun-fake-ports-test fake_ports.c fake_ports_test.c)
 target_include_directories(stunrun-fake-ports-test PRIVATE .)
 set_target_properties(stunrun-fake-ports-test PROPERTIES C_STANDARD 99)
@@ -933,4 +938,3 @@ if(STUNRUN_GSP_RTL)
       "sent the last person looking in the wrong place entirely.")
   endif()
 endif()
-

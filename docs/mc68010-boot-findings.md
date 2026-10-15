@@ -8685,3 +8685,27 @@ RTL HINT/INTOUT output: one assert, one clear, currently deasserted
 Those are replay measurements, not named MAME output comparisons. In particular
 the live state before the capture tap's first frame is not present in this log,
 so reconstruction is only as complete as the captured transaction prefix.
+
+## 43. The SDL window showed one triangle because the upload quad had three vertices
+
+The replay PNG was a complete 512x240 image, but the user's SDL window showed a
+diagonal black half-window. This was not another GSP address or palette defect;
+the clipping happened after the renderer had produced its pixels.
+
+`backend/sdl_video.c::build_quad()` and `backend/sdl3_video.c::build_quad()`
+initialized only vertices 0-2 (12 floats) and left vertex 3 (top-right) unset.
+Both `present()` functions then called `glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)`.
+The backend structs also allocated `quad_vertices[12]`, so the draw read the
+fourth vertex past the end of the VBO. A triangle strip with a missing fourth
+corner explains exactly the diagonal cutoff in the window while the saved PNG
+remained whole: PNG capture occurs before the backend upload/present call.
+
+Both SDL OpenGL paths now use the same canonical four-vertex helper, with a
+16-float buffer and the top-right `(1, 1, 1, 0)` corner set. The regression test
+checks all 16 values and initializes its output to a sentinel first; a negative
+control that removes the top-right assignment fails at component 12.
+
+Confirmed here: the source had a 12-float buffer, wrote only 12 floats, and drew
+four vertices; the unit test fails when the fourth vertex is omitted. The
+specific screenshot's visual signature matches that malformed strip. The
+scanout pixels themselves are unchanged by this fix.
