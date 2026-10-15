@@ -821,6 +821,99 @@ terminator check.
 > That leading `00` is MAME's zero-padded 24-bit 68010 formatting — it is the
 > same address as `$C0000C`, HSTDAT, not a different window.
 
+### 4.8a `m_som_memory` — the one statement that produces every pixel
+
+The chain above collapses to a single array and a single assignment. Grep:
+
+```text
+$ grep -rn "m_som_memory" src/mame/atari/*.cpp *.h
+harddriv.cpp:498:   m_som_memory[i] = 0;
+harddriv_m.cpp:683: return m_som_memory[m_m68k_adsp_buffer_bank * 0x2000 + offset];
+harddriv_m.cpp:689: COMBINE_DATA(&m_som_memory[m_m68k_adsp_buffer_bank * 0x2000 + offset]);
+harddriv_m.cpp:708: int16_t *base = (int16_t *)&m_som_memory[param * 0x2000];
+harddriv_m.cpp:878: m_som_memory[(m_m68k_adsp_buffer_bank ^ 1) * 0x2000 + (m_adsp_som_address++ & 0x1fff)] = data;
+harddriv.h:386:     uint16_t m_som_memory[0x8000/2]{};
+```
+
+`0x8000/2` is **16 384 `uint16` = 32 KiB**, addressed as **two** banks of `0x2000`
+words (**16 KiB each**). Two independent checks agree: `tot // 0x2000 == 2`, and
+the producer's own `& 0x1fff` is a 13-bit mask, i.e. 8192 words = 16 KiB per bank.
+The 68010 window `$810000-$813FFF` is 0x4000 bytes = 0x2000 words = exactly one
+bank, so the bank index selects which half of the array the same offsets alias to.
+
+Note this contradicts `chip-interconnects.md` ("banked 8KB x 4") as recorded on
+bead `stun-runner-alo`; the array and the mask both say two 16 KiB banks. Worth
+correcting at the source rather than propagating.
+
+**Producer** — `harddriv_m.cpp:872-892`, the ADSP control-register write handler:
+
+```c
+	{
+		case 1: /* /SIMCLK */
+			m_adsp_sim_address = data;
+			break;
+
+		case 2: /* SOMLATCH */
+			m_som_memory[(m_m68k_adsp_buffer_bank ^ 1) * 0x2000 + (m_adsp_som_address++ & 0x1fff)] = data;
+			break;
+
+		case 3: /* /SOMCLK */
+			m_adsp_som_address = data;
+			break;
+
+		case 5: /* /XOUT */
+			m_adsp_xflag = data & 1;
+			break;
+
+		case 6: /* /GINT */
+			logerror("%04X:ADSP signals interrupt\n", m_adsp->pcbase());
+			m_adsp_irq_state = 1;
+			update_interrupts();
+```
+
+**Consumer** — `harddriv_m.cpp:678-698`, the 68010 side of `$810000`:
+
+```c
+uint16_t harddriv_state::hd68k_adsp_buffer_r(offs_t offset)
+{
+	/*  logerror("hd68k_adsp_buffer_r(%04X)\n", offset);*/
+	return m_som_memory[m_m68k_adsp_buffer_bank * 0x2000 + offset];
+}
+
+void harddriv_state::hd68k_adsp_buffer_w(offs_t offset, uint16_t data, uint16_t mem_mask)
+{
+	COMBINE_DATA(&m_som_memory[m_m68k_adsp_buffer_bank * 0x2000 + offset]);
+}
+```
+
+Two details worth pinning, because both are easy to get backwards:
+
+* **The `^ 1` is producer-side only.** The ADSP writes bank `m_m68k_adsp_buffer_bank
+  ^ 1`; the 68010 reads and writes bank `m_m68k_adsp_buffer_bank`. The flip lives
+  in line 878 and nowhere else in the chain, which is why §5.1(6) says the ADSP
+  writes the bank the 68010 does *not* read.
+* **`m_adsp_som_address` is set by the ADSP, not derived from the bus.** Cases 1
+  and 3 load it; line 878 post-increments it with `& 0x1fff`. A host-side write to
+  `$810000` cannot influence where the ADSP's next latch lands.
+
+**Why this matters for the native model.** `native/musashi_cpu.c:424` declares
+`REGION_ADSP_BUF = 3, /* 0x810000-0x813FFF: ADSP serial buffer */` and backs it
+with RAM — so the region exists and the 68010 reads it faithfully (635 535 HSTDAT
+writes were observed). But line 878 has **no equivalent**: there is no ADSP core
+in `native/`, the checkpoint reports `adsp pc=0, astat=0`, and the program image
+is loaded (`adsp_program_loaded: true`) and executed nowhere. Nothing ever
+executes case 2, so nothing is ever latched.
+
+The buffer the 68010 then copies to the GSP is empty. That is the most direct
+explanation available for a GSP that runs, completes an IPC handshake, and
+rasterises a mostly-empty playfield. It is a **hypothesis consistent with the
+evidence, not a measurement** — see `docs/mc68010-boot-findings.md` §54 for what
+would confirm or refute it.
+
+Two further handlers belong on the same list of things the native model lacks:
+`case 6: /GINT` drives `m_adsp_irq_state` into `update_interrupts()`, and
+`hd68k_adsp_buffer_w` lets the 68010 *write* the buffer (not just read it).
+
 **The GSP has no ROM of its own.** `mainpcb:user1` is the ADSP object ROM; the
 GSP's program is uploaded by the 68010 through the host port. `[ROM] STATUS.md`
 gsvp.5: `$0002FE68`/`$0002FE6E` write 6 091 words each across frames 396–405
