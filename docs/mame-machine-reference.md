@@ -460,17 +460,25 @@ Five windows installed by `init_adsp()` (harddriv.cpp:5070), none of which is in
 |---|---|---|
 | `$800000–$807FFF` (32 KiB) | `hd68k_adsp_program_r/w` | program RAM, cell `n = offset/2`; **even offset → `word >> 16`, odd → `word & 0xFFFF`** |
 | `$808000–$80BFFF` (16 KiB) | `hd68k_adsp_data_r/w` | data RAM `$0000–$1FFF` |
-| `$810000–$813FFF` (16 KiB) | `hd68k_adsp_buffer_r/w` | the serial output (SOM) buffer |
+| `$810000–$813FFF` (16 KiB) | `hd68k_adsp_buffer_r/w` | the serial output (SOM) buffer, one of two 16 KiB banks |
 | `$818000–$81801F` | `hd68k_adsp_control_w` | control strobes, decoded on `offset & 7` |
 | `$818060–$81807F` | `hd68k_adsp_irq_clear_w` | clears `m_adsp_irq_state` |
 | `$838000–$83FFFF` | `hd68k_adsp_irq_state_r` | returns `$FFFD`, `^2` if `XOUT`, `^1` if an ADSP interrupt is pending |
 
-`m_som_memory` is declared `uint16_t[0x8000/2]` = **0x4000 words = 32 KiB**
-(harddriv.h:386), i.e. **four banks of 0x2000 words = 16 KiB each**. The 68010
-window is exactly one bank wide (`$810000`–`$813FFF` = 0x2000 word offsets), so
-`hd68k_adsp_buffer_r/w` indexes `m_som_memory[bank * 0x2000 + offset]`
-(harddriv_m.cpp:683, 689) with **no masking** — a window read always lands in
-the selected bank.
+`m_som_memory` is declared `uint16_t[0x8000/2]` = **`0x4000` words = 32 KiB**
+(harddriv.h:386), and every access uses a bank stride of `0x2000` words. That
+divides exactly: **two banks of 16 KiB**, no more. The bank selector is
+`val = (offset >> 3) & 1` in `hd68k_adsp_control_w` `case 3`, so it can only ever
+be **0 or 1**. The 68010 window is exactly one bank wide (`$810000`–`$813FFF`
+= 0x2000 word offsets), so `hd68k_adsp_buffer_r/w` indexes
+`m_som_memory[bank * 0x2000 + offset]` (harddriv_m.cpp:683, 689) with **no
+masking** — a window read always lands in the selected bank, and a bank of 2 or
+above would run off the array.
+
+So the ADSP and the 68010 are always on **opposite halves of one 32 KiB
+buffer**: the ADSP writes `bank ^ 1`, the 68010 reads `bank`. That is a
+two-deep ping-pong, not a four-way ring — worth getting right, because the
+`^1` looks like an XOR into a larger array than it actually is.
 
 **Control strobes** — the value comes from **address bit 3, not from the data**
 (`int val = (offset >> 3) & 1; offset &= 7;` harddriv_m.cpp:751):
@@ -527,8 +535,9 @@ Two asymmetries that are easy to get backwards and are worth stating flatly:
   fetching from a ROM.
 * **`SOMLATCH` writes to the *opposite* bank:** `(m_m68k_adsp_buffer_bank ^ 1)`.
   The 68010 reads bank `m_m68k_adsp_buffer_bank`; the ADSP writes bank `^1`.
-  Double-buffering. The same XOR must appear on both sides or the producer and
-  the consumer read different halves.
+  Double-buffering, and with only two banks (§4.2) the XOR is exactly the
+  ping-pong. The same XOR must appear on both sides or the producer and the
+  consumer read different halves.
 
 **[ROM]** `analysis/interconnect.md` records the observed title-path traffic:
 `SIMBUF` 73 416, `SIMCLK` 33 158, `SOMLATCH` 84 700, `SOMCLK` 30, `GINT` 30,
