@@ -10638,3 +10638,43 @@ passes.
 Next capture needs to start from a reproducible state that actually reaches the
 consumer. Until then, static disassembly gives field widths and register mapping,
 but the runtime value sequence after the prefix remains UNKNOWN.
+
+## 63. Caller resolves A11: primary FILL height is one (`q9t`)
+
+§59/§61 said the actual A11 height was unknown because the M1 entry tap did not
+capture A11. That is true of the tap and false of the static call chain: the
+caller code is uploaded and disassembles.
+
+```asm
+00344b30: MOVI  FFFFFFFFh,A12
+00344b70: MOVI  10001h,A11
+00344ba0: CALLR 345090h
+...
+00344bf0: MOVI  FFFFFFFFh,A12
+00344c20: MOVI  10001h,A11
+00344c50: MOVE  @FFF716C0h,A2,0
+00344c80: MOVE  A5,A3
+00344c90: MOVE  A5,A1
+00344ca0: MOVE  *A5,A0,0
+00344cb0: SLL   4h,A0
+00344cc0: ADD   A0,A3
+00344cd0: MOVE  @FFF77E60h,A13,0
+00344d00: JR    345000h
+```
+
+All xrefs to the primary parser in the disassembled image resolve to the two
+above: the single-record `CALLR` and the indexed loop into `$FFF45000`. Both set
+`A11=0x00010001` before entry. Since `ADDXY A11,A6` takes A11's high 16 bits,
+`DYDX.DY = 1` for this primary path. The low half `1` may be used later as other
+state, but it is not the FILL height.
+
+Both set `A12=0xFFFFFFFF`; this resolves the sentinel compare at `$FFF45520`:
+`CMP A12,A8 / JREQ $FFF45630` terminates the variable F1 tuple scan when the 32-bit
+field equals all ones. Thus the F1 tail is a sentinel-terminated variable stream,
+not a fixed 8-word record.
+
+Updated the C test to use the observed A11 caller constant (`DY=1`) and retain a
+separate synthetic A11 vector (`DY=2`) as a negative control proving the helper
+uses the high half. This is static disassembly evidence, not an M1 runtime capture
+of A11; the attempted live read trace did not reproduce the old service_f2 path
+(§62).

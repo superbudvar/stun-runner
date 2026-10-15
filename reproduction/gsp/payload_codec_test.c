@@ -80,12 +80,16 @@ int main(void)
           STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SKIP);
 
     /* Actual captured prefix -> register-level FILL XY operands. A11 is
-     * deliberately synthetic; its value was not in the capture. */
+     * reconstructed from the two callers at $FFF44B70/$FFF44C20. */
     check(stunrun_gsp_payload_decode_prefix(k_capture_prefix, 4u, 0u, &p));
-    check(stunrun_gsp_payload_primary_fill_xy(&p, 0x00020000u, 0u, &fill));
+    check(stunrun_gsp_payload_primary_fill_xy(&p, 0x00010001u, 0u, &fill));
     check(fill.destination_x == 0x1615u);
     check(fill.destination_y == 0x1013u);
     check(fill.dx == 0x171Fu);
+    check(fill.dy == 0x0001u);
+
+    /* Isolate the selected A11 half: FILL DY is the high 16 bits. */
+    check(stunrun_gsp_payload_primary_fill_xy(&p, 0x00020000u, 0u, &fill));
     check(fill.dy == 0x0002u);
 
     memset(&fill, 0xA5, sizeof(fill));
