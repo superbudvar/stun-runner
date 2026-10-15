@@ -9713,3 +9713,108 @@ separating: the GSP is not re-entering the display-list routine that ends in the
 MAME's do. §47's unresolved 16× disagreement between the RTL and MAME over which
 bus address is `HSTCTLL` bears directly on the second candidate, which is why it
 stays on the list.
+
+## 52. The `HSTCTLL` address-decode disagreement: partly resolved, partly not
+
+§47.6 and the subagent's hand-back flagged a "16× disagreement" and proposed
+filing a BUGS.md candidate against MAME or the vendored RTL. Checked against both
+sources and the oracle. It is not one disagreement, and the alarming version of
+it does not survive.
+
+### 52.1 There is no register-numbering disagreement
+
+Both models enumerate the 32 I/O registers in the same order with the same
+values. Verified pairwise:
+
+| register | RTL `IO_IDX_*` (`tms34010_pkg.sv`) | MAME `REG_*` (`tms34010.h`) |
+|---|---|---|
+| DPYSTRT | `5'h09` (:376) | 9 (:72) |
+| HSTDATA | `5'h0C` (:379) | 12 (:75) |
+| HSTADRL | `5'h0D` (:380) | 13 (:76) |
+| HSTADRH | `5'h0E` (:381) | 14 (:77) |
+| **HSTCTLL** | `5'h0F` (:382) | **15** (:78) |
+| HSTCTLH | `5'h10` (:383) | 16 (:80) |
+| DPYADR | `5'h1E` (:397) | 30 (:94) |
+
+So "which register is number N" is settled. What differs is only the rule mapping
+an **address** to that number:
+
+* RTL, `io/tms34010_io_regs.sv:157`: `assign idx = addr[IO_REG_IDX_W+3 : 4];`
+  with `IO_REG_IDX_W = 5`, i.e. `addr[8:4]` — address `$C00000F0` → index 15.
+* MAME, `tms34010.cpp:34-37` + the `offset` parameter of `io_register_w`: the map
+  is `0xc0000000–0xc00001ff` and `offset = address - 0xc0000000`, so index 15 is
+  address `$C000000F`.
+
+A factor of 16 on the address, nothing on the register.
+
+### 52.2 The alarming consequence does not reproduce
+
+`tms34010.cpp` carries a local patch added for this triage:
+
+```c
+map(0xc0000000, 0xc00001ff).rw(FUNC(tms34010_device::io_register_r), ...);
+/* STUNRUN-IOB: MD-12 triage.  internal_regs_map exposes offsets 0x00-0x1ff, but
+ * m_IOregs holds only 64 entries and IOREG() indexes it unmasked, so anything at
+ * 0x40 or above runs off the end. S.T.U.N. Runner's GSP program writes at
+ * 0x90-0x160. */
+if (offset >= 64) { ...fopen(STUNRUN_GSP_IOBREPORT)... }
+```
+
+That comment asserts the GSP program writes at MAME-offsets 0x90–0x160, which
+would land past the end of `m_IOregs`. **It does not happen.** Running the frozen
+oracle for 30 s emulated (~1800 frames) with `STUNRUN_GSP_IOBREPORT` set:
+
+```
+rc=0, Average speed 447.40% (29 seconds)
+GSPREG call=654001 DPYADR=fcf8 DPYSTRT=fffc DPYTAP=0000 DPYCTL=f004 ... pc=fff454e0
+```
+
+and **no report file was created at all**. The file is `fopen`ed inside the
+`if (offset >= 64)` branch, so absence of the file is positive evidence that the
+branch was never taken: across ~1800 frames the GSP never wrote at a MAME-offset
+of 0x40 or above. MAME is not corrupting its register array, and the comment's
+claim about 0x90–0x160 is **stale or a misreading** — recorded here rather than
+filed upstream.
+
+### 52.3 Our decode: one register confirmed, two disagree, one not comparable
+
+Ours (600-frame live run) against MAME's own `GSPREG` line:
+
+| register | ours | MAME | verdict |
+|---|---|---|---|
+| DPYSTRT | `0xfffc` | `0xfffc` | **exact match** |
+| DPYADR | `0xffc3` | `0xfcf8` / `0xfd9c` / `0xfd40` | not comparable |
+| DPYTAP | `0x0200` | `0x0000` | **disagree** |
+| DPYCTL | `0xf010` | `0xf004` | **disagree** |
+
+`DPYSTRT` matching exactly is meaningful: it is a register the program writes and
+holds, so a wrong index would not land on the same value. It is one register
+though, not the file.
+
+`DPYADR` **cannot** be compared this way and the number must not be read as a
+disagreement: it is the live display address and MAME's own consecutive samples
+differ from each other (`fcf8`, `fd9c`, `fd40` on three adjacent `GSPREG` lines).
+Two runs stopped at different emulated times will not agree on it.
+
+`DPYTAP` (`0200` vs `0000`) and `DPYCTL` (`f010` vs `f004`) genuinely differ, and
+those two are the ones to chase. They may still be state differences rather than
+decode differences — nothing here controls for emulated time.
+
+### 52.4 Status: UNKNOWN, and the BUGS.md candidate is not filed
+
+**Not established:** which of the two address rules the real TMS34010 uses. The
+evidence above does not decide it. `DPYSTRT` matching is consistent with our rule
+being right, but is not a discriminator on its own — it would also match if only
+that one register happened to agree.
+
+**Not filed:** the §47.6 BUGS.md candidate. The premise (MAME runs off the end
+of `m_IOregs`) is now contradicted by direct measurement, so there is nothing
+left to report upstream for that specific claim.
+
+The discriminating experiment is still available and is now sharper: capture the
+**addresses** the GSP writes under MAME — not the decoded register values — and
+check whether they sit at 0x10 spacing from `$C0000000` (our rule) or at 1-byte
+spacing (MAME's). `m_ioreg_pre_write_cb` already receives the raw `offset`
+(`tms34010.cpp:1570`), so the oracle can answer this without a new hook; it needs
+an observation-only patch recording every offset regardless of whether it is
+≥ 64, not just the out-of-range ones. Until that exists, §52.4 stays open.
