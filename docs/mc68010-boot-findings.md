@@ -9986,3 +9986,106 @@ Which field is which vertex/slope/lighting term; whether the records are PIXBLT
 parameters at all; whether the packing is a shift, a mask, or a different
 instruction family. None of that was measured — the consumer disassembly has not
 been done.
+
+## 55. SOM payload: the records are bitmap primitives, not vertices (`q9t`)
+
+Continued §54. The GSP program disassembles with MAME's own disassembler via
+`tools/disasm-gsp` on the captured upload image
+(`/tmp/opencode/gsp-upload-v3/gsp-vram-upload-last/gsp_vram.bin`). Address
+mapping is `GSP PC & 0x3FFFFF`, confirmed by the tool's own default
+`--at 0x340000 == 0xFFF40000 & 0x3FFFFF`.
+
+### 55.1 The record loop, and the stride
+
+```text
+00345000: MOVE  *A3+,A5,0      ; next record index
+00345010: ZEXT  A5,0
+00345020: CMPXY A12,A5        ; done when the index passes A12?
+00345030: JRN   344D10h
+00345040: SLL   4h,A5          ; <<< index * 16
+00345050: ADD   A1,A5          ; + base
+00345060: CALLR 345090h        ; per-record handler
+00345080: JR    345000h        ; loop
+```
+
+`SLL 4h,A5` is literally the `base + (index << 4)` that
+`reproduction/gsp/record_parser.h:25` documents, seen in the original code rather
+than inferred from a trace. §54.1's framing claim is confirmed.
+
+### 55.2 Record word 0 is a control word
+
+`$FFF45090`, entered by `CALLR`:
+
+```text
+00345090: MOVE  *A5+,A4,0      ; word 0 -> A4
+003450a0: BTST  Fh,A4          ; bit 15
+003450b0: JRNE  344D50h        ;   -> skip / end-of-record
+003450c0: MOVE  A12,B9
+003450d0: BTST  Ch,A4          ; bit 12
+003450e0: JRNE  344D60h
+003450f0: MOVE  *A5+,A8,0      ; word 1 -> A8
+00345100: MOVE  A8,B0          ; B0 = PIXBLT SADDR
+00345110: MOVE  *A5+,A6,0      ; word 2 -> A6
+00345160: ANDI  C00h,A0        ; bits 10-11
+00345190: JREQ  345230h
+003451f0: JREQ  3452A0h
+00345200: MOVI  1010101h,B9
+00345240: ANDI  FFh,A0         ; bits 0-7
+00345270: CMPI  4h,A0
+00345290: JRNE  3452D0h
+003452a0: MOVI  15151515h,B9
+003452d0: SLL   16h,A4         ; build a 32-bit XY address
+003452e0: SRL   12h,A4
+003452f0: ADDI  FFF71D20h,A4
+00345320: MOVE  *A4,A0,0
+```
+
+So word 0 encodes: **bit 15** skip/end, **bit 12** a mode select, **bits 10-11**
+an expand-mask select, **bits 0-7** a second select compared against 4.
+
+### 55.3 The payload is bitmap primitives, not vertex lists
+
+**`0x01010101` and `0x15151515` are binary colour-expand masks** — the set bits
+mark the "on" pixel within each group, which is exactly the pattern the
+TMS34010's binary expand uses (`docs/tms34010-reference.md` §3.3, §3.4: `PIXBLT
+B,XY` / `PIXBLT B,L`, "during a binary expand operation, only the destination
+pixel size is specified; the source pixel size is assumed to be one bit").
+
+The register traffic matches the documented PIXBLT operands:
+
+```text
+003453c0: MOVE  A8,B1           ; B1 = SPTCH  (source pitch)
+003453d0: MOVY  B1,B0           ; XY-addressed form
+00345430: MOVE  B0,B2           ; B2 = DADDR  (destination)
+00345470: ADDC  B1,B0
+003454a0: MOVE  B0,B2           ; row-by-row: B2 += SPTCH
+003454c0: SUBXY B2,B7
+```
+
+against `docs/tms34010-reference.md:1149-1156`: `SADDR` (B0), `SPTCH` (B1),
+`DADDR` (B2), `DPTCH` (B3).
+
+**Conclusion:** the display list carries **1-bit bitmap primitive descriptors** —
+where a bitmap lives, how wide its pitch is, and which expand mode to use. The
+GSP expands bits to pixels at draw time. It is **not** a list of vertices,
+slopes or lighting terms.
+
+### 55.4 What this changes
+
+§54 framed the payload as "which word is which vertex, slope, or lighting term".
+That question was framed wrong. There are no vertices in it to find.
+
+For `stun-runner-alo` this is good news and should be recorded there: a C
+replacement would reproduce **bitmap runs** (address, pitch, expand mode, colour
+mask) rather than reinterpret geometry. That is a narrower, per-field-verifiable
+job — every field has a named register destination in the consumer, which is an
+oracle. It does not settle the C-vs-emulation choice, but it lowers the cost of
+the C option substantially and removes the "what is a slope" ambiguity from it.
+
+### 55.5 Not established
+
+Which record types exist beyond the branch at `0x344D50` / `0x344D60`; what
+`0x344D10` (loop exit) and `0x345800` (the `BTST 3h,A13` path) do; whether `B3`,
+`B8`, `B9` are used as DPTCH/COLOR0 in the paths not disassembled here; and the
+meaning of the constant `0xFFF71D20` at `$003452F0`. The disassembly above covers
+`$FFF45000-$FFF45800`; the rest of the consumer is unexamined.
