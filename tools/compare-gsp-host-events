@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Find the first semantic mismatch between MAME and native GSP host traffic.
+
+This answers one question: at what host/reset event does the native 68010 stop
+doing what the oracle did? It compares the MAME text capture produced by
+``capture-gsp-program-upload`` with the native raw ``musashi_gsp_bus_event_t``
+stream. It compares named fields, never raw-file hashes: the native ABI has
+padding bytes which are not initialized, and the two producers assign sequence
+numbers and timestamps differently.
+
+By default the MAME tap's first event is aligned to the first native event with
+the same operation and value whose callback PC is within 16 bytes. The native
+callback PC can point past the 68k instruction (MAME's CURPC does not), so PC is
+an alignment hint/context, not part of event equality. If that heuristic is
+ambiguous, use ``--native-start-seq`` to supply the native sequence explicitly.
+The first capture pair in findings §44 aligns MAME seq 1 / PC $069A with native
+seq 583 / callback PC $069C.
+
+The tool cannot make unlike captures comparable: capture the same ROM/input
+mode, and treat frame-vs-cycle timing as context, not equality. A mismatch is a
+point to investigate, not proof of which implementation is wrong.
+
+Usage:
+    tools/compare-gsp-host-events ORACLE_EVENTS NATIVE_BUS_EVENTS [--json]
+    tools/compare-gsp-host-events ORACLE_EVENTS NATIVE_BUS_EVENTS \
+        --native-start-seq 583 --json
+"""
+
+import argparse
+import json
+import pathlib
+import struct
+import sys
+
+SCHEMA = "stunrun-gsp-host-event-compare/v1"
+NATIVE_EVENT = struct.Struct("<QQIIHHB3xIB3x")
+HOST_REGS = {
+    0x00C00002: "HSTADRH",
+    0x00C00004: "HSTADRL",
+    0x00C00008: "HSTCTL",
+    0x00C0000C: "HSTDAT",
+    # A real native stream carries 262,766 writes here that the MAME tap never
+    # records. MAME's driver only handles word offsets 0-6 of the $C00000-$C03FFF
+    # host aperture and lets $C0000E and above fall through (findings section
+    # 13), so the two producers are NOT recording the same event set. It is
+    # named rather than dropped or invented, because silently discarding a
+    # quarter of the native traffic would make a mismatch report lie.
+    0x00C0000E: "HSTDAT-UNMAPPED-0E",
+}
+
+
+class CaptureError(ValueError):
+    pass
+
+
+def read_oracle(path):
+    events = []
+    previous_seq = 0
+    previous_frame = 0
+    with path.open("r", encoding="ascii") as stream:
+        for line_number, line in enumerate(stream, 1):
+            fields = line.split()
+            if len(fields) != 11:
+                raise CaptureError(f"{path}:{line_number}: expected 11 fields")
+            try:
+                seq, frame = int(fields[0]), int(fields[1])
+                kind = fields[2]
+                address, data, mask, destination, pc = (
+                    int(value, 16) for value in fields[3:8])
+            except ValueError as exc:
+                raise CaptureError(f"{path}:{line_number}: invalid field: {exc}") from exc
+            if seq != previous_seq + 1:
+                raise CaptureError(
+                    f"{path}:{line_number}: sequence {seq}, expected {previous_seq + 1}")
+            if frame < previous_frame:
+                raise CaptureError(f"{path}:{line_number}: frame went backwards")
+            if mask > 0xFFFF or data > 0xFFFF:
+                raise CaptureError(f"{path}:{line_number}: host data/mask exceeds 16 bits")
+            if kind == "GSPRES":
+                if destination not in (0, 1):
+                    raise CaptureError(f"{path}:{line_number}: invalid /GSPRES level")
+                signature = ("GSPRES", address, 1 - destination, data & mask, mask)
+            else:
+                if kind not in HOST_REGS.values() or HOST_REGS.get(address) != kind:
+                    raise CaptureError(
+                        f"{path}:{line_number}: kind/address mismatch {kind} @ {address:08x}")
+                signature = (kind, address, data & mask, mask)
+            events.append({
+                "seq": seq, "frame": frame, "kind": kind, "address": address,
+                "data": data, "mask": mask, "destination": destination,
+                "pc": pc, "signature": signature,
+            })
+            previous_seq, previous_frame = seq, frame
+    if not events:
+        raise CaptureError(f"{path}: empty event stream")
+    return events
+
+
+def read_native(path):
+    blob = path.read_bytes()
+    stride = NATIVE_EVENT.size
+    if not blob or len(blob) % stride:
+        raise CaptureError(
+            f"{path}: {len(blob)} bytes is not a non-empty multiple of {stride}-byte records")
+    events = []
+    for index, values in enumerate(NATIVE_EVENT.iter_unpack(blob)):
+        seq, cycles, address, pc, data, mask, width, kind, released = values
+        if seq != index:
+            raise CaptureError(f"{path}: record {index} has sequence {seq}, expected {index}")
+        if kind == 1:
+            name = HOST_REGS.get(address)
+            if name is None:
+                raise CaptureError(f"{path}: record {index} has unmapped host address {address:08x}")
+            if width not in (8, 16) or mask > 0xFFFF:
+                raise CaptureError(f"{path}: record {index} has invalid width/mask")
+            # Names differ only where the producers genuinely disagree on the
+            # register set, which is itself a finding, so keep the name in the
+            # signature instead of normalizing it away.
+            signature = (name, address, data & mask, mask)
+            kind_name = name
+        elif kind == 2:
+            if released not in (0, 1):
+                raise CaptureError(f"{path}: record {index} has invalid reset level")
+            signature = ("GSPRES", address, released, data & mask, mask)
+            kind_name = "GSPRES"
+        else:
+            raise CaptureError(f"{path}: record {index} has unknown kind {kind}")
+        events.append({
+            "seq": seq, "cycles": cycles, "kind": kind_name,
+            "address": address, "data": data, "mask": mask,
+            "width_bits": width, "pc": pc, "released": released,
+            "signature": signature,
+        })
+    return events
+
+
+def align_start(oracle, native, native_start_seq=None):
+    if native_start_seq is not None:
+        for index, event in enumerate(native):
+            if event["seq"] == native_start_seq:
+                return index, "explicit"
+        raise CaptureError(f"native sequence {native_start_seq} not found")
+
+    first = oracle[0]
+    candidates = []
+    for index, actual in enumerate(native):
+        if actual["signature"] != first["signature"]:
+            continue
+        pc_delta = actual["pc"] - first["pc"]
+        if -16 <= pc_delta <= 16:
+            candidates.append((index, pc_delta))
+    if not candidates:
+        raise CaptureError(
+            "cannot align first MAME event to native stream; specify --native-start-seq")
+    # Native REG_PC at a write callback can be the next unconsumed word. Prefer
+    # the first PC-near candidate; the following comparison reports the actual
+    # semantic mismatch and keeps PC out of the equality key.
+    index, delta = candidates[0]
+    return index, {"method": "first-event+near-PC", "pc_delta": delta}
+
+
+def compare(oracle, native, native_start):
+    i_oracle = 0
+    i_native = native_start
+    matched = 0
+    while i_oracle < len(oracle) and i_native < len(native):
+        if oracle[i_oracle]["signature"] != native[i_native]["signature"]:
+            return matched, i_oracle, i_native
+        matched += 1
+        i_oracle += 1
+        i_native += 1
+    if i_oracle == len(oracle) and i_native == len(native):
+        return matched, None, None
+    return matched, i_oracle, i_native
+
+
+def context_at(events, index, before=2, after=2):
+    if index >= len(events):
+        return []
+    start = max(0, index - before)
+    end = min(len(events), index + after + 1)
+    result = []
+    for i in range(start, end):
+        item = {key: value for key, value in events[i].items() if key != "signature"}
+        item["at_mismatch"] = i == index
+        result.append(item)
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("oracle_events", type=pathlib.Path)
+    parser.add_argument("native_events", type=pathlib.Path)
+    parser.add_argument("--native-start-seq", type=int,
+                        help="explicit native sequence corresponding to the first oracle row")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        oracle = read_oracle(args.oracle_events)
+        native = read_native(args.native_events)
+        start, alignment = align_start(oracle, native, args.native_start_seq)
+        matched, oi, ni = compare(oracle, native, start)
+    except (OSError, CaptureError) as exc:
+        report = {"schema": SCHEMA, "status": "invalid_capture", "error": str(exc)}
+        if args.json:
+            print(json.dumps(report, sort_keys=True))
+        else:
+            print(f"compare: {exc}", file=sys.stderr)
+        return 2
+
+    report = {
+        "schema": SCHEMA,
+        "status": "match" if oi is None else "diverged",
+        "oracle_event_count": len(oracle),
+        "native_event_count": len(native),
+        "native_start_index": start,
+        "native_start_seq": native[start]["seq"],
+        "oracle_start_seq": oracle[0]["seq"],
+        "alignment": alignment,
+        "matched_events": matched,
+        "first_divergence": None,
+    }
+    if oi is not None:
+        report["first_divergence"] = {
+            "oracle_index": oi,
+            "native_index": ni,
+            "oracle": oracle[oi] if oi < len(oracle) else None,
+            "native": native[ni] if ni < len(native) else None,
+            "oracle_context": context_at(oracle, oi),
+            "native_context": context_at(native, ni),
+        }
+    if args.json:
+        # The event signature is internal comparison state, not part of the
+        # stable JSON schema; strip it recursively from records/context.
+        def clean(value):
+            if isinstance(value, dict):
+                return {k: clean(v) for k, v in value.items() if k != "signature"}
+            if isinstance(value, list):
+                return [clean(v) for v in value]
+            if isinstance(value, tuple):
+                return list(value)
+            return value
+        print(json.dumps(clean(report), sort_keys=True))
+    elif oi is None:
+        print(f"MATCH: {matched} normalized events")
+    else:
+        mismatch = report["first_divergence"]
+        print(f"DIVERGED after {matched} normalized events")
+        if mismatch["oracle"] is None:
+            print("oracle stream ended first")
+        else:
+            e = mismatch["oracle"]
+            print(f"oracle seq={e['seq']} frame={e['frame']} pc=0x{e['pc']:06x} "
+                  f"{e['kind']} addr=0x{e['address']:08x} data=0x{e['data']:04x}")
+        if mismatch["native"] is None:
+            print("native stream ended first")
+        else:
+            e = mismatch["native"]
+            print(f"native seq={e['seq']} cycles={e['cycles']} pc=0x{e['pc']:06x} "
+                  f"{e['kind']} addr=0x{e['address']:08x} data=0x{e['data']:04x}")
+        print("PC/timing fields are context only; they are not equality keys.")
+    return 0 if oi is None else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

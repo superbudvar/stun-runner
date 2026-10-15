@@ -1038,6 +1038,106 @@ class PublicToolTests(unittest.TestCase):
             # The release must be attributed back to the ROM site.
             self.assertEqual(st["hstctl_writes"][1]["rom_site"], 0x200)
 
+    def test_compare_gsp_host_events_reports_first_semantic_divergence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            oracle = temp / "oracle.txt"
+            native = temp / "native.bin"
+            oracle.write_text(
+                "1 1 HSTDAT 00C0000C 00001234 0000FFFF 00000000 "
+                "00000100 00C0000C 00C00002 00C0000C\n"
+                "2 1 HSTCTL 00C00008 0000B800 0000FFFF 00000001 "
+                "00000110 00C0000C 00C00002 00000000\n"
+                "3 2 GSPRES 0060400C 00000000 0000FFFF 00000001 "
+                "00000120 00000000 00000000 00000000\n",
+                encoding="ascii")
+
+            def record(seq, cycles, address, pc, data, mask, width, kind,
+                       released=0):
+                return struct.pack("<QQIIHHB3xIB3x", seq, cycles, address, pc,
+                                   data, mask, width, kind, released)
+
+            # Native boot has two events before the MAME tap's first row. The
+            # matching PC differs by +2 because REG_PC in the memory callback
+            # points at the next unconsumed word; the comparator should use it
+            # to align, not to declare the streams unequal.
+            native.write_bytes(
+                record(0, 0, 0x0060400C, 0x402, 0, 0xFFFF, 16, 2, 0) +
+                record(1, 100, 0x00C00008, 0x414, 0xA000, 0xFFFF, 16, 1) +
+                record(2, 200, 0x00C0000C, 0x102, 0x1234, 0xFFFF, 16, 1) +
+                record(3, 300, 0x00C00008, 0x112, 0xB800, 0xFFFF, 16, 1) +
+                record(4, 400, 0x0060400C, 0x122, 0, 0xFFFF, 16, 2, 0))
+            result = subprocess.run(
+                [str(ROOT / "tools" / "compare-gsp-host-events"),
+                 str(oracle), str(native), "--json"],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["schema"], "stunrun-gsp-host-event-compare/v1")
+            self.assertEqual(report["status"], "match")
+            self.assertEqual(report["native_start_seq"], 2)
+            self.assertEqual(report["matched_events"], 3)
+
+            # A broken HSTCTL value must stop at the first mismatch and show
+            # both sides, not return a vague final-count difference.
+            data = bytearray(native.read_bytes())
+            struct.pack_into("<H", data, 3 * 40 + 24, 0x3800)
+            native.write_bytes(data)
+            result = subprocess.run(
+                [str(ROOT / "tools" / "compare-gsp-host-events"),
+                 str(oracle), str(native), "--json"],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["status"], "diverged")
+            self.assertEqual(report["matched_events"], 1)
+            self.assertEqual(report["first_divergence"]["oracle"]["data"], 0xB800)
+            self.assertEqual(report["first_divergence"]["native"]["data"], 0x3800)
+
+            # Wrong raw ABI stride is a malformed capture, not an empty match.
+            native.write_bytes(native.read_bytes() + b"x")
+            result = subprocess.run(
+                [str(ROOT / "tools" / "compare-gsp-host-events"),
+                 str(oracle), str(native), "--json"],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(json.loads(result.stdout)["status"], "invalid_capture")
+
+    def test_compare_gsp_host_events_keeps_mame_unmapped_host_writes_visible(self):
+        """The two producers do not record the same events; do not hide it.
+
+        A real native stream carries 262,766 writes to $00C0000E that the MAME
+        tap never records, because MAME's driver only decodes word offsets 0-6 of
+        the $C00000-$C03FFF host aperture. Treating that address as an ordinary
+        HSTDAT would let a later mismatch look like a data difference when it is
+        really a producer difference, so it is named distinctly in the report.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            oracle = temp / "oracle.txt"
+            native = temp / "native.bin"
+            oracle.write_text(
+                "1 1 HSTDAT 00C0000C 00000000 0000FFFF 00000000 "
+                "00000100 00C0000C 00C00002 00C0000C\n",
+                encoding="ascii")
+            native.write_bytes(
+                struct.pack("<QQIIHHB3xIB3x", 0, 0, 0x00C0000C, 0x100, 0, 0xFFFF,
+                            16, 1, 0)
+                + struct.pack("<QQIIHHB3xIB3x", 1, 10, 0x00C0000E, 0x104, 0, 0xFFFF,
+                              16, 1, 0))
+            result = subprocess.run(
+                [str(ROOT / "tools" / "compare-gsp-host-events"),
+                 str(oracle), str(native), "--json"],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report["status"], "diverged")
+            # The oracle has no further rows, so the mismatch is the exhausted
+            # oracle tail, not a fabricated equal record.
+            self.assertIsNone(report["first_divergence"]["oracle"])
+            self.assertEqual(report["first_divergence"]["native"]["kind"],
+                             "HSTDAT-UNMAPPED-0E")
+
     # ---- tools/mame-gsp-mirror-probe -------------------------------------
     #
     # The VRAM share is 4 MiB, not the 512 KiB both native/ models assume, and
