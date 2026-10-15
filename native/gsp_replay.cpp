@@ -273,6 +273,10 @@ int run(const char *capture_dir)
         uint16_t dpystrt, dpyadr, dpytap, dpyctl;
         const uint32_t seen = gsp_rtl_driver_display_regs_seen();
         gsp_rtl_driver_get_display_regs(&dpystrt, &dpyadr, &dpytap, &dpyctl);
+        std::fprintf(observations,
+            "# display frame=%u DPYSTRT=%04x DPYADR=%04x DPYTAP=%04x "
+            "DPYCTL=%04x core-set=%x\n",
+            frame, dpystrt, dpyadr, dpytap, dpyctl, seen);
         /* Never let the driver's illustrative frame-600 initializer masquerade
          * as GSP state. MAME's reset read is DPYSTRT=FFFF, DPYTAP=0,
          * DPYCTL=F010 (§30.4); DPYADR is timing-generator state and zero
@@ -281,6 +285,15 @@ int run(const char *capture_dir)
         checkpoint_regs.dpyadr  = (seen & 0x2u) ? dpyadr : 0u;
         checkpoint_regs.dpytap  = (seen & 0x4u) ? dpytap : 0u;
         checkpoint_regs.dpyctl  = (seen & 0x8u) ? dpyctl : 0xF010u;
+        std::fprintf(observations,
+            "# raster frame=%u DPYSTRT=%04x DPYADR=%04x DPYTAP=%04x "
+            "DPYCTL=%04x HEBLNK=%u HSBLNK=%u VEBLNK=%u VSBLNK=%u "
+            "FINESCROLL=%u\n",
+            frame, checkpoint_regs.dpystrt, checkpoint_regs.dpyadr,
+            checkpoint_regs.dpytap, checkpoint_regs.dpyctl,
+            checkpoint_regs.heblnk, checkpoint_regs.hsblnk,
+            checkpoint_regs.veblnk, checkpoint_regs.vsblnk,
+            checkpoint_regs.finescroll);
         uint16_t lo[STUNRUN_GSP_PALETTE_ENTRIES], hi[STUNRUN_GSP_PALETTE_ENTRIES];
         for (unsigned i = 0; i < STUNRUN_GSP_PALETTE_ENTRIES; ++i) {
             lo[i] = (uint16_t)(board.pal_lo[i*2] | (board.pal_lo[i*2+1] << 8));
@@ -393,13 +406,17 @@ int run(const char *capture_dir)
         (unsigned long long)(board.word_writes - baseline_word_writes),
         (unsigned long long)(board.vram_writes - baseline_vram_writes),
         asserts, clears, asserted);
-    std::fclose(observations);
-    std::fclose(deltas);
 
     const char *image = std::getenv("STUNRUN_REPLAY_PNG");
     if (!image) image = "gsp-replay-frame.png";
     if (!render_checkpoint(current_frame, image)) {
         std::fprintf(stderr, "gsp-replay: renderer rejected final state or could not write %s\n", image);
+        std::fclose(observations);
+        std::fclose(deltas);
+        stunrun_backend_pair_shutdown(&backends);
+        if (window) SDL_DestroyWindow(window);
+        if (SDL_WasInit(0)) SDL_Quit();
+        gsp_rtl_driver_shutdown();
         return 2;
     }
     unsigned lit = 0, colours = 0;
@@ -413,6 +430,8 @@ int run(const char *capture_dir)
         (unsigned long long)(board.vram_writes - baseline_vram_writes));
     printf("gsp-replay: HINT/INTOUT asserts=%u clears=%u currently=%d; host read responses absent from oracle capture\n",
         asserts, clears, asserted);
+    std::fclose(observations);
+    std::fclose(deltas);
     if (window) {
         bool running = true;
         while (running) {
