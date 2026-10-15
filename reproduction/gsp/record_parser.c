@@ -9,7 +9,7 @@
 int stunrun_gsp_record_address(uint32_t base, uint16_t index,
                                uint32_t *address)
 {
-    uint32_t offset = (uint32_t)index * STUNRUN_GSP_RECORD_BYTES;
+    uint32_t offset = (uint32_t)index * STUNRUN_GSP_INDEX_ADDRESS_UNITS;
 
     if (address == NULL || UINT32_MAX - base < offset)
         return 0;

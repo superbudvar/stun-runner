@@ -14,7 +14,7 @@ static int failures;
 
 int main(void)
 {
-    const uint16_t words[STUNRUN_GSP_RECORD_WORDS] = {
+    const uint16_t words[STUNRUN_GSP_RECORD_SAMPLE_WORDS] = {
         0x0100u, 0x0101u, 0x0102u, 0x0103u,
         0x0104u, 0x0105u, 0x0106u, 0x0107u
     };

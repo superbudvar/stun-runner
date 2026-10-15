@@ -887,6 +887,16 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn("STUNRUN_RAM_READ_PC", wrapper)
         self.assertIn("pc_filter", lua)
 
+    def test_ram_read_trace_supports_service_f2_schedule(self):
+        wrapper = (ROOT / "tools" / "mame-ram-read-trace").read_text(
+            encoding="utf-8")
+        lua = (ROOT / "mame" / "lua" / "ram-read-trace.lua").read_text(
+            encoding="utf-8")
+        self.assertIn('"service_f2"', wrapper)
+        self.assertIn("input_mode == 'service_f2'", lua)
+        self.assertIn("frame = 60, port = ':mainpcb:IN0'", lua)
+        self.assertIn("frame = 120, port = ':mainpcb:IN0'", lua)
+
     def test_ram_read_write_trace_exposes_same_run_capture(self):
         wrapper = (ROOT / "tools" / "mame-ram-read-write-trace").read_text(
             encoding="utf-8")

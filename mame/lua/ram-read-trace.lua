@@ -17,7 +17,10 @@ local pc_filter = pc_filter_text ~= '' and tonumber(pc_filter_text) or nil
 local capture_registers = os.getenv('STUNRUN_RAM_READ_REGISTERS') == '1'
 local frame = 0
 local events = {}
-local input_events = input_mode == 'late_drive' and {
+local input_events = input_mode == 'service_f2' and {
+    {frame = 60, port = ':mainpcb:IN0', field = 'Service Mode', value = 0},
+    {frame = 120, port = ':mainpcb:IN0', field = 'Service Mode', value = 1}
+} or input_mode == 'late_drive' and {
     {frame = 650, port = ':mainpcb:IN0', field = 'Coin 1', value = 1},
     {frame = 680, port = ':mainpcb:IN0', field = 'Coin 1', value = 0},
     {frame = 750, port = ':mainpcb:a80000', field = '1 Player Start', value = 1},

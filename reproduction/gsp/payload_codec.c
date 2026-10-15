@@ -1,133 +1,68 @@
-/* GSP display-list payload codec. See payload_codec.h for what is measured and
- * what is deliberately left unclaimed. */
+/* Bounded F0 prefix decoder and primary FILL XY register mapping. */
 
 #include "payload_codec.h"
 
-#include <stdint.h>
-#include <string.h>
-
-size_t stunrun_gsp_payload_decode(const uint16_t *words, size_t word_count,
-                                  stunrun_gsp_payload_record_t *records_out,
-                                  size_t record_capacity,
-                                  size_t *out_count)
+int stunrun_gsp_payload_decode_prefix(const uint16_t *words, size_t word_count,
+                                      size_t word_offset,
+                                      stunrun_gsp_payload_prefix_t *out)
 {
-    size_t records;
+    stunrun_gsp_payload_prefix_t decoded;
 
-    if (out_count != NULL)
-        *out_count = 0u;
-    if (words == NULL || records_out == NULL || out_count == NULL)
-        return 0u;
-    /* A trailing partial record means the producer and this reader disagree
-     * about the record size. Guessing which is right would turn a framing
-     * change into silently truncated geometry. */
-    if (word_count % STUNRUN_GSP_PAYLOAD_RECORD_WORDS != 0u)
-        return 0u;
+    if (words == NULL || out == NULL || word_offset > word_count ||
+        word_count - word_offset < STUNRUN_GSP_PAYLOAD_PREFIX_WORDS)
+        return 0;
 
-    records = word_count / STUNRUN_GSP_PAYLOAD_RECORD_WORDS;
-    if (records > record_capacity)
-        return 0u;
-
-    memcpy(records_out, words, word_count * sizeof(uint16_t));
-    *out_count = records;
-    return records;
+    decoded.control = words[word_offset + 0u];
+    decoded.x       = words[word_offset + 1u];
+    decoded.dx      = words[word_offset + 2u];
+    decoded.y       = words[word_offset + 3u];
+    *out = decoded;
+    return 1;
 }
 
-size_t stunrun_gsp_payload_encode(const stunrun_gsp_payload_record_t *records,
-                                  size_t record_count,
-                                  uint16_t *words_out, size_t word_capacity,
-                                  size_t *out_count)
+size_t stunrun_gsp_payload_encode_prefix(
+    const stunrun_gsp_payload_prefix_t *prefix,
+    uint16_t *words_out, size_t word_capacity)
 {
-    size_t words;
-
-    if (out_count != NULL)
-        *out_count = 0u;
-    if (records == NULL || words_out == NULL || out_count == NULL)
-        return 0u;
-    if (record_count == 0u)
-        return 0u;
-    if (record_count > SIZE_MAX / STUNRUN_GSP_PAYLOAD_RECORD_WORDS)
+    if (prefix == NULL || words_out == NULL ||
+        word_capacity < STUNRUN_GSP_PAYLOAD_PREFIX_WORDS)
         return 0u;
 
-    words = record_count * STUNRUN_GSP_PAYLOAD_RECORD_WORDS;
-    if (words > word_capacity)
-        return 0u;
-
-    memcpy(words_out, records, words * sizeof(uint16_t));
-    *out_count = words;
-    return words;
-}
-
-static uint16_t word(const stunrun_gsp_payload_record_t *r, size_t index)
-{
-    return r == NULL ? 0u : r->raw[index];
-}
-
-uint16_t stunrun_gsp_payload_control_word(const stunrun_gsp_payload_record_t *r)
-{
-    return word(r, 0u);
-}
-
-uint16_t stunrun_gsp_payload_field_a8_initial(
-    const stunrun_gsp_payload_record_t *r)
-{
-    return word(r, 1u);
-}
-
-uint16_t stunrun_gsp_payload_field_a6(const stunrun_gsp_payload_record_t *r)
-{
-    return word(r, 2u);
-}
-
-uint16_t stunrun_gsp_payload_unmapped(const stunrun_gsp_payload_record_t *r,
-                                      size_t index)
-{
-    if (r == NULL)
-        return 0u;
-    if (index < STUNRUN_GSP_PAYLOAD_FIRST_UNMAPPED_WORD ||
-        index >= STUNRUN_GSP_PAYLOAD_RECORD_WORDS)
-        return 0u;
-    return r->raw[index];
+    words_out[0] = prefix->control;
+    words_out[1] = prefix->x;
+    words_out[2] = prefix->dx;
+    words_out[3] = prefix->y;
+    return STUNRUN_GSP_PAYLOAD_PREFIX_WORDS;
 }
 
 stunrun_gsp_payload_control_t stunrun_gsp_payload_control(
-    const stunrun_gsp_payload_record_t *r)
+    const stunrun_gsp_payload_prefix_t *prefix)
 {
-    stunrun_gsp_payload_control_t c;
-    uint16_t w = stunrun_gsp_payload_control_word(r);
+    stunrun_gsp_payload_control_t c = {0};
 
-    memset(&c, 0, sizeof(c));
-    c.word = w;
-    c.skip = (int)((w >> STUNRUN_GSP_CTL_SKIP_BIT) & 1u);
-    c.mode = (int)((w >> STUNRUN_GSP_CTL_MODE_BIT) & 1u);
-    c.expand = (uint16_t)(w & STUNRUN_GSP_CTL_EXPAND_MASK);
-    c.low8 = (uint16_t)(w & STUNRUN_GSP_CTL_LOW8_MASK);
-    /* The handler branches first on bit 15 (skip/return), then bit 12 (jump
-     * to alternate routine $FFF48FC0). Only with both clear does it reach the
-     * B9/COLOR1 selector at $FFF45160-$FFF452A0. The selector is also bypassed
-     * when external state A13 bit 3 is set; this record-only function cannot
-     * observe A13 and reports the per-record action assuming that gate is clear.
-     *
-     * Literal B9/COLOR1 branch tree:
-     *
-     *   (ctl & 0x0c00) == 0:
-     *       (ctl & 0x00ff) == 4 -> load COLOR1_B at $3452A0
-     *       otherwise           -> retain B9=A12 (set at $450C0)
-     *   (ctl & 0x0c00) == 0x0400 -> load COLOR1_B at $3452A0
-     *   (ctl & 0x0c00) == 0x0800 -> load COLOR1_A at $345200
-     *   (ctl & 0x0c00) == 0x0c00 -> branch to alternate worker $FFF45800
-     *
-     * These are observed code paths, not claims about geometric meaning or
-     * pixel size. */
+    if (prefix == NULL)
+        return c;
+
+    c.word = prefix->control;
+    c.skip = (uint8_t)((c.word >> STUNRUN_GSP_CTL_SKIP_BIT) & 1u);
+    c.mode_jump = (uint8_t)((c.word >> STUNRUN_GSP_CTL_MODE_BIT) & 1u);
+    c.selector = (uint16_t)(c.word & STUNRUN_GSP_CTL_SELECTOR_MASK);
+    c.low8 = (uint16_t)(c.word & STUNRUN_GSP_CTL_LOW8_MASK);
+
+    /* Outer dispatch at $FFF450A0-$FFF450E0 precedes this selector:
+     * bit15 returns at $FFF44D50; bit12 jumps to $FFF48FC0. */
     if (c.skip) {
         c.color_action = STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SKIP;
         return c;
     }
-    if (c.mode) {
+    if (c.mode_jump) {
         c.color_action = STUNRUN_GSP_PAYLOAD_COLOR_ACTION_MODE_ALT;
         return c;
     }
 
-    switch (c.expand) {
+    /* The selector at $FFF45160-$FFF452A0. The external A13 bit-3 branch is
+     * not derivable from this prefix and is handled by primary_fill_xy(). */
+    switch (c.selector) {
     case 0x0000u:
         c.color_action = c.low8 == STUNRUN_GSP_CTL_LOW8_VALUE
             ? STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_B
@@ -147,31 +82,30 @@ stunrun_gsp_payload_control_t stunrun_gsp_payload_control(
 }
 
 int stunrun_gsp_payload_primary_fill_xy(
-    const stunrun_gsp_payload_record_t *r, uint32_t a11, uint32_t a13,
+    const stunrun_gsp_payload_prefix_t *prefix, uint32_t a11, uint32_t a13,
     stunrun_gsp_fill_xy_setup_t *out)
 {
     stunrun_gsp_payload_control_t control;
     stunrun_gsp_fill_xy_setup_t result;
 
-    if (r == NULL || out == NULL)
+    if (prefix == NULL || out == NULL)
         return 0;
 
-    control = stunrun_gsp_payload_control(r);
-    if (control.skip || control.mode ||
+    control = stunrun_gsp_payload_control(prefix);
+    if (control.skip || control.mode_jump ||
         control.color_action == STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SELECTOR_ALT ||
         (a13 & (1u << 3)) != 0u)
         return 0;
 
-    /* Literal dataflow from the disassembly:
-     *   word1 -> A8 -> B0.X
-     *   word3 -> A8 -> MOVY A8,B0, so B0.Y = word3
-     *   word2 -> A6.X; MOVY word3,A6 sets A6.Y
-     *   ADDXY A11,A6; B7=A6; SUBXY B2,B7 leaves B7.X=word2 and
-     *   B7.Y=A11.Y, since B2.Y is the same word3 start value.
-     *   FILL XY consumes B2 as DADDR and B7 as DYDX. */
-    result.destination_x = r->raw[1];
-    result.destination_y = r->raw[3];
-    result.dx = r->raw[2];
+    /* Literal dataflow:
+     *   F0 word1 -> A8 -> B0.X
+     *   F0 word2 -> A6.X
+     *   F0 word3 -> A8 -> MOVY A8,B0 and MOVY A8,A6 (both Y starts)
+     *   ADDXY A11,A6; B7=A6; SUBXY B2,B7 leaves B7.DY=A11.Y
+     *   FILL XY consumes B2=DADDR and B7=DYDX. */
+    result.destination_x = prefix->x;
+    result.destination_y = prefix->y;
+    result.dx = prefix->dx;
     result.dy = (uint16_t)(a11 >> 16);
     *out = result;
     return 1;

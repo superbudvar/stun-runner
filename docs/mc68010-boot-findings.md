@@ -10455,3 +10455,186 @@ The branch targets resolve as follows:
 The outstanding job is no longer "what is the payload?" in the abstract. It is
 two bounded analyses: trace the `$FFF45800` FILL setup, then the bounds-checking
 contract at `$FFF48FC0`, with A11/A13 and VRAM writes captured at the same frame.
+
+## 60. The rest of the primary record is a stepping program, not padding
+
+Continued the primary FILL worker after the first rectangle setup. The reads at
+`$FFF45510-$FFF45610` were previously called "unmapped tail"; that was too broad.
+They feed two arithmetic pairs and a loop scalar:
+
+```asm
+00345510: MOVE  *A5+,A8,1      ; field F1
+00345520: CMP   A12,A8         ; A12 sentinel -> RETS at 45630
+00345540: MOVE  A8,A7
+00345550: SLL   10h,A7
+00345560: SRA   10h,A8
+00345570: ADDI  10000h,A8
+003455a0: MOVE  *A5+,A9,1      ; next F1 field
+003455b0: MOVE  A9,B1
+003455c0: SLL   10h,A9
+003455d0: SRA   10h,B1
+003455e0: ADDI  10000h,B1
+00345610: MOVE  *A5+,A10,0     ; F0 field
+00345620: JR    345500h
+...
+00345460: ADD   A9,A0
+00345470: ADDC  B1,B0
+00345480: ADD   A7,A4
+00345490: ADDC  A8,A6
+00345500: DSJS  A10,345460h
+```
+
+Two observations are direct from the listing:
+
+1. Each F1 value is split/transformed into two registers, then used in a paired
+   `ADD`/`ADDC` update. The first pair is A7/A8 -> A4/A6; the second is A9/B1 ->
+   A0/B0. This is fixed-point-style stepping arithmetic; the exact geometric
+   axis/quantity each pair advances is **not established**.
+2. A10 is decremented/tested by `DSJS` and also participates in signed multiplies
+   in the alternate worker. Call it a loop scalar for now, not a vertex count or
+   a line count.
+
+The primary worker can therefore build a start rectangle from word1/2/3 plus
+A11.Y, then consume one or more stepping tuples until the A12 sentinel. This is
+consistent with an ADSP-generated outline/shape, but the data does not yet prove
+"slope", "lighting", or any named geometry quantity. The decisive unknown is
+now the field descriptor F1 interpretation and the meanings of the two
+accumulator pairs.
+
+The C codec's `unmapped` range now starts at word 4. Word 3 is exposed as `y()`
+from the primary FILL path. Words 4..7 are preserved raw: the consumer's
+register destinations and arithmetic are known, but their source-field widths,
+values after F1 extraction, and geometric meanings are not.
+
+## 61. Retract the fixed 8-word entry: bit-address stride and F1 are not bytes
+
+A final unit check against `docs/tms34010-reference.md:724-736` and the actual
+field helpers in the MAME source found another factor-of-eight error in §54–§60.
+The TMS34010's data addresses are **bit addresses**. The unit added by the
+consumer's `SLL 4h,A5` is 16 bits, not 16 bytes.
+
+### 61.1 What `SLL 4h` actually means
+
+```asm
+00345040: SLL 4h,A5
+00345050: ADD A1,A5
+```
+
+`A5 = A1 + index*0x10` in **logical bit-address units**. One index step is 16
+bits = one 16-bit word = two physical bytes. The M5 selected-index example
+contains values `0x0001, 0x0011, 0x0021, ...`; those values are 16 indices apart,
+so their selected starts are 16 words = 32 physical bytes apart. They are not
+16 bytes apart.
+
+This retracts §55.1's "SLL 4h gives a 16-byte stride" and corrects
+`analysis/m5-visible-output.md` and `reproduction/gsp/record_parser.h`. Its
+address helper still computes the right literal arithmetic, but the unit is
+logical bit-address units; `record_parser` stores an eight-word observation
+sample, not a proven complete semantic entry.
+
+The `raw=` strings in `M1_GSP_DL_CALL` are fixed 64/128-word capture windows.
+Their length being divisible by eight is **not** evidence of eight-word entry
+boundaries. §54/§56's "8 records" and §55's fixed-record interpretation are
+withdrawn. The 64-word vector remains valid as captured words, not as eight
+proven records.
+
+### 61.2 F0 is 16 bits; F1 is 32 bits
+
+The uploaded program sets the field descriptors at startup:
+
+```asm
+00340000: SETF 10h,0,0     ; F0
+00340010: SETF 20h,0,1     ; F1
+```
+
+The pinned observer MAME source makes the mechanics explicit:
+
+* `tms34010.cpp:158-159`: `FW(i) = (m_st >> (i?6:0)) & 0x1f`,
+  `FWEX(i) = (m_st >> (i?6:0)) & 0x3f`.
+* `34010ops.hxx:839-847`: `SETF` writes the selected six-bit descriptor into
+  `m_st`.
+* `34010fld.hxx:663-670`: F0 descriptor `0x10` selects `rfield_z_16`; F1
+  descriptor `0x20` selects `rfield_32`.
+* `34010ops.hxx:1269-1283`: `MOVE *Rs+,Rd,F` reads with `RFIELD(F)` and increments
+  by `fw_inc[FW(F)]`; `fw_inc[0] == 32` logical bits, i.e. two words.
+
+So the primary worker's stream reads are:
+
+```text
+F0: word0 control       16 bits
+F0: word1 -> A8         16 bits
+F0: word2 -> A6         16 bits
+F0: word3 -> A8         16 bits
+F1: next value -> A8     32 bits = 2 words
+F1: next value -> A9     32 bits = 2 words
+F0: next value -> A10    16 bits
+```
+
+That is already **nine words** before accounting for the following sentinel or
+additional F1 tuples. There is no fixed eight-word record established here.
+The primary FILL prefix of four F0 words remains valid; the rest of the entry is
+a variable stream of 32-bit F1 fields and 16-bit F0 fields.
+
+### 61.3 Corrected C boundary
+
+`reproduction/gsp/payload_codec.{h,c}` no longer groups the stream into
+8-word records. It now decodes only the first four F0 words as a **primary FILL
+prefix**, with an explicit offset into a larger raw stream. The C helper derives
+DADDR/DYDX from that prefix plus caller A11/A13. No assertion is made about the
+entry length, the F1 tuple boundary, or the raw capture chunk size.
+
+`record_parser`'s eight-word array remains a sampled raw window from its earlier
+M5 trace. Its address-stride constant/comment now says address units, not bytes;
+this path does not prove that eight words are a complete record. Any future
+semantic parser must honor the per-field F0/F1 widths above, not slice every
+eight words and hope.
+
+### 61.4 Next evidence needed
+
+Capture the live A5 and effective F0/F1 values at `$FFF45510`, `$FFF455A0`, and
+`$FFF45610`, along with the source bit addresses and data. This will establish
+exactly which words in the MAME raw stream form the two F1 values, the F0 loop
+scalar, and the sentinel, and whether the selected-index gaps are padding,
+parallel streams, or separate entries. Until then, the prefix is decoded and
+tested; the full geometry payload remains variable-length and partly unknown.
+
+## 62. The old service_f2 runtime capture does not reproduce in the current runner
+
+To capture actual F1 reads with A5 and caller registers, I extended
+`tools/mame-ram-read-trace` with the same `service_f2` input schedule used by the
+committed display-list trace: Service Mode value 0 at frame 60, value 1 at frame
+120. Added a public test for the option and both scheduled edges.
+
+On the **frozen oracle** `/mnt/build/mame-oracle/mame`, five repeated runs with
+the same command (`frames=180`, capture 60-180, input `service_f2`) all reported
+`call_count=0` and GSP state sample PC=0. Their `canonical_log_sha256` values
+were all different, so these are not identical captures and cannot be compared
+byte-for-byte. This does **not** refute the committed 2026-10-10 capture, which
+reported seven calls in 180 frames; it establishes that the same input schedule
+does not reproduce it in today's runner/environment. Per AGENTS.md's input rule,
+I make no behavioral claim from a single run; the five-run result is recorded as
+non-reproduction, not as an oracle change.
+
+ROM validation is clean (`tools/check-roms roms /mnt/build/mame-oracle/mame`),
+but the cause is UNKNOWN: possible difference in the old capture's invocation,
+input/harness state, or runtime configuration. We need its full provenance before
+using it to assert a live F1 field value.
+
+### Consequence for q9t
+
+The **static** field-width fact remains strong and independent of that runtime
+capture: the uploaded program sets F0 to `0x10` and F1 to `0x20`; pinned MAME's
+`SETF`/`rfield` source maps those to a 16-bit F0 and a 32-bit F1 read. Thus the
+first four F0 fields form a useful prefix, but any F1 field consumes two 16-bit
+words. No fixed 8-word boundary follows.
+
+The C code has been changed accordingly: `payload_codec` now decodes only a
+four-word F0 prefix at an explicit word offset, and its primary FILL helper takes
+A11/A13 as inputs. It no longer groups the capture into eight-word records or
+claims a full payload round-trip. Five freshly rebuilt controls fail (X/DX swap,
+wrong Y, low-half A11 for DY, ignoring A13, and prefix offset +1); restored
+passes.
+
+Next capture needs to start from a reproducible state that actually reaches the
+consumer. Until then, static disassembly gives field widths and register mapping,
+but the runtime value sequence after the prefix remains UNKNOWN.

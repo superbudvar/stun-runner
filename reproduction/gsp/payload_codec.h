@@ -1,38 +1,16 @@
-/* GSP display-list payload codec: the 8-word record container observed in the
- * SOM -> $810000 -> HSTDAT transfer.
+/* Primary FILL XY prefix decoder for the TMS34010 SOM-fed display-list stream.
  *
- * WHAT THIS IS. A faithful container codec plus named accessors for the fields
- * the GSP consumer demonstrably assigns. It is NOT a semantic decoder: words 3
- * through 7 are carried through untouched because the consumer paths that read
- * them have not been disassembled. Preserving them raw is the honest position --
- * see docs/mc68010-boot-findings.md sections 54 and 55.
+ * This deliberately does NOT impose a fixed record or entry size. The program
+ * configures F0=16 bits and F1=32 bits; after the first four F0 fields it reads
+ * F1 fields that span two 16-bit words. The overall entry boundary is therefore
+ * not established by this prefix decoder. See docs/mc68010-boot-findings.md §61.
  *
- * WHAT WAS MEASURED, and where each claim comes from.
- *
- *  - Records are 8 words, from offset 0, no header padding.
- *      tools/disasm-gsp: `SLL 4h,A5 / ADD A1,A5` at $FFF45000 gives a 16-byte
- *      stride. Independently, every `raw=` field in the committed captures is
- *      exactly 64 or 128 words = 8 or 16 whole records, never a remainder
- *      (findings 54.2 correction).
- *  - Word 0 is a control word, consumed into A4 at $FFF45090:
- *        BTST Fh,A4    bit 15    -> JRNE, a skip/end select
- *        BTST Ch,A4    bit 12    -> JRNE, a second mode select
- *        ANDI C00h,A0  bits 10-11 -> selects one of four code paths
- *        ANDI FFh,A0   bits 0-7   -> CMPI 4h on one of those paths
- *  - Word 1 is loaded into A8 and then moved to B0. The handler later executes
- *    FILL XY, not PIXBLT; B0's architectural PIXBLT role does not prove this
- *    payload field is a source address.
- *  - Word 2 is loaded into A6.
- *  - The worker sets B9/COLOR1 to either 0x01010101 at $00345200 or
- *    0x15151515 at $003452A0, depending on the control-word branch.
- *
- * WHAT IS DELIBERATELY NOT CLAIMED.
- *
- *  - The geometric meanings of the fields. They are consumed by XY addressing
- *    and FILL XY, but have not been tied to origin/extent/other shape terms.
- *  - That words 3..7 mean anything.
- *  - That these COLOR1 values correspond to particular pixel widths or
- *    expansion modes.
+ * Proven primary-path field mapping at $FFF45090-$FFF454E0:
+ *   F0 word 0 -> control
+ *   F0 word 1 -> A8 -> B0.X (FILL DADDR.X)
+ *   F0 word 2 -> A6.X (FILL DYDX.DX)
+ *   F0 word 3 -> MOVY into B0/A6 (FILL DADDR.Y)
+ * Further F1/F0 fields are left to the caller as raw stream words.
  */
 #ifndef STUNRUN_GSP_PAYLOAD_CODEC_H
 #define STUNRUN_GSP_PAYLOAD_CODEC_H
@@ -44,12 +22,10 @@
 extern "C" {
 #endif
 
-/* Observed record size. Changing this is a finding, not a refactor. */
-#define STUNRUN_GSP_PAYLOAD_RECORD_WORDS 8u
-
-/* The two B9/COLOR1 values loaded by the observed control-word branches. */
+#define STUNRUN_GSP_PAYLOAD_PREFIX_WORDS 4u
 #define STUNRUN_GSP_PAYLOAD_COLOR1_A 0x01010101u
 #define STUNRUN_GSP_PAYLOAD_COLOR1_B 0x15151515u
+
 #define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_INHERIT 0u
 #define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_A   1u
 #define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SET_B   2u
@@ -57,83 +33,56 @@ extern "C" {
 #define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_SKIP    4u
 #define STUNRUN_GSP_PAYLOAD_COLOR_ACTION_MODE_ALT 5u
 
-/* Control-word masks, named for the instruction that uses them rather than for
- * a meaning we have not established. */
-#define STUNRUN_GSP_CTL_SKIP_BIT    15u     /* BTST Fh,A4   */
-#define STUNRUN_GSP_CTL_MODE_BIT    12u     /* BTST Ch,A4   */
-#define STUNRUN_GSP_CTL_EXPAND_MASK 0x0C00u  /* ANDI C00h,A0 */
-#define STUNRUN_GSP_CTL_LOW8_MASK   0x00FFu  /* ANDI FFh,A0  */
-#define STUNRUN_GSP_CTL_LOW8_VALUE  0x0004u  /* CMPI 4h,A0   */
+#define STUNRUN_GSP_CTL_SKIP_BIT      15u
+#define STUNRUN_GSP_CTL_MODE_BIT      12u
+#define STUNRUN_GSP_CTL_SELECTOR_MASK 0x0C00u
+#define STUNRUN_GSP_CTL_LOW8_MASK     0x00FFu
+#define STUNRUN_GSP_CTL_LOW8_VALUE    0x0004u
 
-/* First word whose meaning is unknown; everything from here on is carried raw. */
-#define STUNRUN_GSP_PAYLOAD_FIRST_UNMAPPED_WORD 3u
-
-typedef struct stunrun_gsp_payload_record {
-    uint16_t raw[STUNRUN_GSP_PAYLOAD_RECORD_WORDS];
-} stunrun_gsp_payload_record_t;
+typedef struct stunrun_gsp_payload_prefix {
+    uint16_t control; /* F0 word 0 -> A4 */
+    uint16_t x;       /* F0 word 1 -> A8 -> B0.X */
+    uint16_t dx;      /* F0 word 2 -> A6.X -> B7.DX */
+    uint16_t y;       /* F0 word 3 -> MOVY -> B0.Y / A6.Y */
+} stunrun_gsp_payload_prefix_t;
 
 typedef struct stunrun_gsp_payload_control {
     uint16_t word;
-    int      skip;    /* bit 15, per BTST Fh,A4 */
-    int      mode;    /* bit 12, per BTST Ch,A4 */
-    uint16_t expand;  /* bits 10-11, per ANDI C00h,A0 */
-    uint16_t low8;    /* bits 0-7, per ANDI FFh,A0 */
-    /* Result of literal control flow. Selector actions assume the bit-15
-     * skip, bit-12 mode, and external A13 bit-3 gates were not taken. */
+    uint8_t skip;
+    uint8_t mode_jump;
+    uint16_t selector;
+    uint16_t low8;
+    /* Selector-path B9/COLOR1 action, assuming outer gates are not taken and
+     * external A13 bit 3 is clear. */
     uint8_t color_action;
 } stunrun_gsp_payload_control_t;
 
-/* Register-level setup produced by the primary FILL XY worker. These values
- * are XY/DYDX operands, not asserted screen-space pixel coordinates. */
 typedef struct stunrun_gsp_fill_xy_setup {
-    uint16_t destination_x; /* B2 low half: word 1 -> A8 -> B0 -> B2 */
-    uint16_t destination_y; /* B2 high half: word 3 -> A8 -> MOVY -> B0 */
-    uint16_t dx;            /* B7 low half: word 2 -> A6 -> B7 */
-    uint16_t dy;            /* B7 high half: A11.Y added to A6 then SUBXY B2 */
+    uint16_t destination_x;
+    uint16_t destination_y;
+    uint16_t dx;
+    uint16_t dy;
 } stunrun_gsp_fill_xy_setup_t;
 
-/* Split a word stream into records.
- *
- * Rejects rather than guesses. A word count that is not a whole number of
- * records, a NULL stream or output, or an undersized buffer all return 0 with
- * *out_count set to 0. Returns the record count on success. */
-size_t stunrun_gsp_payload_decode(const uint16_t *words, size_t word_count,
-                                  stunrun_gsp_payload_record_t *records_out,
-                                  size_t record_capacity,
-                                  size_t *out_count);
+/* Decode exactly the four initial F0 fields at word_offset in a larger stream.
+ * Rejects short/NULL input without changing *out. Returns 1 on success. */
+int stunrun_gsp_payload_decode_prefix(const uint16_t *words, size_t word_count,
+                                      size_t word_offset,
+                                      stunrun_gsp_payload_prefix_t *out);
 
-/* Re-emit records as a word stream: the exact inverse of decode, so that for any
- * input decode accepted, encode(decode(x)) == x. Rejects the same inputs. */
-size_t stunrun_gsp_payload_encode(const stunrun_gsp_payload_record_t *records,
-                                  size_t record_count,
-                                  uint16_t *words_out, size_t word_capacity,
-                                  size_t *out_count);
+/* Encode the four F0 prefix words; returns 4 on success, 0 on invalid input. */
+size_t stunrun_gsp_payload_encode_prefix(
+    const stunrun_gsp_payload_prefix_t *prefix,
+    uint16_t *words_out, size_t word_capacity);
 
-/* Field accessors: the literal words the consumer loads at $FFF45090. */
-uint16_t stunrun_gsp_payload_control_word(const stunrun_gsp_payload_record_t *r);
-uint16_t stunrun_gsp_payload_field_a8_initial(
-    const stunrun_gsp_payload_record_t *r);
-uint16_t stunrun_gsp_payload_field_a6(const stunrun_gsp_payload_record_t *r);
-
-/* Read one of the unmapped words (index 3..7). Reachable so a caller can carry
- * them; it asserts nothing about what they mean. Returns 0 for an out-of-range
- * index or a NULL record. */
-uint16_t stunrun_gsp_payload_unmapped(const stunrun_gsp_payload_record_t *r,
-                                      size_t index);
-
-/* Derive the control word's literal tests and resulting B9 setup action. */
 stunrun_gsp_payload_control_t stunrun_gsp_payload_control(
-    const stunrun_gsp_payload_record_t *r);
+    const stunrun_gsp_payload_prefix_t *prefix);
 
-/* Reconstruct the primary worker's FILL XY operands from one record.
- *
- * a11 is the caller-provided register value at the point the worker executes
- * ADDXY A11,A6. a13 is the live A13 register tested by BTST 3h,A13. Returns 1
- * and fills `out` only when this record takes the primary worker: bit15 skip,
- * bit12 mode jump, selector 0xC00, or A13 bit3 all reject the path. Returns 0
- * without touching output on NULL/alternate input. */
+/* Reconstruct primary FILL XY operands.
+ * a11 is caller state consumed by ADDXY A11,A6; a13 is live external branch
+ * state consumed by BTST 3h,A13. Rejects all paths that divert from primary. */
 int stunrun_gsp_payload_primary_fill_xy(
-    const stunrun_gsp_payload_record_t *r, uint32_t a11, uint32_t a13,
+    const stunrun_gsp_payload_prefix_t *prefix, uint32_t a11, uint32_t a13,
     stunrun_gsp_fill_xy_setup_t *out);
 
 #ifdef __cplusplus
