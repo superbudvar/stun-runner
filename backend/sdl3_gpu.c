@@ -154,7 +154,7 @@ static bool sdl3_gpu_init(void *user, uint32_t game_w, uint32_t game_h,
 
     /* Set the source (game frame) and destination (window) rects */
     b->src_rect = (SDL_FRect){ 0.0f, 0.0f, (float)game_w, (float)game_h };
-    b->dst_rect = (SDL_FRect){ 0.0f, 0.0f, (float)win_w, (float)win_h };
+    b->dst_rect = fit_4_3(win_w, win_h);
 
     /* Allocate staging buffer for palette expansion */
     size_t staging_bytes = (size_t)game_w * game_h * 3;
@@ -275,13 +275,38 @@ static void sdl3_gpu_present(void *user)
     SDL_RenderPresent(b->renderer);
 }
 
+/* Fit the 512x240 game frame into a 4:3 rect centred in the window, leaving
+ * black bars instead of stretching.
+ *
+ * The GSP scans out 512x240, but this board's raster is
+ * set_raw(5000000*2, 634, 0, 512, 262, 0, 228) -- 512x228 visible on a 4:3
+ * multisync monitor.  The pixels are therefore not square (0.625 as wide as
+ * they are tall), and filling the window with the 2.133:1 image stretched it
+ * by up to 1.6x on a 16:9 window.  Letterboxing keeps the frame comparable to
+ * an oracle frame pixel for pixel, which a stretched one never is. */
+static SDL_FRect fit_4_3(uint32_t win_w, uint32_t win_h)
+{
+    const float target = 4.0f / 3.0f;
+    float w, h, ww = (float)win_w, wh = (float)win_h;
+
+    if (wh <= 0.0f || ww <= 0.0f)
+        return (SDL_FRect){ 0.0f, 0.0f, ww, wh };
+    if (ww / wh > target) {          /* window wider than 4:3 -> pillarbox */
+        h = wh;
+        w = wh * target;
+    } else {                         /* window taller than 4:3 -> letterbox */
+        w = ww;
+        h = ww / target;
+    }
+    return (SDL_FRect){ (ww - w) * 0.5f, (wh - h) * 0.5f, w, h };
+}
+
 static void sdl3_gpu_on_resize(void *user, uint32_t win_w, uint32_t win_h)
 {
     sdl3_gpu_backend_t *b = (sdl3_gpu_backend_t *)user;
     b->win_w = win_w;
     b->win_h = win_h;
-    b->dst_rect.w = (float)win_w;
-    b->dst_rect.h = (float)win_h;
+    b->dst_rect = fit_4_3(win_w, win_h);
 }
 
 /* ---- GPU API path (future — compiled in, not active) ----

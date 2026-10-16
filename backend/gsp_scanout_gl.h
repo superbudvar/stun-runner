@@ -12,6 +12,16 @@
 typedef struct SDL_Window SDL_Window;
 typedef struct stunrun_gsp_gl_scanout stunrun_gsp_gl_scanout_t;
 
+/* When true (the default), the 512x240 frame is fitted into a 4:3 rect
+ * centred in the window and the remainder is left black.  This board's raster
+ * is set_raw(...,634,0,512,262,0,228) -- 512x228 visible on a 4:3 multisync
+ * monitor -- so the pixels are not square and stretching to fill an arbitrary
+ * window distorts the picture.  Set false ONLY to compare the two scanout paths
+ * pixel-for-pixel in an unscaled window; a parity test that forgets this sees
+ * the letterbox bars as content disagreement. */
+void stunrun_gsp_gl_scanout_set_letterbox(stunrun_gsp_gl_scanout_t *scanout,
+                                          int letterbox);
+
 stunrun_gsp_gl_scanout_t *stunrun_gsp_gl_scanout_create(SDL_Window *window);
 int stunrun_gsp_gl_scanout_present(stunrun_gsp_gl_scanout_t *scanout,
                                     const uint16_t *vram, size_t vram_words,

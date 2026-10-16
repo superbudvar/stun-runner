@@ -55,6 +55,12 @@ int main(void)
     }
     SDL_GL_DeleteContext(probe_context);
     scanout = stunrun_gsp_gl_scanout_create(window);
+    /* This test compares the GL scanout against the CPU reference pixel for
+     * pixel in an unscaled window.  The display path letterboxes to 4:3, which
+     * in a 512x240 window would pillarbox the image and make the bars read as
+     * a content disagreement.  Turn it off HERE ONLY. */
+    if (scanout)
+        stunrun_gsp_gl_scanout_set_letterbox(scanout, 0);
     if (!scanout) {
         fprintf(stderr, "FAIL: GL scanout initialization failed\n");
         SDL_DestroyWindow(window); SDL_Quit(); free(vram); free(gpu_rgb);

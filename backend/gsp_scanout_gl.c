@@ -27,6 +27,8 @@ struct stunrun_gsp_gl_scanout {
     GLuint palette_hi_texture;
     GLuint lines_texture;
     uint8_t line_bytes[STUNRUN_RENDER_HEIGHT * 8u];
+    /* 1 = fit into 4:3 and letterbox (default). 0 = stretch, for parity only. */
+    int letterbox;
 };
 
 static const char *vertex_shader_source =
@@ -43,6 +45,7 @@ static const char *fragment_shader_source =
     "uniform vec2 u_window_size;\n"
     "uniform float u_visible_width;\n"
     "uniform float u_palbank;\n"
+    "uniform float u_letterbox;\n"
     "float byte_at(vec4 v, int n) {\n"
     "  if (n == 0) return floor(v.r * 255.0 + 0.5);\n"
     "  if (n == 1) return floor(v.g * 255.0 + 0.5);\n"
@@ -50,8 +53,32 @@ static const char *fragment_shader_source =
     "  return floor(v.a * 255.0 + 0.5);\n"
     "}\n"
     "void main() {\n"
-    "  int x = int(floor(gl_FragCoord.x * 512.0 / u_window_size.x));\n"
-    "  int y = int(floor((u_window_size.y - gl_FragCoord.y) * 240.0 / u_window_size.y));\n"
+    /* Fit a 4:3 display rect inside the window instead of stretching to fill
+     * it.  The GSP scans out 512x240, but this board's raster is
+     * set_raw(...,634,0,512,262,0,228) -- 512x228 visible on a 4:3 multisync
+     * monitor, so the pixels are NOT square (0.625 as wide as they are tall).
+     * Mapping the 2.133:1 image across a 16:9 window stretched it by ~1.6x.
+     * Letterbox the bars instead of distorting the picture; that way the frame
+     * can be compared against an oracle frame pixel for pixel.
+     * u_letterbox == 0 is the unscaled path, used only by the parity test. */
+    "  vec2 win = u_window_size;\n"
+    "  vec2 rect = win;\n"
+    "  vec2 origin = vec2(0.0);\n"
+    "  if (u_letterbox > 0.5) {\n"
+    "    float target = 4.0 / 3.0;\n"
+    "    rect = (win.x / win.y > target)\n"
+    "        ? vec2(win.y * target, win.y)\n"
+    "        : vec2(win.x, win.x / target);\n"
+    "    origin = (win - rect) * 0.5;\n"
+    "  }\n"
+    "  vec2 p = vec2(gl_FragCoord.x, win.y - gl_FragCoord.y);\n"
+    "  if (u_letterbox > 0.5 && (p.x < origin.x || p.y < origin.y ||\n"
+    "      p.x >= origin.x + rect.x || p.y >= origin.y + rect.y)) {\n"
+    "    gl_FragColor = vec4(0.0,0.0,0.0,1.0); return;\n"
+    "  }\n"
+    "  vec2 local = (p - origin) / rect;\n"
+    "  int x = int(floor(local.x * 512.0));\n"
+    "  int y = int(floor(local.y * 240.0));\n"
     "  x = clamp(x, 0, 511); y = clamp(y, 0, 239);\n"
     "  if (float(x) >= u_visible_width) { gl_FragColor = vec4(0.0,0.0,0.0,1.0); return; }\n"
     "  float fy = (float(y) + 0.5) / 240.0;\n"
@@ -181,6 +208,13 @@ static void init_texture(GLuint *texture, GLint internal, GLenum format,
                  GL_UNSIGNED_BYTE, pixels);
 }
 
+void stunrun_gsp_gl_scanout_set_letterbox(stunrun_gsp_gl_scanout_t *scanout,
+                                          int letterbox)
+{
+    if (scanout)
+        scanout->letterbox = letterbox ? 1 : 0;
+}
+
 stunrun_gsp_gl_scanout_t *stunrun_gsp_gl_scanout_create(SDL_Window *window)
 {
     static const GLfloat vertices[] = {
@@ -192,6 +226,9 @@ stunrun_gsp_gl_scanout_t *stunrun_gsp_gl_scanout_create(SDL_Window *window)
     s = (stunrun_gsp_gl_scanout_t *)calloc(1, sizeof(*s));
     if (!s) return NULL;
     s->window = window;
+    /* calloc leaves this 0; the display path WANTS the 4:3 letterbox, so set
+     * it explicitly rather than relying on the zero-initialisation. */
+    s->letterbox = 1;
     s->context = SDL_GL_CreateContext(window);
     if (!s->context || SDL_GL_MakeCurrent(window, s->context) != 0) {
         fprintf(stderr, "gsp_scanout_gl: context creation failed: %s\n",
@@ -289,6 +326,8 @@ int stunrun_gsp_gl_scanout_present(stunrun_gsp_gl_scanout_t *s,
     loc = glGetUniformLocation(s->program, "u_lines"); glUniform1i(loc, 3);
     loc = glGetUniformLocation(s->program, "u_window_size");
     glUniform2f(loc, (GLfloat)win_w, (GLfloat)win_h);
+    loc = glGetUniformLocation(s->program, "u_letterbox");
+    glUniform1f(loc, (GLfloat)(s->letterbox ? 1.0 : 0.0));
     loc = glGetUniformLocation(s->program, "u_visible_width");
     {
         unsigned visible_width = regs->hsblnk > regs->heblnk
