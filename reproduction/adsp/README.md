@@ -1,5 +1,33 @@
 # ADSP replacement image
 
+## First SOM math kernel (q9t / 1fv)
+
+`som_math.c` is the first small C transcription of an ADSP operation observed in
+the SOM producer: the low-index branch of the interpolation helper at ADSP PCs
+`$05DD` / `$0607`. It looks up `MY0` from PM, reads the two DM samples selected
+by its caller's I registers, forms the signed 16-bit difference, executes
+`MR = AR * MY0 (SU)`, and returns the `MR1:MR0` pair.
+
+This is **not** an ADSP core, not the whole `$05DD`/`$0607` helper (the branch
+for `AR > 0x40` is still unimplemented), and not a geometry generator.
+The MAME-backed vectors are the two math pairs in
+`reference/experiments/stunrun/adsp-som-transaction-f551/metadata.json`; the raw
+same-run trace is `result.json`. `adsp-som-math-slice-c` checks both observed
+products and rejects unsupported/bad input. The build uses the same source in
+the standalone test and future native ADSP replacement slices.
+
+The transaction itself is captured by:
+
+```sh
+tools/capture-adsp-som-transaction roms OUT \
+  --frames 600 --start-frame 1 --post-frames 5 \
+  --mame /mnt/build/mame-oracle/mame
+```
+
+The capture uses `--input none`; it records the SOMCLK→SOMLATCH→GINT interval,
+the host bank state, and the 68010 acknowledgement. It does not claim that all
+post-GINT HSTDAT traffic belongs to this SOM block.
+
 The first M2 slice is a deliberately minimal ADSP-2100 program image. It uses
 the known `NOP` encoding from the M0 emission proof, preserves the four-word
 ADSP reset-vector area at `0x0000`, and records the MAME-confirmed reset entry

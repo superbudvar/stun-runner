@@ -10678,3 +10678,61 @@ separate synthetic A11 vector (`DY=2`) as a negative control proving the helper
 uses the high half. This is static disassembly evidence, not an M1 runtime capture
 of A11; the attempted live read trace did not reproduce the old service_f2 path
 (§62).
+
+## 64. First ADSP C math kernel, backed by one SOM transaction (`alo` / `1fv`)
+
+The bounded capture is committed at
+`reference/experiments/stunrun/adsp-som-transaction-f551/`. It was generated
+with input **none** from power-on using the frozen oracle binary
+`/mnt/build/mame-oracle/mame` (sha256
+`75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06`) and the
+current ROM manifest (sha256 `b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d`). The result contains 4,009 same-run ADSP data-space events from
+SOMCLK to GINT and 146 SOMLATCH words; it is bounded raw evidence.
+
+```text
+SOMCLK  DM($2003) = 0       ADSP PC $0034  frame 551
+146     SOMLATCH DM($2002) writes, logical addresses 0..145
+GINT    DM($2006) = $0045   ADSP PC $004C  frame 551
+IRQ ack $818060             68010 PC $021402, same frame
+```
+
+At SOMCLK the selected host bank is 1; MAME's producer-side `bank ^ 1` writes
+bank 0. The bank history is in the same-run capture. Later in the capture window
+the 68010 makes thousands of SOM-window reads and HSTDAT writes, but their
+one-to-one relationship to this 146-word block is **not established**; metadata
+explicitly keeps that correlation UNKNOWN.
+
+### 64.1 Two measured interpolation-helper vectors
+
+The primary producer stream enters the ADSP helpers at `$05DD` and `$0607`. The
+same-run capture records the DM samples, register snapshots, and output writes:
+
+| helper | DM sample difference | `MY0` | observed `MR1:MR0` | SOM-side DM stores |
+|---|---:|---:|---:|---|
+| `$05DD` | `DM[$44]=$00FB - DM[$42]=$00FF = -4` | `$1249` | `$FFFF:6DB8` | `$003E=$6DB8`, `$003F=$FFFF` |
+| `$0607` | `DM[$40]=$00F4 - DM[$42]=$00FF = -11` | `$1999` | `$FFFD:CCDA` | `$003C=$CCDA`, `$003D=$FFFD` |
+
+The ADSP listing for both sites executes `MR = AR * MY0 (SU)`. Both captured
+outputs equal the low 32 bits of `2 * signed_AR * unsigned_MY0` exactly. The
+PM table values are separately captured from the same frozen MAME binary's
+frame-600 ADSP image (`PM[$103D]=$00124900`, `PM[$103B]=$00199900`; program
+image sha256 `b8c2d2594d609a110a26a47aa2cad11f8db3783643a5e3fb49b1897660051c02`).
+The C test supplies these PM words and DM samples as inputs; it calculates, it
+does not look up the expected SOM outputs.
+
+### 64.2 The first C slice
+
+`reproduction/adsp/som_math.{h,c}` implements the captured low-index branch of
+this interpolation helper, including PM table lookup and DM pointer reads. It
+rejects `AR > $40`, whose alternate scaling path is not ported. Its two vectors
+match the MAME MR pairs and DM stores above.
+
+Three rebuilt negative controls all fail: omit the ADSP fractional `×2`, read
+the wrong PM coefficient byte, or reverse the DM samples; restored passes.
+
+This is a **bounded arithmetic helper**, not yet the complete `$05DD`/`$0607`
+routine, not the whole 146-word SOM producer, not a lookup table, and not an
+ADSP emulator. The `AR > $40` scaling branch remains unimplemented. The next
+slice is that branch and its MR-to-SR shift, followed by the caller-level
+routine's comparison against the captured SOM sequence. The 146-word
+transaction remains the acceptance oracle, not the GSP's eventual pixels.

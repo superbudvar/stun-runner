@@ -50,6 +50,8 @@ def main() -> int:
     parser.add_argument("--playback", type=pathlib.Path,
                         help="replay a recorded .inp instead of scripted input")
     parser.add_argument("--nothrottle", action="store_true")
+    parser.add_argument("--mame", default="mame",
+                        help="MAME executable passed through to mame-ram-write-trace")
     args = parser.parse_args()
     if args.load_state and not args.load_state.is_file():
         parser.error(f"save state does not exist: {args.load_state}")
@@ -78,6 +80,7 @@ def main() -> int:
         command += ["--load-state", str(args.load_state)]
     if args.nothrottle:
         command.append("--nothrottle")
+    command += ["--mame", args.mame]
     env = dict(os.environ)
     env.update({
         "STUNRUN_RAM_READ_BASE": str(args.read_base),

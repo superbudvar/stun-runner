@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Capture one no-input ADSP SOMLATCH->GINT transaction in MAME.
+
+Answers: "what words did the ADSP put on SOMLATCH before this GINT, what DM
+reads/writes surrounded it, and which 68010 bank was selected?" Captures the
+ADSP's DM space plus the 68010 SOM-window/control/FIFO accesses in one MAME run.
+
+WHAT IT GETS WRONG: one frame can contain multiple unrelated ADSP routines; a
+SOMCLK->GINT interval is an observed transport boundary, not proof that all
+preceding DM reads caused every SOM word. The host bank is reconstructed from
+the 68010's address-decoded control writes using the pinned MAME rule. This
+does not decode F1 geometry fields or claim a screen-space meaning.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import sys
+import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
+
+
+EVENT = re.compile(
+    r"M1_ADSP_TX_EVENT seq=(\d+) frame=(\d+) cpu=(\w+) access=([RW]) "
+    r"address=([0-9A-Fa-f]+) data=([0-9A-Fa-f]+) mask=([0-9A-Fa-f]+) "
+    r"pc=([0-9A-Fa-f]+) bank=(\d+)(?: regs=([A-Za-z0-9:,]+))?"
+)
+BANK = re.compile(
+    r"M1_ADSP_TX_BANK seq=(\d+) frame=(\d+) address=([0-9A-Fa-f]+) "
+    r"offset=([0-9A-Fa-f]+) bank=(\d+) pc=([0-9A-Fa-f]+)"
+)
+DONE = re.compile(
+    r"M1_ADSP_TX_DONE frames=(\d+) events=(\d+) truncated=(true|false) "
+    r"bank_events=(\d+) tx_start_frame=(nil|\d+) tx_start_seq=(nil|\d+) "
+    r"tx_end_frame=(nil|\d+) tx_end_seq=(nil|\d+)"
+)
+
+
+def sha256(path: pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def parse_event(m: re.Match[str]) -> dict[str, object]:
+    event = {
+        "seq": int(m.group(1)), "frame": int(m.group(2)),
+        "cpu": m.group(3), "access": m.group(4),
+        "address": int(m.group(5), 16), "data": int(m.group(6), 16),
+        "mask": int(m.group(7), 16), "pc": int(m.group(8), 16),
+        "host_bank": int(m.group(9)),
+    }
+    if m.group(10):
+        event["registers"] = {
+            name: int(value, 16)
+            for name, value in (part.split(":", 1) for part in m.group(10).split(","))
+        }
+    return event
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("rompath", type=pathlib.Path)
+    parser.add_argument("output", type=pathlib.Path)
+    parser.add_argument("--frames", type=int, default=600,
+                        help="bounded power-on run length (default: 600)")
+    parser.add_argument("--start-frame", type=int, default=1,
+                        help="begin searching for SOMCLK at this frame")
+    parser.add_argument("--post-frames", type=int, default=5,
+                        help="capture the 68010 ferry this many frames after GINT")
+    parser.add_argument("--max-events", type=int, default=50000)
+    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument("--mame", default="mame")
+    args = parser.parse_args()
+    if args.frames < 2 or not (1 <= args.start_frame < args.frames) or \
+            args.post_frames < 0 or args.max_events <= 0:
+        parser.error("require frames>=2, 1<=start-frame<frames, post-frames>=0, max-events>0")
+    rompath = args.rompath.resolve()
+    manifest = rompath / "stunrun.manifest.json"
+    if not manifest.is_file():
+        raise SystemExit(f"missing ROM manifest: {manifest}")
+    mame = pathlib.Path(args.mame)
+    if not mame.is_file():
+        found = shutil.which(args.mame)
+        if found is None:
+            raise SystemExit(f"MAME executable not found: {args.mame}")
+        mame = pathlib.Path(found)
+    mame = mame.resolve()
+
+    args.output.mkdir(parents=True, exist_ok=True)
+    log = args.output / "mame.log"
+    last_frame = args.frames
+    seconds = max(2, (last_frame + 59) // 60 + 1)
+    script = pathlib.Path(__file__).resolve().parents[1] / "mame/lua/adsp-som-transaction.lua"
+    command = [
+        str(mame), "-rompath", str(rompath), "stunrun", "-video", "none",
+        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
+        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save",
+        "-state_directory", "/tmp/stunrun-state-dir", "-statename", "%g",
+        "-debug", "-debugger", "none", "-nothrottle", "-seconds_to_run", str(seconds),
+        "-autoboot_script", str(script),
+    ]
+    environment = {
+        **os.environ,
+        "STUNRUN_ADSP_TX_OUT": str(args.output.resolve()),
+        "STUNRUN_ADSP_TX_FIRST": str(args.start_frame),
+        "STUNRUN_ADSP_TX_LAST": str(last_frame),
+        "STUNRUN_ADSP_TX_POST_FRAMES": str(args.post_frames),
+        "STUNRUN_ADSP_TX_MAX_EVENTS": str(args.max_events),
+        "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
+    }
+    with log.open("w", encoding="utf-8") as handle:
+        completed = run_mame(command, env=environment, stdout=handle,
+                             stderr=-2, timeout=args.timeout)
+    text = log.read_text(encoding="utf-8", errors="replace")
+    lua_errors = find_lua_errors(text)
+    check_lua_errors(text, log)
+    done = DONE.findall(text)
+    if completed.returncode or not done:
+        raise SystemExit(f"transaction capture did not complete; see {log}")
+    _, event_count, truncated_text, bank_event_count, tx_start_frame, tx_start_seq, \
+        tx_end_frame, tx_end_seq = done[-1]
+    if truncated_text == "true":
+        raise SystemExit(f"event cap reached ({args.max_events}); capture is incomplete: {log}")
+    if "nil" in (tx_start_frame, tx_start_seq, tx_end_frame, tx_end_seq):
+        raise SystemExit(f"no complete SOMCLK->GINT transaction; see {log}")
+
+    events = [parse_event(m) for m in EVENT.finditer(text)]
+    banks = [{"seq": int(m.group(1)), "frame": int(m.group(2)),
+              "address": int(m.group(3), 16), "offset": int(m.group(4), 16),
+              "bank": int(m.group(5)), "pc": int(m.group(6), 16)}
+             for m in BANK.finditer(text)]
+    if len(events) != int(event_count) or len(banks) != int(bank_event_count):
+        raise SystemExit(
+            f"event count mismatch: event lines={len(events)}/{event_count}, "
+            f"bank lines={len(banks)}/{bank_event_count}; refusing partial result")
+
+    adsp_writes = [e for e in events if e["cpu"] == "adsp" and e["access"] == "W"]
+    somclk = [e for e in adsp_writes if e["address"] == 0x2003 and
+              e["seq"] == int(tx_start_seq)]
+    gint = [e for e in adsp_writes if e["address"] == 0x2006 and
+            e["seq"] == int(tx_end_seq)]
+    if len(somclk) != 1 or len(gint) != 1 or somclk[0]["seq"] >= gint[0]["seq"]:
+        raise SystemExit(
+            "expected a completed SOMCLK->GINT transaction; "
+            f"found SOMCLK={len(somclk)} GINT={len(gint)}. See {log}")
+    start_seq, end_seq = int(somclk[0]["seq"]), int(gint[0]["seq"])
+    som_writes = [e for e in adsp_writes if e["address"] == 0x2002 and
+                  start_seq < int(e["seq"]) < end_seq]
+    if not som_writes:
+        raise SystemExit("SOMCLK->GINT interval contains no SOMLATCH output words")
+
+    bank_before = int(somclk[0]["host_bank"])
+    som_start = int(somclk[0]["data"]) & 0x1fff
+    transaction_frame = int(somclk[0]["frame"])
+    related_irq_acks = [e for e in events if e["cpu"] == "maincpu" and
+                        e["access"] == "W" and
+                        0x818060 <= int(e["address"]) <= 0x81807f and
+                        e["frame"] == transaction_frame and
+                        int(e["seq"]) > end_seq]
+    transaction = {
+        "frame": transaction_frame,
+        "somclk": somclk[0],
+        "gint": gint[0],
+        "host_bank": bank_before,
+        "adsp_producer_bank": bank_before ^ 1,
+        "som_start_word": som_start,
+        "som_words": [
+            {"address_word": (som_start + i) & 0x1fff,
+             "value": int(e["data"]), "pc": int(e["pc"]), "seq": int(e["seq"])}
+            for i, e in enumerate(som_writes)
+        ],
+        "producer_events": [e for e in events if e["cpu"] == "adsp" and
+                            start_seq <= int(e["seq"]) <= end_seq],
+        "maincpu_irq_acks": related_irq_acks,
+        # Ferry events occur after the GINT and can include unrelated traffic
+        # during the post-frame window. Keep counts and small samples without
+        # falsely attributing every host transfer to this SOM block.
+        "post_window_ferry_observation": {
+            "som_buffer_read_count": sum(1 for e in events
+                if e["cpu"] == "maincpu" and e["access"] == "R" and
+                0x810000 <= int(e["address"]) <= 0x813fff),
+            "hstdat_write_count": sum(1 for e in events
+                if e["cpu"] == "maincpu" and e["access"] == "W" and
+                0x00c0000c <= int(e["address"]) <= 0x00c0000f),
+            "transaction_correlation": "not established by this capture",
+        },
+    }
+    rom_manifest_sha256 = sha256(manifest)
+    mame_sha256 = sha256(mame)
+    result = {
+        "schema": "stunrun-adsp-som-transaction/v1",
+        "input": "none",
+        "start_condition": "power_on",
+        "devices": {"adsp": ":mainpcb:adsp", "maincpu": ":mainpcb:maincpu"},
+        "transaction_start_frame": int(tx_start_frame),
+        "transaction_end_frame": int(tx_end_frame),
+        "capture_window": [args.start_frame, last_frame],
+        "rom_manifest": str(manifest),
+        "rom_manifest_sha256": rom_manifest_sha256,
+        "machine_map": str(pathlib.Path(__file__).resolve().parents[1] /
+                            "analysis/driver-mining/stunrun.machine-map.yaml"),
+        "machine_map_sha256": sha256(pathlib.Path(__file__).resolve().parents[1] /
+                                      "analysis/driver-mining/stunrun.machine-map.yaml"),
+        "mame_binary": str(mame),
+        "mame_binary_sha256": mame_sha256,
+        "harness": "tools/capture-adsp-som-transaction + mame/lua/adsp-som-transaction.lua",
+        "harness_sha256": {"python": sha256(pathlib.Path(__file__).resolve()),
+                           "lua": sha256(script)},
+        "register_snapshots": "ADSP AR/AF/AX/AY/MY/MR/SR/SI/SE/I/M/L at PC 0x0570-0x0580 and 0x05DD-0x0630; PM lookup taps at PCs 0x05E0/0x060A",
+        "max_events": args.max_events,
+        "truncated": False,
+        "bank_events": banks,
+        "transaction": transaction,
+        "lua_errors": lua_errors,
+    }
+    canonical = json.dumps(transaction, sort_keys=True, separators=(",", ":")).encode()
+    result["transaction_sha256"] = hashlib.sha256(canonical).hexdigest()
+    result_path = args.output / "result.json"
+    result_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps({"schema": result["schema"], "frame": transaction["frame"],
+                      "som_words": len(som_writes), "gint_pc": gint[0]["pc"],
+                      "host_bank": bank_before, "producer_bank": bank_before ^ 1,
+                      "transaction_sha256": result["transaction_sha256"]}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

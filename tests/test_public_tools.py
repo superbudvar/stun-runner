@@ -286,6 +286,8 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn('parser.add_argument("--playback"', tool)
         self.assertIn('"--playback", str(args.playback)', tool)
         self.assertIn("--load-state and --playback are mutually exclusive", tool)
+        self.assertIn('parser.add_argument("--mame"', tool)
+        self.assertIn('["--mame", args.mame]', tool)
 
     def test_analyze_packed_text_trace_decodes_words_and_filters_fetches(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -911,6 +913,66 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn("STUNRUN_RAM_TRACE_ORDER", lua)
         self.assertIn('action="append"', wrapper)
         self.assertIn("read_pc_filters", lua)
+
+    def test_capture_adsp_som_transaction_extracts_somclk_to_gint(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "stunrun.manifest.json").write_text("{}\n", encoding="utf-8")
+            mame = temp / "mame-stub"
+            mame.write_text(
+                "#!/usr/bin/env python3\n"
+                "print('M1_ADSP_TX_BANK seq=1 frame=134 address=00818016 offset=B bank=1 pc=0002C24E')\n"
+                "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=12 frame=550 cpu=adsp access=W address=00002006 data=00000045 mask=0000FFFF pc=0000004C bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=13 frame=550 cpu=maincpu access=W address=00818060 data=00000000 mask=0000FFFF pc=000213FE bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=14 frame=551 cpu=maincpu access=R address=00810000 data=00000030 mask=0000FFFF pc=0002D000 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=15 frame=551 cpu=maincpu access=W address=00C0000C data=00000030 mask=0000FFFF pc=0002D010 bank=1')\n"
+                "print('M1_ADSP_TX_DONE frames=556 events=6 truncated=false bank_events=1 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=12')\n",
+                encoding="utf-8")
+            mame.chmod(0o755)
+            output = temp / "capture"
+            result = subprocess.run(
+                [str(ROOT / "tools" / "capture-adsp-som-transaction"),
+                 str(roms), str(output), "--frames", "556", "--mame", str(mame)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads((output / "result.json").read_text())
+            tx = report["transaction"]
+            self.assertEqual(report["input"], "none")
+            self.assertEqual(tx["somclk"]["seq"], 10)
+            self.assertEqual(tx["gint"]["seq"], 12)
+            self.assertEqual(tx["host_bank"], 1)
+            self.assertEqual(tx["adsp_producer_bank"], 0)
+            self.assertEqual(tx["som_words"], [{
+                "address_word": 0, "value": 0x30, "pc": 0x515, "seq": 11
+            }])
+            self.assertEqual(tx["maincpu_irq_acks"][0]["pc"], 0x213FE)
+            self.assertEqual(tx["post_window_ferry_observation"]["hstdat_write_count"], 1)
+
+    def test_capture_adsp_som_transaction_rejects_missing_gint_boundary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "stunrun.manifest.json").write_text("{}\n", encoding="utf-8")
+            mame = temp / "mame-stub"
+            mame.write_text(
+                "#!/usr/bin/env python3\n"
+                "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=0')\n"
+                "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=0')\n"
+                "print('M1_ADSP_TX_DONE frames=556 events=2 truncated=false bank_events=0 tx_start_frame=550 tx_start_seq=10 tx_end_frame=nil tx_end_seq=nil')\n",
+                encoding="utf-8")
+            mame.chmod(0o755)
+            output = temp / "capture"
+            result = subprocess.run(
+                [str(ROOT / "tools" / "capture-adsp-som-transaction"),
+                 str(roms), str(output), "--frames", "556", "--mame", str(mame)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("no complete SOMCLK->GINT transaction", result.stderr)
 
     # ---- MC68010 -> GSP halt protocol -------------------------------
     #

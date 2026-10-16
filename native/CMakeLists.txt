@@ -413,9 +413,9 @@ target_include_directories(stunrun-gsp-record-parser-slice-test PRIVATE
   ../reproduction/gsp)
 set_target_properties(stunrun-gsp-record-parser-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-record-parser-slice-c COMMAND stunrun-gsp-record-parser-slice-test)
-# Lossless codec for the 8-word bitmap primitive records in the captured
-# SOM/HSTDAT streams. Field names are restricted to the GSP consumer's proven
-# register assignments; remaining words stay raw.
+# Bounded four-F0-word prefix decoder and primary FILL XY register setup from
+# the SOM/HSTDAT stream. F1 is 32-bit; this target deliberately assumes no
+# fixed full-entry size.
 add_executable(stunrun-gsp-payload-codec-test
   ../reproduction/gsp/payload_codec.c
   ../reproduction/gsp/payload_codec_test.c)
@@ -423,6 +423,13 @@ target_include_directories(stunrun-gsp-payload-codec-test PRIVATE
   ../reproduction/gsp)
 set_target_properties(stunrun-gsp-payload-codec-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-payload-codec-c COMMAND stunrun-gsp-payload-codec-test)
+add_executable(stunrun-adsp-som-math-slice-test
+  ../reproduction/adsp/som_math.c
+  ../reproduction/adsp/som_math_test.c)
+target_include_directories(stunrun-adsp-som-math-slice-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-som-math-slice-test PROPERTIES C_STANDARD 99)
+add_test(NAME adsp-som-math-slice-c COMMAND stunrun-adsp-som-math-slice-test)
 # GSP record control-word dispatch from the race-1800 walk decode: bit 15
 # skips, bit 12 takes the perspective-sprite path, else the FILL worker.
 if(EXISTS ../reproduction/gsp/record_dispatch.c)
