@@ -11704,3 +11704,576 @@ the GSP-side consumer's destination buffers as UNKNOWN. The next step on this
 seam is decoding what `0xFFF48C20` does with the stream — it recombines adjacent
 byte lanes with `SLL 8h`/`OR` and writes two work buffers, so the payload is
 consumed on the GSP side, not the 68010 side.
+
+---
+
+## 76. The road window transform is transcribed; and "base == twin at frame N" only means the transform was not running
+
+Slice: `reproduction/maincpu/road_window.{h,c}` + `road_window_test.c` (target
+`road-window-slice-c`, sources `road_window.c` + `road_buffer_math.c` +
+`road_window_test.c`). Oracle: pinned MAME `/mnt/build/mame-oracle/mame`, ROM set
+validated by `tools/check-roms roms /mnt/build/mame-oracle/mame`. Static listing
+`:mainpcb:maincpu` sha256 `171e56ccf1a9940635a2e8e9929ab7edaa5841ac3238ef78acf0d6630f8e45e7`
+(`reference/listings/stunrun.metadata.json`).
+
+### 76.1 The contradiction, stated first
+
+A caller reported measuring main RAM under `--input course_sweep`: at frames 3300,
+3600 and 6000 the 768-byte base window `0xFF9584` and the 768-byte twin window
+`0xFF9884` were **byte-identical**, with base changing only slightly in between.
+If `base[i] -= twin[i]` had run in that range, the two would have diverged —
+equal operands subtracted give all-zero, which is trivially distinguishable from
+a non-zero twin. The three candidate explanations were (a) the pass never fires
+there, (b) another writer restores base, (c) `track-storage.md` is wrong about
+which PC reads which buffer.
+
+**Resolution: (a), and (c) is not the problem — `track-storage.md` is correct.**
+The transform is real, fires on a 3-frame cadence, and is byte-exact; it simply is
+not executing during the frames that were sampled.
+
+### 76.2 The pass does not fire in that window (three runs)
+
+`tools/mame-ram-read-trace` over the whole road window, no PC filter:
+
+```bash
+tools/mame-ram-read-trace roms OUT --device :mainpcb:maincpu --space program \
+  --base 0xFF9584 --end 0xFF9B83 --input course_sweep --nothrottle \
+  --mame /mnt/build/mame-oracle/mame --frames 3700 \
+  --start-frame 3200 --end-frame 3700 --max-events 400000
+```
+
+Result: `event_count: 0`, `pc_counts: {}` — **zero CPU reads of any part of
+`0xFF9584..0xFF9B83` in frames 3200..3700**. `0x0298BE` is `move.b (A0)+,D0` and
+`0x0298C0` is `sub.b D0,(A1)+`, an RMW whose read half a read tap must see, so a
+subtract pass cannot execute there. Nor can `0x02248E`, the FIFO drain: also zero.
+
+Repeated, per the nondeterministic-`--input` rule in `AGENTS.md` trap 4:
+
+| run | window | frames | result |
+|---|---|---|---|
+| 1 | `0xFF9584-0xFF9B83` | 3200..3700 | 0 events |
+| 2 | `0xFF9584-0xFF9B83` | 0..6000 | first event at frame **169**; road traffic only in 169..573, 1115..1194, 1440..1489, 3867..4420; **nothing in 1489..3867 or 4420..6000** |
+| 3 | `0xFF9584-0xFF9B83` | 3200..6100 | first event at frame **3867** |
+
+Three independent runs agree that frames 3300, 3600 and 6000 sit in a quiet
+interval. `0xFFDB36` (the interrupt tick copy) advancing monotonically through
+that interval proves the machine was alive, not that the roadway state machine
+was running — those are different things and the second is what the question
+needed.
+
+### 76.3 What the transform actually does (byte-exact, oracle-confirmed)
+
+Snapshot pairs across a real burst, window `0xFF954E..0xFF9B83` at width 8,
+schedule `late_drive`:
+
+| frames | relation over all 768 bytes | bytes changed |
+|---|---|---:|
+| 525→526 | `base[n+1] == base[n] - twin[n]` mod 256 | 704 |
+| 528→529 | same | 704 |
+| 531→532 | same | 704 |
+| 551→552 | `base[n+1] == base[n] + twin[n]` mod 256 | 621 |
+| 555→556 | same | 621 |
+| 558→559, 561→562, 564→565, 567→568 | same | 621 |
+
+Worked example, subtract (frame 525 → 526, first eight bytes):
+`E0 E0 E0 12 1F 2C 65 00` − `1F 1F 1F 02 04 06 0E 00` =
+`C1 C1 C1 10 1B 26 57 00`. The 64 unchanged bytes are exactly the offsets where
+the twin byte is zero.
+
+The unchanged-byte count differs between the two passes (704 vs 621) because the
+twin differs, not because either pass is partial. Both passes touch all 768
+offsets; the read tap records 768 read events at `0x0298BE` **and** 768 at
+`0x0298C0` on every subtract-pass frame, and the same pair for `0x0298F8`/
+`0x0298FA` on every add-pass frame.
+
+### 76.4 `base == twin` is the *loaded* state, not a contradiction
+
+At the top of a burst the twin is rewritten by the table-copy loop at
+`0x02977E` (`move.b D0,(A0)`, after `divu.w D1,D0` at `0x029776`):
+
+```
+tools/mame-ram-write-trace roms OUT --device :mainpcb:maincpu --space program \
+  --base 0xFF9884 --end 0xFF9B83 --input late_drive --nothrottle \
+  --mame /mnt/build/mame-oracle/mame --frames 535 \
+  --start-frame 518 --end-frame 534 --max-events 400000
+```
+
+768 write events, `writer_pcs: [0x02977E]`, covering exactly
+`0xFF9884..0xFF9B83`, split across frames 522-523.
+
+And the resulting buffers before the burst are **commercial ROM**, exactly as
+section 74 warned:
+
+```
+base@522 == twin@522 == roms/stunrun/stunrun_maincpu.bin @ 0x0461F0 .. 0x0464EF
+stunrun_maincpu.bin sha256 29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c
+```
+
+Recorded as a number and a provenance only — no bytes committed. The
+divisor-8 reload is directly visible: for all 768 bytes,
+`twin@525[i] == base@522[i] / 8`.
+
+So the sequence is: **copy (base = src, twin = src/divisor) → N transform passes
+(base drifts from twin) → next copy (base == twin again when divisor == 1).**
+`base == twin` at a snapshot is the signature of *a window nobody has
+transformed yet*, which is the opposite of evidence that the transform is a
+no-op.
+
+### 76.5 `0xFF954E` is one word with two jobs, and 68 writers
+
+`grep ff954e` over the pinned listing returns **68** sites. Among them:
+
+| address | instruction | role |
+|---|---|---|
+| `0x02978E` | `move.w D0,$FF954E` | store the loader's divisor byte after a copy |
+| `0x02988A` | `move.w D0,$FF954E` | same, second loader exit |
+| `0x029924` | `subq.w #1,$FF954E` | gate, subtract phase |
+| `0x029AE2` | `subq.w #1,$FF954E` | gate, add phase |
+| `0x02449E` | `move.w #$78,$FF954E` | startup value (`analysis/ram-map.md`) |
+| `0x02469A` … `0x041670` | 63 further sites | unrelated state machines |
+
+`analysis/ram-map.md` row 41 calls it "road-buffer copy/animation countdown and
+divisor latch". That is right about the two road roles and incomplete about the
+rest: the same cell is a general-purpose scratch word for large parts of the
+game. Consequence for any future measurement: **`0xFF954E` observed outside a
+roadway burst says nothing about the road.** During the burst it was observed
+decrementing `7,7,6,6,6,5,5,5,4,…` across frames 524..534 — one decrement per
+three frames, matching the pass cadence — while `0xFF9550` held 53. Outside the
+burst the same address read 43, 27, 10 and 0 at frames 3300, 3350, 3400 and
+3450, with `0xFF9550` at 4 and then 8: live values, belonging to a different
+machine.
+
+The gate branches on the **result** of `subq.w`, so latch `1` → `0` → expiry,
+and latch `0` → `0xFFFF` → pass. Reaching zero does not stop the transform; it
+arms it for the next call. The slice asserts this wrap explicitly.
+
+### 76.6 The gate fires once per three frames, from a burst
+
+Across `course_sweep` frames 0..6000 the subtract readers `0x0298BE`/`0x0298C0`
+fired on 37 frames and the add readers `0x0298F8`/`0x0298FA` on 37, always in
+pairs, always 768 events each, always every third frame inside a burst.
+Measured burst spans (`course_sweep`):
+
+| burst | subtract frames | add frames |
+|---|---|---|
+| 1 | 523,525,528,531,534,537,540 (7) | 550,551,555,558,561,564,567 (7) |
+| 2 | 1115-1135 (9) | 1174-1190 (7) |
+| 3 | 1440-1454 (7) | 1461-1482 (9) |
+| 4 | 3867-3884 (7) | 3923-3938 (7) |
+| 5 | 4368-4382 (7) | 4398-4415 (7) |
+
+Running the same 0..6000 read tap under `late_drive` gave **identical** per-PC
+counts — `0x2248E` 30336, and 26880 each for `0x298BE`, `0x298C0`, `0x298F8`,
+`0x298FA` — with the **first burst identical frame for frame** (subtract at
+523…540, add at 550…567). Only the later bursts shift. So the road transform
+cadence is not input-driven; the two schedules differ in when the roadway
+re-enters a burst, not in the burst's internal rhythm. That is what makes the
+frame-paired snapshot comparison in §76.3 sound across two separate runs.
+
+### 76.7 Slice shape, and why it is not a word emitter
+
+The seam a GL backend will use is the *window*, not a word stream. The slice
+therefore exposes:
+
+- the window state itself — `base`, `twin`, `latch`, `active` (`$FFDB3C`);
+- a geometry view — `{words, count=384, stride_words=384, offset_words}` with
+  big-endian bytes already decoded to host order, so a backend can upload
+  `view->words` directly and never needs to know the transform was a subtract;
+- the divergence count between base and twin, which is what a snapshot reader
+  should assert on before concluding anything about the transform.
+
+Field meanings are **not** assigned. Nothing here claims a word is a coordinate,
+a width or a curvature; `analysis/track-storage.md` still owns that question.
+
+### 76.8 Negative controls
+
+`gcc -std=c99 -Wall -Wextra -Werror -pedantic -Ireproduction/maincpu` over
+`road_window.c road_buffer_math.c road_window_test.c` builds clean and runs
+`road window C port: all checks passed (99 checks)`. Mutations, one at a time,
+each applied to `road_window.c` and reverted:
+
+| mutation | result |
+|---|---|
+| `subtract()` calls `add` | FAIL `subtract pass result byte 0: got 0xFF expected 0xC1` |
+| passes walk 767 bytes | FAIL `add pass result byte 767` |
+| gate tests `==1` not `==0` | FAIL at the gate assertion |
+| `subq` truncated to 8 bits | FAIL `latch == 0xFF, expected 0xFFFF` |
+| loader does not latch the divisor | FAIL `latch == 0x0, expected 0x1` |
+| geometry decodes little-endian | FAIL `words[1] == 0x12E0, expected 0xE012` |
+| pass skips the `$FFDB3C` store | FAIL `active == 0x0, expected 0xFF9584` |
+| geometry accepts an overrunning slice | FAIL `geometry(...) == 0x1, expected 0x0` |
+| geometry stride is 1 word | FAIL `stride_words == 0x1, expected 0x180` |
+| divergence always zero | FAIL `divergence == 0x0, expected 0x2DB` |
+
+**One mutation is NOT caught and is not expected to be**: removing the divisor-0
+check from the window layer is unobservable through this slice, because
+`stunrun_road_buffer_copy_scaled` refuses the same call. That is recorded in the
+test next to the assertion rather than left implied.
+
+Zero-check control: building `road_window_test.c` with all eight test calls
+removed yields `FAIL no checks ran (matched-test count is zero)` and exit 1.
+
+### 76.9 Still UNKNOWN
+
+- Which field of the window, if any, the subtract/add pair is ramping. The
+  "descending ramp `0xA3` toward `0x19`" note in `track-storage.md` §"The
+  `0x0298C0` writes" is consistent with repeated subtract passes against a
+  fixed twin, but this section does not promote that to an explanation.
+- Which of the 68 `$FF954E` writers is running at any given moment. Only the two
+  road gates are transcribed.
+- Why the burst cadence is three frames, and what selects a burst.
+- The GSP-side consumer. Out of scope here by instruction; it is the other side
+  of the same seam.
+
+## 77. A labelled state/event log, and two refutations of our own reading
+
+The user watches the game onscreen and wants to know WHEN a machine-state
+change corresponds to something they SEE. `shell: watch-word frame=… addr=0xFF9550
+value=0x0004` cannot answer that: a bare address does not say which game
+quantity it is. So `STUNRUN_STATE_LOG=1` prints named, confidence-carrying lines
+on change. Building it produced two findings about **us**, not the ROM, plus one
+measurement the log was built to make possible.
+
+### 77.1 What was added
+
+| File | Role |
+|---|---|
+| `native/state_watch.{h,c}` | the log: the word table, the ADSP transport classifier, the frame-boundary sampler |
+| `native/state_watch_test.c` | 283 assertions on the exact printed lines (section 76.5) |
+| `native/musashi_cpu.{h,c}` | an observation-only ADSP-window store observer, NULL by default |
+| `native/shell.c` | `STUNRUN_STATE_LOG` gate, one call per frame, a summary at exit, **and the `watch-word` polarity fix of 76.4** |
+| `run.sh -h` | the new switch, its two limitations, and the grep recipes |
+
+The word table is 15 entries, ordered rarest-change-first so `head` of a frame's
+block shows the rare events rather than the per-frame tick. Every entry carries
+the `Confidence` cell from `analysis/ram-map.md` **verbatim, including its
+negations** — `TIMING-SOURCE, NOT TRACK POSITION` is the reason a rising
+`irq-tick` cannot be misread as player position. The selection rule is
+"Confidence cell carries a CONFIRMED / DYNAMIC / RESOLVED token", it is stated at
+the table in `state_watch.c`, and `state_watch_test.c` asserts every row satisfies
+it so a `STATIC-CANDIDATE` row cannot drift in.
+
+Rows deliberately excluded, with reasons in the same comment: `0xFF9544`
+(no dynamic observation), `0xFF956C` (resolved as a comparison cache, explicitly
+NOT-CRAFT-STATUS), the `STATIC-CANDIDATE` rows, and the `OBSERVED-NEGATIVE` rows.
+
+### 77.2 THE ADSP HONESTY CONSTRAINT
+
+**We do not execute the ADSP-2100.** There is no ADSP instruction decoder in this
+tree, no ADSP PC and no ADSP bus; `native/checkpoint.h`'s `adsp_pc` is a field of
+the *replacement-image* model, not a running core. `musashi_cpu.c` keeps
+`adsp_pgm_ram`, which is the 68010's **view** of the DSP's program RAM, and
+routs 0x818000-0x81FFFF straight to a `break` — the device side is dropped.
+
+So the log can show **transport** and cannot show **execution**:
+
+| can show | cannot show |
+|---|---|
+| every MC68010 store into 0x818000-0x81FFFF, with its address, data, width and bus PC | any ADSP-internal event: no SOMLATCH emission, because nothing decodes ADSP instructions |
+| the recorded control ops, labelled from `adsp_control_seq.c` | GINT / SFLAG / SPMODE out of the DSP, because no DSP runs |
+| the IRQ-clear pair at 0x818060 | an ADSP PC, an ADSP cycle count, any ADSP register |
+| the upload frame boundaries (recorded frame-indexed facts, not measurements) | anything the DSP did in response |
+
+Every ADSP-flavoured line is `kind=adsp-control` / `kind=adsp-irq-clear` /
+`kind=adsp-upload` / `kind=adsp-install` and names a 68010 address. The enable
+header says so in the log itself (`no-adsp-2100-is-executed`), because a header
+comment nobody opens is not a constraint. MAME remains the authority for what the
+DSP then did.
+
+### 77.3 What the transport run actually shows
+
+600 frames, `IN0=0xE7`, no input (`STUNRUN_STATE_LOG=1 STUNRUN_LIVE_VIDEO=0
+STUNRUN_FRAMES=600 ./run.sh`, `RESULT PASS`). 25 ADSP transport events, 0 dropped,
+3 upload transitions. Against MAME's recorded 600-frame multiset:
+
+| address | label | MAME 600f | native 600f |
+|---|---|---:|---:|
+| `0x818002` | LEDs | 54 | **1** |
+| `0x818008` | default/control | 2 | 2 |
+| `0x81800A` | /BR assert | 2 | 2 |
+| `0x81800C` | /HALT assert | 1 | 1 |
+| `0x81800E` | ADSP reset assert | 3 | 3 |
+| `0x818014` | default/control | 2 | 2 |
+| `0x818016` | deferred ADSP bank switch | 1 | 1 |
+| `0x818018` | default/control | 2 | 2 |
+| `0x81801A` | /BR release | 2 | 2 |
+| `0x81801C` | /HALT release | 2 | 2 |
+| `0x81801E` | ADSP reset release | 2 | 2 |
+| | **control writes** | **73** | **20** |
+
+Ten of eleven match exactly. The one that does not is `0x818002`, the LED
+register — the only control address whose MAME handler has **state we drop**, so
+a 68010 polling it back sees a different value here. That is the honesty
+constraint showing up as a number rather than as a caveat, and it is the expected
+shape: a transport log can differ from the oracle exactly where the transport's
+far side is unmodelled.
+
+Two further observations, both `UNKNOWN`:
+
+- **Three IRQ clears, not two.** At bus-PCs `0x02142C`, `0x02C23A` and
+  `0x00023C`. The third is at frame 0 and `0x00023C` is 572 bytes into the ROM —
+  i.e. the reset path, not either recorded title-path writer. `adsp_control_seq.h`
+  records two writes per 600-frame title run; this run sees three because it also
+  counts the reset. Not a contradiction, but `IRQ-clear writes = 2` is
+  title-path-only and should not be read as a per-reset constant.
+- **`0x818040` is written and is not in the recorded set.** Twice, at bus-PCs
+  `0x0212C0` and `0x02143A`, data `0x0004`. `STUNRUN_DISASM` puts
+  `021432: 33 fc 00 04 00 81 80 40  move.w #$4, $818040.l`, immediately followed by
+  `02143a: 4e 75 rts`, so the frame is aligned and this is a real instruction.
+  `adsp_control_seq.h`'s eleven addresses stop at `0x81801E`; `0x818040` is
+  inside the same 32-byte window and outside that set. The log prints it as
+  `label=unrecorded confidence="UNKNOWN"` rather than swallowing it, because a
+  silently dropped control-window write is indistinguishable from "the 68010 never
+  did that" — which is how an entire input-mode sweep once looked like clean null
+  results. See IRQ-0007 for the one question this raises.
+
+### 77.4 Refutation 1 — `stunrun_mem_read*` returns non-zero ON SUCCESS, and the shell's `watch-word` had it backwards
+
+Writing the sampler, the first version of `state_watch.c` read
+
+```c
+if (stunrun_mem_read16_be(ports, addr, &value) != 0) { reads_failed++; continue; }
+```
+
+and reported `reads_failed = 14` — all fourteen words, every frame, while the same
+call from a test program returned 1. `native/fake_ports.c:83-92` returns **1 on
+success, 0 on failure**; every other call site in the tree reads it that way
+(`CHECK(stunrun_mem_read8(...))`, `assert(stunrun_mem_read32_be(...) && ...)` in
+`game_loop_test.c:27`).
+
+`native/shell.c` held the same inversion, in the `watch-word` readback itself:
+
+```c
+if (stunrun_mem_read16_be(&ports, g_watch_frames_addr[i], &v) != 0)
+    continue;                                   /* skips on SUCCESS */
+```
+
+`shell: watch-word` could therefore only ever print for an address the RAM model
+**refuses**, with `v` left at 0 — in practice it printed nothing at all. Nothing
+pinned it: the feature is behind `STUNRUN_WATCH_WRITE`, no test sets it, and no
+test greps for `watch-word`. Fixed to `== 0`, and the fix is visible in a real run:
+
+```text
+shell: watch-word frame=547 addr=0x00FF954E value=0x0078 (was 0x0000)
+shell: watch-word frame=576 addr=0x00FF9582 value=0x0100 (was 0x0000)
+```
+
+This is our own misunderstanding, so it is recorded here rather than in
+`BUGS.md`, whose entries are about the 1989 game and about MAME. The general
+lesson is the one this repository already states for a different reason: a
+diagnostic nobody exercises is not a diagnostic.
+
+### 77.5 Refutation 2 — a longword row names the LONGWORD's address, and the half that moves is the other one
+
+The ram-map row is `FFFF8014` (bus-visible `0xFF8014`), "interrupt-driven global
+tick; PC `0x0222DE` executes `addq.l #1,$8014.w`". The first version of the table
+watched `0xFF8014` and reported **zero changes over 600 frames**.
+
+`STUNRUN_WATCH_WRITE=0xFF8014` in the same shell reported, in the same process,
+**966 writes from PC `0x000222DE`, width 32, last value `0x03C4`**. The writer PC
+matches the ram-map exactly, so the ROM was doing what ram-map says. The
+longword at `0xFF8014` lays out big-endian, so `0x03C4` is at `0xFF8016` and
+`0xFF8014` stays 0. Confirmed directly: `stunrun_mem_write32_be(&p, 0xFF8014,
+0x3C4)` then `stunrun_mem_read16_be(&p, 0xFF8014)` returns **0**, while
+`read32` returns `0x000003C4` and `main_ram[0x14..0x17]` is `00 00 03 C4`.
+
+Fixed to watch `0xFF8016` as `irq-tick` and keep `0xFF8014` as `irq-tick-hi`. It
+now steps **+4 per frame from frame 364** — which independently confirms
+ram-map's "about four updates per frame".
+
+The same trap applies to every longword row, and the table now watches **both**
+halves because a half that never changes costs nothing (change-only printing) and
+turns "never moved" into a measurement instead of an absence:
+
+| ram-map row | longword at | low half (the value) | high half |
+|---|---|---|---|
+| `0xFF9532-0xFF9535` score | `0xFF9532` | `0xFF9534` = `score` | `0xFF9532` = `score-hi` |
+| `0xFF9568-0xFF956B` time-remaining | `0xFF9568` | `0xFF956A` = `time-remaining` | `0xFF9568` |
+| `0xFF9564-0xFF9567` elapsed-update | `0xFF9564` | `0xFF9566` | `0xFF9564` |
+| `FFFF8014` irq tick | `0xFF8014` | `0xFF8016` | `0xFF8014` |
+
+Had the task list been followed literally — "`0xFF9568` time-remaining",
+"`0xFF9532` score" — the log would have shown **nothing at all** for either. The
+measured `time-remaining` value `0x215C` is the ROM seed longword `0x0000215C`
+from `move.l $4EDE6.l,$FF9568.l` (listing `0x024372`), and its low half is what
+counts down.
+
+### 77.6 The bus PC is the instruction address + 6 for these forms — and both recorded IRQ-clear writers reproduce exactly
+
+The observer deliberately does **not** single-step (stepping moves
+`m68ki_check_interrupts()` to every instruction boundary and changes interrupt
+latency), so it reports the PC as seen inside the bus callback rather than the
+instruction address. For `move.w #imm,(xxx).L` that offset is a fixed **+6**:
+opcode (2) + immediate (2) + absolute-long extension (4), all consumed before the
+store. From `STUNRUN_DISASM=0x02141A:0x021450`:
+
+```text
+02141a: 42 79 00 81 80 1c  clr.w $81801c.l
+021420: 42 79 00 81 80 0e  clr.w $81800e.l
+021426: 42 79 00 81 80 60  clr.w $818060.l     <- IRQ clear
+02142c: 42 79 00 81 80 14  clr.w $818014.l
+021432: 33 fc 00 04 00 81 80 40  move.w #$4, $818040.l
+02143a: 4e 75  rts
+```
+
+and at `0x02C234`, the second recorded writer, the same six bytes
+`42 79 00 81 80 60` (`clr.w $818060.l`). The run reported bus PCs `0x02142C` and
+`0x02C23A`:
+
+```text
+0x02142C - 6 = 0x021426   (recorded IRQ-clear writer PC #1)
+0x02C23A - 6 = 0x02C234   (recorded IRQ-clear writer PC #2)
+```
+
+**Both MAME-recorded writer PCs are reproduced exactly.** The log keeps printing
+`bus-pc` with the `note="bus-pc is the PC inside the bus callback, not the
+instruction address"` string and the two reference PCs on every IRQ-clear line,
+rather than printing a derived `insn=` field — because +6 is only true for the
+immediate/absolute-long form, and a log that applied it unconditionally would be
+exactly the kind of over-claim this repository forbids.
+
+### 77.7 The real run, and its limits
+
+```text
+shell: state frame=327 kind=word name=time-remaining addr=0xFF956A value=0x215C (was 0x0000) …
+shell: state frame=364 kind=word name=irq-tick addr=0xFF8016 value=0x0004 (was 0x0000) …
+shell: state frame=547 kind=word name=road-countdown addr=0xFF954E value=0x0078 (was 0x0000) …
+shell: state frame=576 kind=word name=elapsed-update addr=0xFF9566 value=0x0001 (was 0x0000) …
+shell: state frame=576 kind=word name=animation-counter addr=0xFF9582 value=0x0100 (was 0x0000) …
+```
+
+**266 `shell: state` lines over 600 frames**: 238 `kind=word` (234 of them the
+`irq-tick` heartbeat, 4 genuine one-offs) + 28 ADSP (25 transport + 3 upload
+transitions). 0 dropped, 0 RAM read failures, `RESULT PASS`. The non-heartbeat
+game-state content is **four lines in 600 frames**, because this run has no input:
+`score`, `track-index`, `game-state`, `input-state` and `object-hits` are all flat.
+
+That is a finding, not a bug — and it is exactly why the exit summary prints a
+per-word `changes=` count. With change-only printing, "no line for track-index" and
+"track-index was never watched" are otherwise indistinguishable.
+
+Two limits the user must be told about, both stated in `state_watch.h` and in
+`./run.sh -h`:
+
+1. **Once per frame at the frame boundary.** A value set and cleared inside one
+   frame is invisible. That is a direct consequence of the sampling rate, not a
+   heuristic; `STUNRUN_WATCH_WRITE` is the per-store complement and the two
+   together settle it — which is how 76.5 was found in one step.
+2. **The ADSP lines are transport.** Stated again here because it is the single
+   easiest thing to over-read.
+
+### 77.8 What the test asserts, and how it was shown to have teeth
+
+283 assertions, all on **printed output**: stdout is captured with
+`dup`/`tmpfile` and compared against literals written out from the format strings.
+There is deliberately no callback or returned-struct side channel — a side channel
+would let a broken printer pass, which is the failure this feature exists to end.
+
+- the enable header names every field with its confidence string, and the
+  `state-log name=` line count equals the table size;
+- every table address is a live word in the memory model, probed and read back, and
+  is inside the 32 KiB mapped window rather than one past its end (where a read
+  wraps to address 0 — `fake_ports.h` records that once producing 376 284 bogus
+  "RAM" bytes);
+- every confidence string carries a confirmed/dynamic token (the selection rule);
+- the baseline frame prints no word lines, and an unchanged image prints **nothing
+  at all** on any later frame;
+- one synthetic change set reproduces an **exact** golden by whole-buffer equality:
+  four ADSP lines in insertion order then three words in table order, each with its
+  previous value;
+- the summary block, the `(was …)` chain across two further changes, table ordering,
+  and the 4096-entry ring's overflow being counted and announced;
+- the upload milestones are cross-checked against `adsp_control_seq.c`, and every
+  recorded control op is checked to produce its recorded label;
+- observation-only: the whole RAM image is byte-compared before and after a
+  sampling pass.
+
+**Negative controls.** A comparator that cannot fail is not a check, and this
+repository has shipped three tests that passed for the wrong reason. So the same
+comparator is shown *rejecting* a golden one nibble different, one with a line
+deleted, one with a line duplicated, and one with a corrupted confidence string —
+before the positive result is accepted. Every positive comparison is accompanied
+by an exact expected line count, and those counts are non-zero, so a control which
+matched nothing cannot read as a pass. The table size is pinned at 15, so a table
+of zero entries cannot make the "nothing was printed" checks vacuous.
+
+Eight deliberate sabotages of the implementation, each confirmed to fail, then the
+restored build passing:
+
+| sabotage | failures |
+|---|---:|
+| log every field every frame (change-only removed) | 19 |
+| constant `(was 0x0000)` | 1 |
+| invert the read polarity (the 76.4 bug) | 21 |
+| never drain the ADSP transport ring | 36 |
+| drop the confidence string from word lines | 14 |
+| silently drop unrecorded control-window writes | 2 |
+| seed silently removed | 1 |
+| ring overflow silent | 3 |
+| *(restored)* | **0** |
+
+### 77.9 Still UNKNOWN
+
+- Why the native run sees **1** LED write where MAME sees 54. The dropped LED
+  handler is the obvious candidate and is consistent with every other address
+  matching, but it is a hypothesis. Arming `STUNRUN_WATCH_WRITE=0x818002` and
+  comparing MAME's writer PC would settle it.
+- Whether the reset-path IRQ clear at frame 0 (`0x00023C`) is a third *writer* or
+  the same routine reached before the title path starts.
+- What `0x818040` is. One instruction, `move.w #$4,$818040.l`, data `0x0004`,
+  never observed by the MAME tap that produced `adsp_control_seq.h`. Its data is
+  non-zero where every recorded control write is `0x0000`.
+- **IRQ5 does not reach `0x0222DE` before frame 364 in this native run.** The
+  counter is flat for the first 364 frames and then steps +4/frame. `BUGS.md`
+  SR-08 places the handler's `addq.l` elsewhere (`$ff9042.l` at `0x82C`-`0x8C0`),
+  so there may be two tick counters and the 364-frame boundary may be when the
+  second one starts running. Not established.
+- Whether `0x818002`'s width-16 observation is right. See IRQ-0007.
+
+## 78. Refutation: the road-window subtract off-by-one was invisible, not killed
+
+**Section 76 reported 10 of 11 mutations killed, including "walk 767 bytes →
+FAIL byte 767". That claim was false for the subtract pass.** I rebuilt the
+mutation rather than diffing it, and it passed.
+
+Root cause, confirmed by reading the fixture rather than the code under test:
+
+```
+sub_twin        len=768  last4=['0xf','0x0','0x0','0x0']  zeros=64   [767]=0x00
+sub_base_before len=768  last4=['0x70','0x0','0x0','0x0'] zeros=37   [767]=0x00
+sub_base_after  len=768  last4=['0x61','0x0','0x0','0x0'] zeros=37   [767]=0x00
+add_twin        len=768  last4=['0xd','0xb','0x10','0x17'] zeros=147  [767]=0x17
+```
+
+The oracle subtract fixture has `sub_twin[767] == 0`. So
+`base[767] - twin[767] == base[767]`, a walk stopping at byte 767 leaves byte 767
+at `0x00`, and `sub_base_after[767]` is also `0x00`. Byte-for-byte identical. The
+one field the check pinned was the one byte the operation **cannot** change.
+
+The add fixture does not share the defect (`add_twin[767] == 0x17`), which is
+why mutating the add loop was caught and mutating the subtract loop was not. The
+kill was real — it just belonged to the other pass.
+
+**This is §73's trap for the third time.** There: a partial render passed because
+axis-separator pixels counted as bar content, then because page background
+counted. Here: an off-by-one passed because the sampled tail byte was
+idempotent under the operation. In both cases the check reproduced the shape of
+the bug rather than its effect. The general failure is not "weak assertions" but
+**an expectation drawn from data the operation cannot move.**
+
+Fix: `test_subtract_pass_covers_the_final_byte` runs a labelled synthetic vector
+whose last three twin bytes are all non-idempotent under both passes. Synthetic
+because the oracle has no such frame, and labelled as synthetic in the source so
+it is never mistaken for captured evidence. Check count 99 -> 1640.
+
+Rebuilt negative control, both passes:
+
+| mutation | before | after |
+|---|---|---|
+| shared subtract loop `i + 1 < bytes` | **PASSED** | `FAIL base[i] == 0x5F, expected 0x47` |
+| window wrapper length arg -> `BYTES - 1` | **PASSED** | killed |
+
+**Lesson for §76's other claim.** The eleventh mutation ("divisor-0 check is
+unobservable") was reported honestly. But 10/11 was asserted, not measured by
+rebuild. Six of the repo's now-known wrong-reason passes came from believing a
+mutation table rather than re-running it.

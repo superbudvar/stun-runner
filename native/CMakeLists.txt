@@ -80,6 +80,22 @@ add_executable(stunrun-mc68010-text-writer-test
   mc68010_text_writer.c mc68010_text_writer_test.c)
 set_target_properties(stunrun-mc68010-text-writer-test PROPERTIES C_STANDARD 99)
 add_test(NAME mc68010-text-writer-slice-c COMMAND stunrun-mc68010-text-writer-test)
+# Agent 2 (state log): the labelled game-state / event log behind
+# STUNRUN_STATE_LOG.  Consumes adsp_control_seq.c for the ADSP upload/install
+# frame bounds and the control-window table (single canonical implementation --
+# the bounds are NOT restated in state_watch.c), plus fake_ports.c for the
+# work-RAM reads.  The test asserts the exact lines the log prints for a
+# synthetic RAM image, that an unchanged image prints nothing, and that the
+# enable header names every watched field with its ram-map confidence string.
+add_executable(stunrun-state-watch-test
+  state_watch.c
+  state_watch_test.c
+  fake_ports.c
+  ../reproduction/adsp/adsp_control_seq.c)
+target_include_directories(stunrun-state-watch-test PRIVATE
+  . ../reproduction/adsp)
+set_target_properties(stunrun-state-watch-test PROPERTIES C_STANDARD 99)
+add_test(NAME state-watch-slice-c COMMAND stunrun-state-watch-test)
 # Agent 1 (this session): road FIFO write routines at $22EC-$24B8.
 add_executable(stunrun-mc68010-road-writer-test
   mc68010_road_writer.c mc68010_road_writer_test.c)
@@ -185,6 +201,7 @@ add_executable(stunrun-native-shell
   cpu_override.c
   game_loop.c
   road_strip.c
+  state_watch.c
   ../reproduction/maincpu/trajectory_state.c
   ../reproduction/maincpu/geom_upload.c
   ../reproduction/maincpu/road_fifo.c
@@ -649,6 +666,20 @@ target_include_directories(stunrun-road-fifo-slice-test PRIVATE
   ../reproduction/maincpu)
 set_target_properties(stunrun-road-fifo-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME road-fifo-slice-c COMMAND stunrun-road-fifo-slice-test)
+# Road window transform: the paired add/subtract passes at $0298A2/$0298DC and
+# the $FF954E gate.  Consumes road_buffer_math.c rather than forking the byte
+# arithmetic (single canonical implementation), and exposes the window as
+# words/count/stride/offset so a GL backend can upload it without knowing the
+# transform was a subtract.  The test compares whole 768-byte windows against
+# buffers captured from the MAME oracle, not against this code's own output.
+add_executable(stunrun-road-window-slice-test
+  ../reproduction/maincpu/road_window.c
+  ../reproduction/maincpu/road_buffer_math.c
+  ../reproduction/maincpu/road_window_test.c)
+target_include_directories(stunrun-road-window-slice-test PRIVATE
+  ../reproduction/maincpu)
+set_target_properties(stunrun-road-window-slice-test PROPERTIES C_STANDARD 99)
+add_test(NAME road-window-slice-c COMMAND stunrun-road-window-slice-test)
 add_executable(stunrun-road-buffer-math-slice-test
   ../reproduction/maincpu/road_buffer_math.c
   ../reproduction/maincpu/road_buffer_math_test.c)
