@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Check reproduction/adsp/som_fixture.c against closed-form identities.
+
+Question this answers: the SOM fixture is the single copy of the frame-551
+captured inputs, shared by the ADSP slice tests and by the native
+`./run.sh --adsp-som` view. It is a GENERATED-looking file of bare hex, so the
+only thing standing between it and silent hand-edit drift is a check. This tool
+re-derives what can be re-derived and compares.
+
+It was first written as a generator that extracted the tables out of
+som_walk_test.c. That became circular once the test started consuming the
+fixture -- the generator's source was its own output's consumer -- so this is
+now a validator. The extraction provenance is in the fixture's header comment
+and in commit f1ee005's successor history.
+
+What it checks, and what it cannot:
+
+  * PM[$1037..$1076] is 64 contiguous entries equal to floor($8000/n) in bits
+    23:8 for n = 1..64. Closed form, so a mistyped hex literal cannot survive.
+  * PM[$1036], the n = 0 slot the helpers refuse, is zero.
+  * The six-word ring of each record equals the pass-2 table in findings 72.2,
+    transcribed independently in this tool rather than read from the fixture.
+  * DM($0039) is 3 in every record, which is what makes the ring length 6.
+  * Each record's entry pointer lies inside its own ring.
+  * Each record's 16 expected words end with the $FFFF $FFFF terminator, and
+    the four header words are at fixed positions.
+
+What it CANNOT check, and this is the important limitation: it cannot tell you
+whether a record word is the RIGHT $FFFF-terminated record. Expected words come
+from the same human transcription as the rest of the fixture, so a uniformly
+wrong record passes every identity here. Only re-deriving them from
+reference/experiments/stunrun/adsp-som-transaction-f551/result.json would catch
+that, and that is a different question -- it means parsing 4009 producer
+events. Until someone writes that, the honest statement is: these are checked
+for INTERNAL consistency and against the independently transcribed findings
+table, not against the capture.
+"""
+
+import argparse
+import hashlib
+import json
+import pathlib
+import re
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+TARGET = ROOT / "reproduction/adsp/som_fixture.c"
+
+# Findings 72.2, pass 2 of $04B2: the only one of the four writers of
+# DM($0040..$0045) whose values reach the emitter. Transcribed here from the
+# findings document, not from the fixture, so agreement means something.
+RING_PASS2 = [
+    [0x00F4, 0x009E, 0x00FF, 0x0099, 0x00FB, 0x00A0],
+    [0x0103, 0x00A0, 0x00FF, 0x0099, 0x010A, 0x009E],
+    [0x00FB, 0x00A0, 0x00FF, 0x0099, 0x0103, 0x00A0],
+    [0x00F2, 0x0097, 0x00FF, 0x0099, 0x00F4, 0x009E],
+    [0x010A, 0x009E, 0x00FF, 0x0099, 0x010C, 0x0097],
+    [0x00FF, 0x0091, 0x00FF, 0x0099, 0x00F6, 0x0093],
+    [0x010C, 0x0097, 0x00FF, 0x0099, 0x0108, 0x0093],
+    [0x00F6, 0x0093, 0x00FF, 0x0099, 0x00F2, 0x0097],
+    [0x00FF, 0x0091, 0x0108, 0x0093, 0x00FF, 0x0099],
+]
+
+CNTR = 3
+RING_LEN = 6
+RECORDS = 9
+DM_BASE = 0x0030
+DM_WORDS = 22
+REC_WORDS = 16
+PM_N0_SLOT = 0x1036
+PM_FIRST = 0x1037
+PM_COUNT = 64
+
+
+def extract_block(text: str, name: str) -> str:
+    # The array declarators wrap across lines in the fixture, so both the gap
+    # between the two bracket groups and the "= {" must tolerate whitespace.
+    match = re.search(r"static const \w+ " + name +
+                      r"\[[^\]]*\](?:\s*\[[^\]]*\])?\s*=\s*\{", text)
+    if not match:
+        raise SystemExit(f"check-adsp-som-fixture: table not found in {TARGET.name}: {name}")
+    start = match.end()
+    depth, index = 1, start
+    while depth:
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+        index += 1
+    return text[start:index - 1]
+
+
+def extract_rows(text: str, name: str, per_row: int) -> list:
+    body = re.sub(r"/\*.*?\*/", "", extract_block(text, name), flags=re.S)
+    rows = []
+    for match in re.finditer(r"\{([^{}]*)\}", body):
+        values = [int(token, 0) for token in match.group(1).replace("\n", " ").split(",")
+                  if token.strip()]
+        if len(values) != per_row:
+            raise SystemExit(
+                f"check-adsp-som-fixture: {name} row has {len(values)} values, "
+                f"expected {per_row}")
+        rows.append(values)
+    return rows
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    parser.add_argument("--json", action="store_true", help="machine-readable result")
+    parser.add_argument("target", nargs="?", type=pathlib.Path, default=TARGET,
+                        help="fixture to check (default: the committed one)")
+    args = parser.parse_args()
+
+    target = args.target if args.target.is_absolute() else ROOT / args.target
+    if not target.is_file():
+        raise SystemExit(f"check-adsp-som-fixture: missing {target}")
+    text = target.read_text(encoding="utf-8")
+    failures = []
+
+    def require(condition: bool, message: str) -> None:
+        if not condition:
+            failures.append(message)
+
+    program = [(int(addr, 16), int(value, 16)) for addr, value in
+               re.findall(r"\[0x([0-9A-Fa-f]+)\]\s*=\s*0x([0-9A-Fa-f]+)",
+                          extract_block(text, "PM_PROGRAM"))]
+    windows = extract_rows(text, "DM_WINDOWS", DM_WORDS)
+    expected = extract_rows(text, "EXPECTED", REC_WORDS)
+
+    require(len(program) == PM_COUNT,
+            f"PM table has {len(program)} entries, expected {PM_COUNT}")
+    if len(program) == PM_COUNT:
+        addresses = [address for address, _ in program]
+        require(addresses == list(range(PM_FIRST, PM_FIRST + PM_COUNT)),
+                "PM table is not %d contiguous entries from $%04X"
+                % (PM_COUNT, PM_FIRST))
+        for address, value in program:
+            n = address - PM_FIRST + 1
+            want = 0x8000 // n
+            require(value == (want << 8),
+                    "PM[$%04X] = $%06X, expected floor($8000/%d)<<8 = $%06X"
+                    % (address, value, n, want << 8))
+        require(not any(address == PM_N0_SLOT for address, _ in program),
+                "PM[$%04X] (the n=0 slot) must not carry a coefficient" % PM_N0_SLOT)
+
+    require(len(windows) == RECORDS,
+            "DM_WINDOWS has %d rows, expected %d" % (len(windows), RECORDS))
+    require(len(expected) == RECORDS,
+            "EXPECTED has %d rows, expected %d" % (len(expected), RECORDS))
+
+    entry_i1 = [int(value, 16) for value in
+                re.findall(r"ENTRY_I1\[STUNRUN_ADSP_SOM_FIXTURE_RECORDS\] = \{([^}]*)\}",
+                           text)[0].replace("\n", " ").split(",") if value.strip()]
+    entry_i2 = [int(value, 16) for value in
+                re.findall(r"ENTRY_I2\[STUNRUN_ADSP_SOM_FIXTURE_RECORDS\] = \{([^}]*)\}",
+                           text)[0].replace("\n", " ").split(",") if value.strip()]
+
+    for index in range(min(len(windows), RECORDS)):
+        row = windows[index]
+        ring = row[DM_BASE + 0x10 - DM_BASE:DM_BASE + 0x16 - DM_BASE]
+        require(row[9] == CNTR,
+                "record %d DM($0039) = %d, expected %d" % (index, row[9], CNTR))
+        require(ring == RING_PASS2[index],
+                "record %d ring %s does not match findings 72.2 pass 2 %s"
+                % (index, [hex(v) for v in ring], [hex(v) for v in RING_PASS2[index]]))
+        require(all(0 <= value <= 0x01FF for value in ring),
+                "record %d ring holds a value outside the clamp range [0,$01FF]" % index)
+        if index < len(entry_i1) and index < len(entry_i2):
+            for label, pointer in (("I1", entry_i1[index]), ("I2", entry_i2[index])):
+                require(0x0040 <= pointer <= 0x0045,
+                        "record %d entry %s = $%04X is outside the six-word ring"
+                        % (index, label, pointer))
+
+    for index in range(min(len(expected), RECORDS)):
+        words = expected[index]
+        require(words[-2:] == [0xFFFF, 0xFFFF],
+                "record %d does not end with the $FFFF $FFFF terminator" % index)
+        require(words[0] == 0x0030,
+                "record %d control word = $%04X, expected $0030" % (index, words[0]))
+        require(words[1] == words[2],
+                "record %d start_x $%04X and delta_x $%04X differ; all nine captured "
+                "records latch them equal, so a mismatch means a transcription "
+                "slip" % (index, words[1], words[2]))
+
+    summary = {
+        "schema": "stunrun-adsp-som-fixture-check-v1",
+        "target": str(target.relative_to(ROOT)) if target.is_relative_to(ROOT) else str(target),
+        "records": len(windows),
+        "dm_words": DM_WORDS,
+        "record_words": REC_WORDS,
+        "pm_entries": len(program),
+        "pm_first": "0x%04X" % PM_FIRST if program else None,
+        "pm_last": "0x%04X" % program[-1][0] if program else None,
+        "cntr": CNTR,
+        "ring_length": RING_LEN,
+        "checks_failed": failures,
+        "fixture_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+
+    if failures:
+        summary["status"] = "FAILED"
+        print(json.dumps(summary, indent=2) if args.json else
+              "check-adsp-som-fixture: %d problem(s)\n  %s"
+              % (len(failures), "\n  ".join(failures)), file=sys.stderr)
+        return 1
+
+    summary["status"] = "ok"
+    print(json.dumps(summary, indent=2) if args.json else
+          "check-adsp-som-fixture: ok (%d records, %d PM entries)"
+          % (len(windows), len(program)))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

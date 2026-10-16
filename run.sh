@@ -19,12 +19,14 @@ REPLAY_DIR=""
 
 MODE="normal"
 WANT_RTL="${WANT_GSP_RTL:-1}"
+EXTRA=()
 
 show_help() {
     cat <<EOF
-Usage: run.sh [--service] [--gsp-replay CAPTURE-DIR] [--no-rtl] [--frames N] [-h]
+Usage: run.sh [--service] [--adsp-som] [--gsp-replay CAPTURE-DIR] [--no-rtl] [--frames N] [-h]
 
   --service     Boot to the self-test screen instead of normal play.
+  --adsp-som    Derive and draw the ADSP SOM producer's output (see below).
   --gsp-replay DIR  Replay an oracle GSP host-event capture (RTL required).
   --no-rtl      Do not require the Verilated TMS34010 core.
   --frames N    Stop after N frames (default 0 = run until closed).
@@ -41,6 +43,9 @@ Environment:
   STUNRUN_REPLAY_STAGE_VRAM  Optional 512 KiB pre-release staged VRAM dump.
   STUNRUN_GSP_REPLAY_VCLK=1  Experimental 6 MHz VCLK for the RTL video domain.
   STUNRUN_IN0        Overrides the port value chosen by --service.
+  STUNRUN_ADSP_SOM_WINDOW=1  Present --adsp-som in a window (default: print only).
+  Keyboard (unbounded visible runs): 5/6 coin, Enter start, Space/X buttons.
+  Service-menu left/right triggers are not mapped; their /SW2 bits are unknown.
   STUNRUN_FRAME_LOG=N   Print lit=/colours= every N frames. Use this to see
                       when a screen appears or vanishes -- the terminal
                       summary only reports the LAST frame, and the thing worth
@@ -50,7 +55,16 @@ Environment:
 Examples:
   ./run.sh                      # normal boot, GSP core running
   ./run.sh --service            # self-test screen (no GSP core output)
+  ./run.sh --adsp-som           # ADSP SOM geometry, no ROM needed
   STUNRUN_LIVE_VIDEO=0 STUNRUN_FRAMES=600 ./run.sh    # headless 600 frames
+
+--adsp-som is not the game. It re-derives one captured ADSP transaction from
+the committed data-memory window and coefficient table -- no ROM, no MAME, no
+Verilator -- and prints the derived record words next to what the original
+game latched, then draws the decoded record fields. The GSP's consumer of that
+record is not decoded yet, so the picture is a plot of record fields, not the
+game's rendering, and no coordinate space or colour meaning is claimed. The
+printed "matching the capture" count is the claim; the picture is the view.
 
 Note: --service does NOT show GSP output. That ROM path never releases the
 GSP. That is a property of the game, not of this launcher.
@@ -60,12 +74,23 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --service) MODE="service" ;;
+        --adsp-som) MODE="adsp-som" ;;
         --gsp-replay) shift; REPLAY_DIR="${1:?--gsp-replay needs a capture directory}"; MODE="gsp-replay" ;;
         --no-rtl)  WANT_RTL=0 ;;
         --frames)  shift; STUNRUN_FRAMES="${1:?--frames needs a number}" ;;
         --frames=*) STUNRUN_FRAMES="${1#--frames=}" ;;
         -h|--help) show_help; exit 0 ;;
-        *) printf 'run.sh: unknown option %s (try -h)\n' "$1" >&2; exit 2 ;;
+        *)
+            # --adsp-som hands everything it does not recognise to the viewer
+            # (--png, --window, ...), so that mode does not have to be taught
+            # every viewer option here.
+            if [[ "$MODE" == "adsp-som" ]]; then
+                EXTRA+=("$1")
+            else
+                printf 'run.sh: unknown option %s (try -h)\n' "$1" >&2
+                exit 2
+            fi
+            ;;
     esac
     shift
 done
@@ -86,6 +111,21 @@ if [[ "$MODE" == "gsp-replay" ]]; then
         exit 3
     fi
     exec "$BIN" "$REPLAY_DIR"
+fi
+
+if [[ "$MODE" == "adsp-som" ]]; then
+    # Needs no ROM, no MAME and no Verilator: the transaction it derives is
+    # committed under reference/. Build without the RTL so this works on a
+    # machine that has no TMS34010 core at all, then hand any remaining
+    # arguments (--png, --window, ...) to the viewer.
+    VIEW_BIN="$BUILD_DIR/stunrun-adsp-som-view"
+    "$ROOT/build.sh" --no-rtl
+    if [[ ! -x "$VIEW_BIN" ]]; then
+        printf 'run.sh: ADSP SOM viewer unavailable; reconfigure build/native\n' >&2
+        exit 3
+    fi
+    printf 'run.sh: mode=adsp-som (no ROM required; this is a derived record, not the game)\n'
+    exec "$VIEW_BIN" "${EXTRA[@]+"${EXTRA[@]}"}"
 fi
 
 if [[ ! -d "$ROM_DIR" ]]; then

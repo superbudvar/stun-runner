@@ -1766,5 +1766,91 @@ class GspFirstOutputTests(unittest.TestCase):
             self.assertIn("no boundary", r.stderr)
 
 
+class AdspSomFixtureCheckTests(unittest.TestCase):
+    """tools/check-adsp-som-fixture must fail on a fixture that drifted.
+
+    The fixture is a wall of bare hex transcribed from one capture, shared by
+    the ADSP slice tests and by `./run.sh --adsp-som`, so hand-edit drift is the
+    failure mode that matters. Each case below corrupts exactly one value and
+    requires the checker to notice -- a checker that only reported "file
+    present" would pass all of them.
+    """
+
+    TOOL = "check-adsp-som-fixture"
+    FIXTURE = ROOT / "reproduction" / "adsp" / "som_fixture.c"
+
+    def run_tool(self, path):
+        return subprocess.run([str(ROOT / "tools" / self.TOOL), str(path)],
+                              cwd=ROOT, capture_output=True, text=True)
+
+    def test_the_committed_fixture_passes(self):
+        r = self.run_tool(self.FIXTURE)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("ok", r.stdout)
+
+    def test_json_schema_and_counts(self):
+        r = subprocess.run([str(ROOT / "tools" / self.TOOL), "--json",
+                            str(self.FIXTURE)],
+                           cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["schema"], "stunrun-adsp-som-fixture-check-v1")
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["records"], 9)
+        self.assertEqual(payload["pm_entries"], 64)
+        self.assertEqual(payload["pm_first"], "0x1037")
+        self.assertEqual(payload["pm_last"], "0x1076")
+        self.assertEqual(payload["checks_failed"], [])
+        self.assertEqual(payload["fixture_sha256"],
+                         hashlib.sha256(self.FIXTURE.read_bytes()).hexdigest())
+
+    def _corrupted(self, old, new):
+        """A temp fixture with one substitution made, or self.fail if absent."""
+        text = self.FIXTURE.read_text()
+        if old not in text:
+            self.fail("pattern not present in the fixture: %r" % old)
+        with tempfile.TemporaryDirectory() as temp:
+            path = pathlib.Path(temp) / "som_fixture.c"
+            path.write_text(text.replace(old, new, 1))
+            return self.run_tool(path)
+
+    def test_rejects_a_pm_coefficient_that_breaks_the_closed_form(self):
+        r = self._corrupted("[0x1038] = 0x400000,", "[0x1038] = 0x400100,")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("floor($8000/2)", r.stderr)
+
+    def test_rejects_a_ring_that_contradicts_findings_72(self):
+        r = self._corrupted(
+            "0x00F4, 0x009E, 0x00FF, 0x0099, 0x00FB, 0x00A0,",
+            "0x00F4, 0x009D, 0x00FF, 0x0099, 0x00FB, 0x00A0,")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("72.2", r.stderr)
+
+    def test_rejects_a_changed_loop_count(self):
+        r = self._corrupted(
+            "0x0000, 0x0003, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,",
+            "0x0000, 0x0004, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("DM($0039)", r.stderr)
+
+    def test_rejects_a_missing_terminator(self):
+        r = self._corrupted("0x0003, 0x0003, 0xFFFF, 0xFFFF,",
+                            "0x0003, 0x0003, 0xFFFE, 0xFFFF,")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("terminator", r.stderr)
+
+    def test_rejects_an_entry_pointer_outside_the_ring(self):
+        r = self._corrupted(
+            "0x0042, 0x0042, 0x0042, 0x0040, 0x0044, 0x0040, 0x0044, 0x0040, 0x0040",
+            "0x0042, 0x0042, 0x0042, 0x0040, 0x0050, 0x0040, 0x0044, 0x0040, 0x0040")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("outside the six-word ring", r.stderr)
+
+    def test_rejects_a_missing_file(self):
+        r = self.run_tool(ROOT / "reproduction" / "adsp" / "does-not-exist.c")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("missing", r.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

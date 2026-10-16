@@ -443,6 +443,7 @@ add_test(NAME adsp-som-record-slice-c COMMAND stunrun-adsp-som-record-slice-test
 # addressing plus the two-chain merge. Produces the header words and the span
 # list; the interpolated side values are filled in by the caller.
 add_executable(stunrun-adsp-som-walk-slice-test
+  ../reproduction/adsp/som_fixture.c
   ../reproduction/adsp/som_math.c
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/som_walk.c
@@ -451,6 +452,43 @@ target_include_directories(stunrun-adsp-som-walk-slice-test PRIVATE
   ../reproduction/adsp)
 set_target_properties(stunrun-adsp-som-walk-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME adsp-som-walk-slice-c COMMAND stunrun-adsp-som-walk-slice-test)
+# View of the ADSP SOM producer's derived output, so the reproduction slices can
+# be looked at rather than only read about: `./run.sh --adsp-som`. Needs no ROM,
+# no MAME and no Verilator, because the transaction it derives is committed under
+# reference/. It draws decoded record FIELDS -- the GSP's consumer of the record
+# is not decoded, so no coordinate space and no colour meaning is claimed.
+add_executable(stunrun-adsp-som-view-test
+  ../reproduction/adsp/som_fixture.c
+  ../reproduction/adsp/som_math.c
+  ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_walk.c
+  adsp_som_view.c
+  render.c
+  adsp_som_view_test.c)
+target_include_directories(stunrun-adsp-som-view-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-som-view-test PROPERTIES C_STANDARD 99)
+target_link_libraries(stunrun-adsp-som-view-test PRIVATE m)
+add_test(NAME adsp-som-view-slice-c COMMAND stunrun-adsp-som-view-test)
+# `./run.sh --adsp-som`: the same derivation, drawn. Deliberately its own
+# executable rather than a shell mode -- the shell runs the ORIGINAL game and
+# needs ROMs, while this needs nothing but the committed capture, so it works on
+# a machine with no ROMs and no Verilator at all.
+add_executable(stunrun-adsp-som-view
+  ../reproduction/adsp/som_fixture.c
+  ../reproduction/adsp/som_math.c
+  ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_walk.c
+  adsp_som_view.c
+  adsp_som_main.c
+  render.c)
+target_include_directories(stunrun-adsp-som-view PRIVATE
+  ../reproduction/adsp
+  .
+  ../backend)
+set_target_properties(stunrun-adsp-som-view PROPERTIES
+  C_STANDARD 99 C_STANDARD_REQUIRED ON)
+target_link_libraries(stunrun-adsp-som-view PRIVATE stunrun_backends m)
 # GSP record control-word dispatch from the race-1800 walk decode: bit 15
 # skips, bit 12 takes the perspective-sprite path, else the FILL worker.
 if(EXISTS ../reproduction/gsp/record_dispatch.c)

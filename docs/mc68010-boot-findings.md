@@ -11391,3 +11391,119 @@ Not one routine but a chain, and it drags in the object ROM:
 Recommended order, now that the shape is known: pass 2 first (it is the only
 output the emitter reads, and it is fully exercised), then pass 1, then the
 `$01E8` mirrors as a separate slice, and only then the object ROM itself.
+
+## 73. Looking at the SOM producer: `./run.sh --adsp-som` (`alo` / `1fv`)
+
+Everything in §64-§72 existed only in slice tests. `./run.sh` showed none of it,
+because nothing in the native shell called any of it. This section records the
+view that makes it visible, what it is honest about, and three mistakes the work
+produced.
+
+### 73.1 What the view is, and what it refuses to claim
+
+`native/adsp_som_view.c` derives all nine captured records from
+`DM($0030..$0045)` plus the coefficient table and nothing else, compares each
+record's sixteen words against the capture, and draws the decoded record fields.
+
+It is **not** the game's rendering. The GSP's consumer of the SOM record is not
+decoded (bead `q9t`), so:
+
+- the axes are an index space defined in `adsp_som_view.c` and labelled with raw
+  values, not a coordinate space recovered from hardware;
+- the bar colour is a documented ramp over one raw 16-bit field
+  (`DM($003C)`/`DM($003D)`), not a palette, and `stunrun_adsp_som_view_side_color`
+  is exported so the test pins it as the documented function it is;
+- `AY0 != AY1` in eight of eighteen spans, and nothing here says what the larger
+  one means. It is drawn as a tick at the far end rather than dropped.
+
+The one asserted claim is the word stream. It reports
+`derived words matching the capture: 9/9`, and exits non-zero otherwise. If that
+number is not 9, the picture is a picture of something the game never emitted.
+
+**[ROM]** Inputs: `reference/experiments/stunrun/adsp-som-transaction-f551/`
+transaction sha256 `c41715380aabbd4e71f46afcda28cbaa0e48828264b9dc5a768a73b4ab238ea4`,
+MAME sha256 `75b09ee4…`, frame 551, `--input none`, power-on. See §66-§72.
+
+### 73.2 The span chain shares a boundary row, and my first statement of it was off by one
+
+Every record has exactly two spans, and the second span's `AX1` is the first
+span's `min(AY0,AY1)` — **not** `AX1 + run length`:
+
+```
+rec  start_y  span 0: ax1  ay0  ay1  h   span 1: ax1  ay0  ay1  h
+  0    0099        0099 009E 00A0  6         009E 00A0 00A0  3
+  2    0099        0099 00A0 00A0  8         00A0 00A0 00A0  1
+  5    0091        0091 0093 0099  3         0093 0099 0099  7
+```
+
+So `AX1(k+1) == min(AY0,AY1)(k)`, and because `h = min - AX1 + 1`, that is
+`AX1(k) + h(k) - 1`. **Consecutive spans share their boundary row.** I first
+asserted `AX1 + h` in the test, the test failed, and the disassembly-independent
+way to tell which was right was to print the values rather than reason about
+them — `AX1 + h` is one row too far, and the ring geometry does not care which
+way a run is counted as long as the emitter's own `min - AX1 + 1` agrees.
+
+### 73.3 The coefficient table is 64 entries, not `$40`
+
+`PM[$1037..$1076]` is **64** contiguous entries equal to `floor($8000/n)` in bits
+23:8 for `n = 1..64`, verified closed-form. §68 and the slice README both said
+"n = 1..$40". The `$40` is the reachable **selector** bound — `$05DD`/`$0607`
+decline anything larger — not the extent of the table. Both statements are true
+and they were being conflated. `tools/check-adsp-som-fixture` now asserts the
+64-entry closed form and exposes `..._pm_selected_max()` separately, so the two
+cannot be confused again.
+
+### 73.4 The fixture had one copy; the view needed another, so a tool appeared
+
+The captured inputs lived in `som_walk_test.c`. Hand-copying them into the view
+would have put a free-to-drift second copy of the evidence into the tree, so they
+moved to `reproduction/adsp/som_fixture.c` and the test consumes that (487 lines
+to 253).
+
+The first tool to maintain them was a **generator** that extracted the tables
+back out of `som_walk_test.c`. It worked, and then it became circular: once the
+test read from the fixture, the generator's source was its own output's consumer,
+and it reported `table not found in som_walk_test.c: PM_PROGRAM`. It is now
+`tools/check-adsp-som-fixture`, a **validator** of the committed fixture's
+invariants.
+
+**Its limitation, which matters more than its checks:** it cannot tell you
+whether a record word is the *right* record. Expected words come from the same
+human transcription as everything else in the fixture, so a uniformly wrong
+record passes every identity here. It verifies internal consistency and agreement
+with the independently transcribed findings 72.2 ring. Re-deriving the expected
+words from the capture means parsing 4009 producer events — a different question,
+not yet asked. Until someone asks it, "checked against the capture" is not a
+thing this tool can claim.
+
+### 73.5 Two controls that passed for the wrong reason
+
+The view's render test samples pixels per column and compares against what the
+spans say should be there. It took three attempts to make it able to fail, and
+both earlier versions passed every partial-render control:
+
+1. **The first version counted any non-lane pixel as content.** The axis
+   separator down the left of each column is `AXIS_R/G/B` (`$46/$4E/$5E`), not
+   the lane colour, so all five partial-render controls passed: "only record 0
+   is drawn", "only the first span is drawn", "bars collapsed to zero height".
+2. **The second version excluded the lane colour and the axis colour but not the
+   page background.** A render that skips a record leaves that column at the
+   page background rather than the lane colour, so *every undrawn pixel counted
+   as content* and "only record 0 is drawn" passed again.
+
+Both are the same class of mistake as §71's wrong control name: a check that
+cannot fail reads exactly like a check that passed. The fix in both cases was to
+print what the sampler actually saw rather than to reason about which colours
+should be excluded.
+
+### 73.6 One equivalent mutant, recorded rather than worked around
+
+Eight render controls fail. One passes: mutating a bar to end at `max(AY0,AY1)`
+instead of `min(AY0,AY1)`. The test compares the **union** of a record's spans,
+and by §73.2 consecutive spans share their boundary row, so the next span's bar
+already covers the rows the change would add — for all nine records. Both spans
+also share a column centre, so there is no x-axis evidence either.
+
+Catching it needs per-span discrimination, which this check does not do. It is
+noted in `adsp_som_view_test.c` next to the check so the next reader does not
+mistake the passing control for a covered one.
