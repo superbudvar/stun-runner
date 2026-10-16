@@ -30,6 +30,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "som_math.h"
 #include "som_record.h"
 
 #ifdef __cplusplus
@@ -64,24 +65,42 @@ typedef struct stunrun_adsp_som_walk {
     uint16_t delta_x;   /* $0567, DM(I2,M2) */
     uint16_t start_y;   /* $056B, AX1 = DM(I0,M0); also the first span's AX1 */
     size_t span_count;
-    int terminated;     /* 1 when $058E/$05AE/$05C7 ended the walk */
+    int terminated;     /* 1 when the walk reached the $05D1 terminator,
+                         * by whichever exit: the pointers meeting at
+                         * $058E or a guard failing at $0594/$059A/
+                         * $05B4/$05CE */
 } stunrun_adsp_som_walk_t;
 
-/* Walk one record's spans.
+/* Walk one record's spans, including the two interpolated side values.
  *
  * dm is the ADSP data-memory window, addressed by absolute DM address:
  * DM(a) is dm[a - dm_base]. Reading outside the window fails rather than
  * inventing geometry, because a truncated capture would otherwise produce
  * plausible-looking wrong output.
  *
+ * program_words is the ADSP program memory holding the coefficient table that
+ * $05DD/$0607 index at $1036; the words are MAME's 32-bit containers for
+ * 24-bit PM values, and the helper takes bits 23:8. The captured table is
+ * floor($8000/n) for n = 1..$40 and zero at n = 0, identical at frames 551
+ * and 600 -- see docs/mc68010-boot-findings.md section 68.
+ *
  * i1 and i2 are the index register values as observed at $0564, i.e. after any
  * $0563 `MODIFY (I2,M0)`. length is the L register ($0006 in the capture).
  *
+ * Each span's side values come from the two helpers: $05DD is entered with
+ * AR = AY1 - AX1 and the forward chain's pointers (I0, I2); $0607 with
+ * AR = AY0 - AX1 and the backward chain's (I4, I1). The ADSP calls them at
+ * $0575/$0578 and then refreshes whichever side a loop tail advanced, so a
+ * span that only advanced one side reuses the other side's previous result --
+ * transcribed here rather than recomputed.
+ *
  * Returns 1 on success. Returns 0, writing nothing, when an argument is NULL,
- * when a DM address leaves the window, or when the walk needs more than
- * span_capacity spans. */
+ * when a DM address leaves the window, when a helper declines its selector
+ * (the > $40 scaled branch is not implemented), or when the walk needs more
+ * than span_capacity spans. */
 int stunrun_adsp_som_walk_record(
     const uint16_t *dm, size_t dm_word_count, uint16_t dm_base,
+    const uint32_t *program_words, size_t program_word_count,
     uint16_t i1, uint16_t i2, uint16_t length,
     stunrun_adsp_som_span_t *spans, size_t span_capacity,
     stunrun_adsp_som_walk_t *out);

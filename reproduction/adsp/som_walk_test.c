@@ -13,12 +13,11 @@
  * and the run length the emitter will latch) is computed, and compared against
  * the captured record words.
  *
- * WHAT IS TAKEN FROM THE CAPTURE RATHER THAN COMPUTED: the two 32-bit side
- * values per span. Those are what $05DD/$0607 leave in DM($003E/$003F) and
- * DM($003C/$003D); som_math.c owns that arithmetic and this test does not
- * duplicate it. The C below therefore produces a record whose header, span
- * layout, run lengths and terminator are derived, with the side words filled
- * in from the capture, and the whole 16-word record is compared word for word.
+ * Nothing in the emitted record is copied from the capture. Given the DM ring,
+ * the coefficient table and the entry pointers, the walk derives the header
+ * words, the span count, each span's AX1/AY0/AY1, both interpolated 32-bit
+ * side values, and the run length; the whole 16-word record is then compared
+ * word for word against the capture.
  */
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +27,82 @@
 static int failures;
 
 #define check(c) do { if (!(c)) { printf("FAIL %s\n", #c); failures++; } } while (0)
+
+/* The coefficient table the two helpers index at $1036, captured from
+ * the frame-551 ADSP program image (byte-identical at frame 600).
+ * MAME stores 24-bit PM values in 32-bit containers; $05DD and $0607
+ * take bits 23:8. The values are exactly floor($8000/n) for n = 1..$40
+ * and zero at n = 0 -- see docs/mc68010-boot-findings.md section 68.
+ *
+ * Indexed by absolute PM address, matching som_math.c. The words not
+ * listed here are instructions and are never read by these helpers. */
+#define PM_PROGRAM_WORDS 0x1077u
+static const uint32_t PM_PROGRAM[PM_PROGRAM_WORDS] = {
+    [0x1037] = 0x800000,
+    [0x1038] = 0x400000,
+    [0x1039] = 0x2AAA00,
+    [0x103A] = 0x200000,
+    [0x103B] = 0x199900,
+    [0x103C] = 0x155500,
+    [0x103D] = 0x124900,
+    [0x103E] = 0x100000,
+    [0x103F] = 0x0E3800,
+    [0x1040] = 0x0CCC00,
+    [0x1041] = 0x0BA200,
+    [0x1042] = 0x0AAA00,
+    [0x1043] = 0x09D800,
+    [0x1044] = 0x092400,
+    [0x1045] = 0x088800,
+    [0x1046] = 0x080000,
+    [0x1047] = 0x078700,
+    [0x1048] = 0x071C00,
+    [0x1049] = 0x06BC00,
+    [0x104A] = 0x066600,
+    [0x104B] = 0x061800,
+    [0x104C] = 0x05D100,
+    [0x104D] = 0x059000,
+    [0x104E] = 0x055500,
+    [0x104F] = 0x051E00,
+    [0x1050] = 0x04EC00,
+    [0x1051] = 0x04BD00,
+    [0x1052] = 0x049200,
+    [0x1053] = 0x046900,
+    [0x1054] = 0x044400,
+    [0x1055] = 0x042100,
+    [0x1056] = 0x040000,
+    [0x1057] = 0x03E000,
+    [0x1058] = 0x03C300,
+    [0x1059] = 0x03A800,
+    [0x105A] = 0x038E00,
+    [0x105B] = 0x037500,
+    [0x105C] = 0x035E00,
+    [0x105D] = 0x034800,
+    [0x105E] = 0x033300,
+    [0x105F] = 0x031F00,
+    [0x1060] = 0x030C00,
+    [0x1061] = 0x02FA00,
+    [0x1062] = 0x02E800,
+    [0x1063] = 0x02D800,
+    [0x1064] = 0x02C800,
+    [0x1065] = 0x02B900,
+    [0x1066] = 0x02AA00,
+    [0x1067] = 0x029C00,
+    [0x1068] = 0x028F00,
+    [0x1069] = 0x028200,
+    [0x106A] = 0x027600,
+    [0x106B] = 0x026A00,
+    [0x106C] = 0x025E00,
+    [0x106D] = 0x025300,
+    [0x106E] = 0x024900,
+    [0x106F] = 0x023E00,
+    [0x1070] = 0x023400,
+    [0x1071] = 0x022B00,
+    [0x1072] = 0x022200,
+    [0x1073] = 0x021900,
+    [0x1074] = 0x021000,
+    [0x1075] = 0x020800,
+    [0x1076] = 0x020000,
+};
 
 #define RECORDS 9u
 #define RECORD_WORDS 16u
@@ -86,6 +161,7 @@ int main(void)
         memset(spans, 0, sizeof(spans));
         check(stunrun_adsp_som_walk_record(
             VECTORS[i].ring, RING_WORDS, RING_BASE,
+            PM_PROGRAM, PM_PROGRAM_WORDS,
             VECTORS[i].i1, VECTORS[i].i2, RING_LENGTH,
             spans, 8u, &walk));
 
@@ -98,12 +174,13 @@ int main(void)
         check(walk.span_count == 2u);
         check(stunrun_adsp_som_record_words(walk.span_count) == RECORD_WORDS);
 
-        /* Fill in the side values $05DD/$0607 own, then emit and compare. */
+        /* The two interpolated side values per span are computed by the walk
+         * now, so nothing is copied in before emitting. */
         for (k = 0; k < walk.span_count; k++) {
-            spans[k].dm_3e.lo = VECTORS[i].expected[4 + k * 5 + 0];
-            spans[k].dm_3e.hi = VECTORS[i].expected[4 + k * 5 + 1];
-            spans[k].dm_3c.lo = VECTORS[i].expected[4 + k * 5 + 2];
-            spans[k].dm_3c.hi = VECTORS[i].expected[4 + k * 5 + 3];
+            check(spans[k].dm_3e.lo == VECTORS[i].expected[4 + k * 5 + 0]);
+            check(spans[k].dm_3e.hi == VECTORS[i].expected[4 + k * 5 + 1]);
+            check(spans[k].dm_3c.lo == VECTORS[i].expected[4 + k * 5 + 2]);
+            check(spans[k].dm_3c.hi == VECTORS[i].expected[4 + k * 5 + 3]);
         }
         record.control = VECTORS[i].expected[0];
         record.start_x = walk.start_x;
@@ -132,6 +209,7 @@ int main(void)
         memset(spans, 0, sizeof(spans));
         check(stunrun_adsp_som_walk_record(
             VECTORS[i].ring, RING_WORDS, RING_BASE,
+            PM_PROGRAM, PM_PROGRAM_WORDS,
             VECTORS[i].i1, VECTORS[i].i2, RING_LENGTH, spans, 8u, &walk));
         check(spans[0].ax1 == walk.start_y);
         check(spans[0].ay1 > spans[0].ax1);
@@ -152,8 +230,9 @@ int main(void)
         /* DM[$41] = DM[$43] = DM[$45] = $0100, so AY0 == AX1 == AY1. */
         memset(spans, 0, sizeof(spans));
         check(stunrun_adsp_som_walk_record(
-            degenerate, RING_WORDS, RING_BASE, 0x0042u, 0x0042u, RING_LENGTH,
-            spans, 8u, &walk));
+            degenerate, RING_WORDS, RING_BASE,
+            PM_PROGRAM, PM_PROGRAM_WORDS,
+            0x0042u, 0x0042u, RING_LENGTH, spans, 8u, &walk));
         check(walk.start_y == 0x0100u);
         check(walk.span_count == 0u);
         check(walk.terminated == 0);
@@ -190,19 +269,29 @@ int main(void)
         stunrun_adsp_som_walk_t walk;
         memset(spans, 0, sizeof(spans));
         check(!stunrun_adsp_som_walk_record(
-            VECTORS[0].ring, 4u, RING_BASE, VECTORS[0].i1, VECTORS[0].i2,
-            RING_LENGTH, spans, 8u, &walk));
+            VECTORS[0].ring, 4u, RING_BASE,
+            PM_PROGRAM, PM_PROGRAM_WORDS,
+            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 8u, &walk));
         check(!stunrun_adsp_som_walk_record(
-            NULL, RING_WORDS, RING_BASE, VECTORS[0].i1, VECTORS[0].i2,
-            RING_LENGTH, spans, 8u, &walk));
+            NULL, RING_WORDS, RING_BASE,
+            PM_PROGRAM, PM_PROGRAM_WORDS,
+            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 8u, &walk));
         check(!stunrun_adsp_som_walk_record(
-            VECTORS[0].ring, RING_WORDS, RING_BASE, VECTORS[0].i1,
-            VECTORS[0].i2, RING_LENGTH, spans, 8u, NULL));
+            VECTORS[0].ring, RING_WORDS, RING_BASE,
+            PM_PROGRAM, PM_PROGRAM_WORDS,
+            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 8u, NULL));
+        /* A coefficient table too short for the index the helper computes:
+         * refuse rather than read past it. */
+        check(!stunrun_adsp_som_walk_record(
+            VECTORS[0].ring, RING_WORDS, RING_BASE,
+            PM_PROGRAM, 2u,
+            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 8u, &walk));
         /* Too little room for the walk it actually needs: fail, do not
          * truncate the record. */
         check(!stunrun_adsp_som_walk_record(
-            VECTORS[0].ring, RING_WORDS, RING_BASE, VECTORS[0].i1,
-            VECTORS[0].i2, RING_LENGTH, spans, 1u, &walk));
+            VECTORS[0].ring, RING_WORDS, RING_BASE,
+            PM_PROGRAM, PM_PROGRAM_WORDS,
+            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 1u, &walk));
     }
 
     if (failures == 0)

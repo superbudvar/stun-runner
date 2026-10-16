@@ -33,12 +33,17 @@ typedef struct stunrun_adsp_mac_pair {
  * signed values, then multiplies the difference by unsigned MY0. The captured
  * MAME vectors establish that MR1:MR0 is the low 32 bits of 2 * AR * MY0.
  *
- * Program words are 32-bit MAME containers for 24-bit PM data; MY0 is bits
- * 23:8. Returns 1 on the implemented low-index path. Rejects selector >0x40,
- * invalid pointers, or out-of-range addresses without touching output. */
+ * data_words is addressed by absolute DM address, as a window: DM(a) is
+ * data_words[a - data_base]. A read outside the window is rejected, so a
+ * truncated capture fails instead of returning plausible garbage.
+ *
+ * Program words are 32-bit MAME containers for 24-bit PM data, indexed by
+ * absolute PM address; MY0 is bits 23:8. Returns 1 on the implemented
+ * low-index path. Rejects selector >0x40, invalid pointers, or out-of-range
+ * addresses without touching output. */
 int stunrun_adsp_som_interpolation_low_branch(
     uint16_t lookup_index, uint16_t i0, uint16_t i2,
-    const uint16_t *data_words, size_t data_word_count,
+    const uint16_t *data_words, size_t data_word_count, uint16_t data_base,
     const uint32_t *program_words, size_t program_word_count,
     stunrun_adsp_mac_pair_t *out);
 

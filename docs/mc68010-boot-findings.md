@@ -10979,3 +10979,100 @@ the control count is not reported as stronger than it is.
   transcribed. The entry pointers are still measured inputs.
 - The DM window is a **capture limit**: the walk is only validated where the
   indices land inside DM[$0040..$0045], and the tool refuses to read outside it.
+
+## 68. The coefficient table, and the two helpers wired into the walk (`alo` / `1fv`)
+
+With the record layout (§66) and the pointer walk (§67) in hand, the last
+measured input was the PM table the two helpers index at `$1036`.
+
+### 68.1 The table is a reciprocal, and it is stable
+
+`PM[$1036 + n]` for `n = 0..$40`, taken from the frame-551 ADSP program image:
+
+```text
+n=0 $0000   n=1 $8000   n=2 $4000   n=3 $2AAA   n=4 $2000
+n=5 $1999   n=6 $1555   n=7 $1249   n=8 $1000   ...   n=$40 $0200
+```
+
+Those are exactly `floor($8000/n)` for `n = 1..$40`, with zero at `n = 0` —
+checked against all 65 captured words, no mismatches. This **upgrades** the
+§64/§65 provenance claim: earlier only two cells had been compared across
+frames, and I said the full images differ by 2,748 bytes. The whole 65-word
+table is byte-identical at frames 551 and 600.
+
+So the helper's `MY0` is a reciprocal of its own selector, and
+`MR = AR * MY0` is a reciprocal multiply. Reading the two selectors (§68.2)
+this is a division by the quantity being scaled.
+
+The low byte of every table word is zero and nothing is set above bit 23, which
+is consistent with the container convention: `MY0` is bits 23:8.
+
+### 68.2 Each side is normalised by its own extent
+
+`$05DD` is entered with `AR = AY1 - AX1` and the forward chain's pointers
+(`I0`, `I2`); `$0607` with `AR = AY0 - AX1` and the backward chain's
+(`I4`, `I1`). Each side therefore divides by **its own** extent, not by the
+emitted run length, which is `min(AY0,AY1) - AX1 + 1`. Record 0 shows the
+difference plainly: divisors 7 and 5, emitted run length 6.
+
+Stating it as a division is an inference from the arithmetic, not a claim
+about intent. What is measured is the selector values and the results.
+
+### 68.3 A correction: the EQ tail calls BOTH helpers
+
+§67.4's control list included "stop the walk immediately instead of merging the
+chains", but while wiring the helpers I had misread the loop tails and
+implemented the `AY1 == AY0` case as refreshing only `$05DD`.
+
+The listing is unambiguous: `$0595 CALL $05DD` is followed in the *same* tail by
+`$0596`-`$059B`, which walks `I1`/`I4`, re-reads `AY0` and calls `$0607`. So:
+
+| branch | tail | refreshes |
+|---|---|---|
+| `AY1 > AY0` | `$05AF`-`$05B6` | `$0607` only |
+| `AY1 == AY0` | `$058F`-`$059C` | `$05DD` **and** `$0607` |
+| `AY1 < AY0` | `$05C9`-`$05D0` | `$05DD` only |
+
+This shows up as a wrong answer rather than a crash. Record 2's second span has
+`AY1 == AY0 == AX1`, so the EQ tail runs and both helpers are re-entered with
+selector 0; the coefficient at `$1036` is zero, so **both** side values are
+`$0000/$0000`. My earlier version kept the prologue's `$0607` result there and
+emitted `6DB8/FFFF` instead.
+
+The §66.4 statement that only `$059A` re-checks `AY0` stands; that was always
+about the tail's guard, not about which helper it calls.
+
+### 68.4 The fourth C slice
+
+`som_walk.c` now calls `som_math.c` and fills in each span's two 32-bit side
+values. **Nothing in the emitted record is copied from the capture any more**:
+given the DM ring, the coefficient table and the entry pointers, the walk
+derives the header words, the span count, each span's `AX1/AY0/AY1`, both side
+values, and the run length. `adsp-som-walk-slice-c` compares all nine assembled
+16-word records against the capture.
+
+`stunrun_adsp_som_interpolation_low_branch` gained a `data_base` parameter so
+its DM window contract matches the walk's. That was not cosmetic: the helper
+indexes `DM[I0-1]` by absolute address, and the walk supplies a six-word ring
+starting at `$0040`, so without the base the bounds check rejected every call.
+Three controls cover that window now: a ring that covers the samples is
+accepted and produces `$FFFF:$6DB8`, a ring one word too short is rejected, and
+a window based above the samples is rejected.
+
+Eight rebuilt negative controls all fail and the restored code passes: drop
+either half of the EQ tail's refresh, give the LT tail a `$0607` refresh, make
+the GT tail refresh `$05DD`, use the run length instead of the side delta as
+the selector, read the wrong chain's samples, take the low PM byte instead of
+bits 23:8, and ignore the DM window base.
+
+### 68.5 What this still does not establish
+
+- The **`$052F`-`$0544` scan** that selects `I1`/`I2` before `$0564` is still
+  untranscribed, so a record is derived from a supplied pointer pair rather than
+  from game state. This is now the only measured input left in the path.
+- The **`> $40` scaled branch** of both helpers (`$05F5`/`$061F`,
+  `ASHIFT ... BY -6`) is still unimplemented. No captured selector reaches it;
+  the helper declines any selector above `$40` rather than guessing.
+- The relationship between the emitted run length and the two divisors (§68.2)
+  is arithmetic, not intent.
+- `./run.sh` still shows nothing new.

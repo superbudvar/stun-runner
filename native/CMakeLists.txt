@@ -443,6 +443,7 @@ add_test(NAME adsp-som-record-slice-c COMMAND stunrun-adsp-som-record-slice-test
 # addressing plus the two-chain merge. Produces the header words and the span
 # list; the interpolated side values are filled in by the caller.
 add_executable(stunrun-adsp-som-walk-slice-test
+  ../reproduction/adsp/som_math.c
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/som_walk.c
   ../reproduction/adsp/som_walk_test.c)

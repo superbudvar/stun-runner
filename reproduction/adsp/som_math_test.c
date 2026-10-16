@@ -28,7 +28,7 @@ int main(void)
     dm[0x0042] = 0x00FFu;
     pm[0x103D] = 0x00124900u;
     check(stunrun_adsp_som_interpolation_low_branch(
-        7u, 0x0045u, 0x0043u, dm, 0x2000u, pm, 0x2000u, &out));
+        7u, 0x0045u, 0x0043u, dm, 0x2000u, 0u, pm, 0x2000u, &out));
     check(out.mr0 == 0x6DB8u);
     check(out.mr1 == 0xFFFFu);
 
@@ -39,7 +39,7 @@ int main(void)
     dm[0x0040] = 0x00F4u;
     pm[0x103B] = 0x00199900u;
     check(stunrun_adsp_som_interpolation_low_branch(
-        5u, 0x0041u, 0x0043u, dm, 0x2000u, pm, 0x2000u, &out));
+        5u, 0x0041u, 0x0043u, dm, 0x2000u, 0u, pm, 0x2000u, &out));
     check(out.mr0 == 0xCCDAu);
     check(out.mr1 == 0xFFFDu);
 
@@ -48,16 +48,27 @@ int main(void)
     out.mr0 = 0x1234u;
     out.mr1 = 0x5678u;
     check(!stunrun_adsp_som_interpolation_low_branch(
-        0x0041u, 0x0045u, 0x0043u, dm, 0x2000u, pm, 0x2000u, &out));
+        0x0041u, 0x0045u, 0x0043u, dm, 0x2000u, 0u, pm, 0x2000u, &out));
     check(out.mr0 == 0x1234u && out.mr1 == 0x5678u);
     check(!stunrun_adsp_som_interpolation_low_branch(
-        7u, 0u, 0x43u, dm, 0x2000u, pm, 0x2000u, &out));
+        7u, 0u, 0x43u, dm, 0x2000u, 0u, pm, 0x2000u, &out));
     check(!stunrun_adsp_som_interpolation_low_branch(
-        7u, 0x0045u, 0x0043u, NULL, 0x2000u, pm, 0x2000u, &out));
+        7u, 0x0045u, 0x0043u, NULL, 0x2000u, 0u, pm, 0x2000u, &out));
     check(!stunrun_adsp_som_interpolation_low_branch(
-        7u, 0x0045u, 0x0043u, dm, 0x2000u, pm, 0x103Du, &out));
+        7u, 0x0045u, 0x0043u, dm, 0x2000u, 0u, pm, 0x103Du, &out));
     check(!stunrun_adsp_som_interpolation_low_branch(
-        7u, 0x0045u, 0x0043u, dm, 0x2000u, pm, 0x2000u, NULL));
+        7u, 0x0045u, 0x0043u, dm, 0x2000u, 0u, pm, 0x2000u, NULL));
+    /* The walk passes a six-word ring at $0040; that window must be accepted
+     * when it really covers DM[$44] and DM[$42], and rejected when it does
+     * not, rather than read out of bounds. `data_words` points at the window
+     * start, so the ring is `dm + 0x0040`. */
+    check(stunrun_adsp_som_interpolation_low_branch(
+        7u, 0x0045u, 0x0043u, dm + 0x0040, 6u, 0x0040u, pm, 0x2000u, &out));
+    check(out.mr0 == 0x6DB8u && out.mr1 == 0xFFFFu);
+    check(!stunrun_adsp_som_interpolation_low_branch(
+        7u, 0x0045u, 0x0043u, dm + 0x0040, 4u, 0x0040u, pm, 0x2000u, &out));
+    check(!stunrun_adsp_som_interpolation_low_branch(
+        7u, 0x0045u, 0x0043u, dm + 0x0045, 6u, 0x0045u, pm, 0x2000u, &out));
 
     if (failures == 0) puts("PASS");
     return failures == 0 ? 0 : 1;

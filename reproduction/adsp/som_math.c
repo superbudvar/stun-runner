@@ -3,11 +3,12 @@
 
 int stunrun_adsp_som_interpolation_low_branch(
     uint16_t lookup_index, uint16_t i0, uint16_t i2,
-    const uint16_t *data_words, size_t data_word_count,
+    const uint16_t *data_words, size_t data_word_count, uint16_t data_base,
     const uint32_t *program_words, size_t program_word_count,
     stunrun_adsp_mac_pair_t *out)
 {
     size_t coefficient_address;
+    size_t sample0_address, sample1_address;
     uint16_t my0;
     uint16_t sample0, sample1, difference_bits;
     int32_t difference;
@@ -19,20 +20,23 @@ int stunrun_adsp_som_interpolation_low_branch(
         return 0;
 
     coefficient_address = STUNRUN_ADSP_SOM_COEFF_BASE + lookup_index;
+    /* $05E5-$05EC form I3 = I0-1 and I5 = I2-1, then read DM(I3,M3) and
+     * DM(I5,M5) with M3 = M5 = 0, i.e. at those addresses themselves. */
+    sample0_address = (size_t)(i0 - 1u);
+    sample1_address = (size_t)(i2 - 1u);
+
     if (coefficient_address >= program_word_count ||
-        (size_t)(i0 - 1u) >= data_word_count ||
-        (size_t)(i2 - 1u) >= data_word_count)
+        sample0_address < data_base || sample1_address < data_base ||
+        sample0_address - data_base >= data_word_count ||
+        sample1_address - data_base >= data_word_count)
         return 0;
 
     /* $05DD: M6=AR; PM($1036+AR) -> MY0. MAME stores ADSP 24-bit PM values
      * in 32-bit containers; captured PM[$103D]=$00124900 yielded MY0=$1249. */
     my0 = (uint16_t)((program_words[coefficient_address] >> 8) & 0xffffu);
 
-    /* $05ED/$05EF: read DM(I0-1,M3) and DM(I2-1,M5), then AR=sample0-sample1.
-     * The post-increment modifiers affect the address registers after these
-     * reads; they do not alter the two current sample addresses. */
-    sample0 = data_words[i0 - 1u];
-    sample1 = data_words[i2 - 1u];
+    sample0 = data_words[sample0_address - data_base];
+    sample1 = data_words[sample1_address - data_base];
     difference_bits = (uint16_t)(sample0 - sample1);
     difference = (difference_bits & 0x8000u) != 0u
         ? (int32_t)difference_bits - 0x10000
