@@ -12,15 +12,34 @@ the nine captured records take the back edge at `$056A`.
 
 `adsp-som-walk-slice-c` derives all nine captured records from their DM rings
 and entry pointers alone — header words, span count, each span's
-`AX1/AY0/AY1`, and every run length — and compares the assembled records against
-the capture. Eleven rebuilt negative controls fail.
+`AX1/AY0/AY1`, both interpolated side values, and every run length — and
+compares the assembled records against the capture.
 
-The walk leaves each span's two 32-bit side values at zero; those are what
-`$05DD`/`$0607` leave in `DM($003E/$003F)` and `DM($003C/$003D)`, owned by
-`som_math.c` and filled in by the caller. The `$052F`-`$0544` scan that picks
-`I1`/`I2` before `$0564` is not transcribed, so the entry pointers are measured
-inputs. The DM window is a capture limit: a read outside it fails rather than
-guessing.
+`stunrun_adsp_som_derive_record` composes the whole `$0514`-`$05D1` path —
+control word, the `$052F`-`$0544` pointer scan, the walk, and the
+interpolation. It is the first entry point with **no measured input**: give it
+the data-memory window covering `DM($0036)`, `DM($0039)` and the ring, plus the
+coefficient table, and it produces the complete record. The test assembles all
+146 captured SOMLATCH words that way and compares them word for word — no
+pointer, span list, side value or record word is supplied by hand anywhere in
+the path.
+
+Both derived quantities come from one word: `DM($0039)` is the loop counter and
+doubles into the ring length `L0`. `$052F`-`$0544` steps one word at a time
+(`M0 = +1`), unlike the walk's stride of two, and it reproduces the captured
+entry pointers for all nine records. The coefficient table at `PM[$1036 + n]` is
+exactly `floor($8000/n)` for `n = 1..$40` and zero at `n = 0`, byte-identical at
+frames 551 and 600 — so each helper divides by its own side's extent.
+
+Two coverage gaps, both deliberate and recorded in findings §69:
+
+- `$053D` has **zero** reads across the whole capture, so the `$053D`-`$0541`
+  block (the `I2` comparison, its `IF LT` guard, and the `I2 = I3` update) is
+  transcribed from the disassembly and is **not** exercised by the test.
+- The `> $40` scaled branch of both helpers is unimplemented, and the helper
+  declines those selectors rather than guessing.
+
+The DM window is a capture limit: a read outside it fails rather than guessing.
 
 ## SOM record emitter (`som_record.c`)
 
@@ -36,12 +55,11 @@ from the nine measured records and compares it word for word with
 `reference/experiments/stunrun/adsp-som-transaction-f551/result.json`. Fourteen
 rebuilt negative controls fail.
 
-Scope limits, all deliberate: the **span list is an input** — this file does not
-model the index/modifier walk at `$0550`-`$0563` that chooses the spans, nor the
-loop bound. The two 32-bit side values per span are the outputs `som_math.c`
-computes, not a lookup table. No field is given a geometric meaning, and the
-header word order is not discriminated by the capture (all nine records latch
-`DM(I1,M1)` and `DM(I2,M2)` to equal values), so that order rests on the
+Scope limits, all deliberate: this file implements the **output** sequence —
+which word holds which value, in what order — not the walk that chooses the
+spans, which lives in `som_walk.c`. No field is given a geometric meaning, and
+the header word order is not discriminated by the capture (all nine records
+latch `DM(I1,M1)` and `DM(I2,M2)` to equal values), so that order rests on the
 disassembly and is pinned by a labelled synthetic vector.
 
 ## First SOM math kernel (`som_math.c`)
