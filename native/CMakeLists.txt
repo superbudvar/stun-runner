@@ -439,6 +439,17 @@ target_include_directories(stunrun-adsp-som-record-slice-test PRIVATE
   ../reproduction/adsp)
 set_target_properties(stunrun-adsp-som-record-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME adsp-som-record-slice-c COMMAND stunrun-adsp-som-record-slice-test)
+# SOM span walk from the captured $0564-$05D1 code: circular-buffer index
+# addressing plus the two-chain merge. Produces the header words and the span
+# list; the interpolated side values are filled in by the caller.
+add_executable(stunrun-adsp-som-walk-slice-test
+  ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_walk.c
+  ../reproduction/adsp/som_walk_test.c)
+target_include_directories(stunrun-adsp-som-walk-slice-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-som-walk-slice-test PROPERTIES C_STANDARD 99)
+add_test(NAME adsp-som-walk-slice-c COMMAND stunrun-adsp-som-walk-slice-test)
 # GSP record control-word dispatch from the race-1800 walk decode: bit 15
 # skips, bit 12 takes the perspective-sprite path, else the FILL worker.
 if(EXISTS ../reproduction/gsp/record_dispatch.c)

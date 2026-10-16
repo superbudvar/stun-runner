@@ -6,6 +6,11 @@ local first_frame = tonumber(os.getenv('STUNRUN_ADSP_TX_FIRST') or '1')
 local last_frame = tonumber(os.getenv('STUNRUN_ADSP_TX_LAST') or '600')
 local post_frames = tonumber(os.getenv('STUNRUN_ADSP_TX_POST_FRAMES') or '5')
 local max_events = tonumber(os.getenv('STUNRUN_ADSP_TX_MAX_EVENTS') or '50000')
+local dm_window_base = tonumber(os.getenv('STUNRUN_ADSP_TX_DM_BASE') or '0x30')
+local dm_window_limit = tonumber(os.getenv('STUNRUN_ADSP_TX_DM_LIMIT') or '0x60')
+local record_index = 0
+local dumping_state = false -- guards re-entry: reading the tapped
+    -- space from inside its own tap calls this handler again
 
 local frame = 0
 local sequence = 0
@@ -95,6 +100,35 @@ local function install_taps()
 
     taps[#taps + 1] = dm:install_read_tap(0x0000, 0x2fff,
         'stunrun_adsp_tx_dm_read', function(address, data, mask)
+            -- The window dump below reads this same space, which re-enters this
+            -- tap. Suppress everything while it runs, or the dump's own reads
+            -- are recorded as ADSP traffic and corrupt the event stream.
+            if dumping_state then return end
+            -- $0564 is the first read of the record emitter's output path and
+            -- is the point where both header pointers are settled. Capture the
+            -- data-memory window there so the walk can be replayed offline.
+            if tx_active and adsp_pc.value == 0x0564 and not dumping_state then
+                dumping_state = true
+                record_index = record_index + 1
+                local words = {}
+                for a = dm_window_base, dm_window_limit - 1 do
+                    words[#words + 1] = string.format('%04X', dm:read_u16(a))
+                end
+                local i1 = 0; local i2 = 0; local m1 = 0; local m2 = 0
+                local ok1, e1 = pcall(function() return adsp.state['I1'].value end)
+                if ok1 and type(e1) == 'number' then i1 = e1 end
+                local ok2, e2 = pcall(function() return adsp.state['I2'].value end)
+                if ok2 and type(e2) == 'number' then i2 = e2 end
+                local ok3, e3 = pcall(function() return adsp.state['M1'].value end)
+                if ok3 and type(e3) == 'number' then m1 = e3 end
+                local ok4, e4 = pcall(function() return adsp.state['M2'].value end)
+                if ok4 and type(e4) == 'number' then m2 = e4 end
+                print(string.format(
+                    'M1_ADSP_TX_STATE record=%d frame=%d i1=%d i2=%d m1=%d m2=%d dm=%04X..%04X words=%s',
+                    record_index, frame, i1, i2, m1, m2, dm_window_base,
+                    dm_window_limit - 1, table.concat(words, ',')))
+                dumping_state = false
+            end
             emit('adsp', 'R', address, data, mask, adsp_pc.value, adsp)
         end)
     taps[#taps + 1] = dm:install_write_tap(0x0000, 0x2fff,
@@ -144,10 +178,10 @@ emu.register_frame_done(function()
     if frame == 1 and not installed then install_taps() end
     if frame >= last_frame then
         print(string.format(
-            'M1_ADSP_TX_DONE frames=%d events=%d truncated=%s bank_events=%d tx_start_frame=%s tx_start_seq=%s tx_end_frame=%s tx_end_seq=%s',
+            'M1_ADSP_TX_DONE frames=%d events=%d truncated=%s bank_events=%d tx_start_frame=%s tx_start_seq=%s tx_end_frame=%s tx_end_seq=%s records=%d',
             frame, events, tostring(truncated), bank_events,
             tostring(tx_start_frame), tostring(tx_start_seq),
-            tostring(tx_end_frame), tostring(tx_end_seq)))
+            tostring(tx_end_frame), tostring(tx_end_seq), record_index))
         machine:exit()
     end
 end)

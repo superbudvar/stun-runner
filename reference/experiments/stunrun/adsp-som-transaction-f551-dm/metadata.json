@@ -1,0 +1,205 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "adsp-som-transaction-f551-dm-window",
+  "purpose": "Same no-input SOM transaction as the other f551 fixtures, plus the ADSP data-memory window and the index registers captured at each record entry, so the $0564-$05D1 span walk can be replayed offline.",
+  "rom_manifest": "roms/stunrun.manifest.json",
+  "rom_manifest_sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d",
+  "mame": {
+    "binary": "/mnt/build/mame-oracle/mame",
+    "binary_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+    "source_tree": "MAME 0.289 frozen oracle; analysis/mame-local-patches.json",
+    "behavioral_changes": false
+  },
+  "machine_map": {
+    "path": "analysis/driver-mining/stunrun.machine-map.yaml",
+    "sha256": "b9106e5c04d8bd20b0c7bb4eab52553cd1655bd037e62be5f16a5f1bc21db02f"
+  },
+  "harness": {
+    "tool": "tools/capture-adsp-som-transaction",
+    "lua": "mame/lua/adsp-som-transaction.lua",
+    "tool_sha256": "77d2b6aac45274a64967a078a541e3da9cfbb67e8ad8b2f1d4c983988112bc0c",
+    "lua_sha256": "ffb3fc578e87d510dd5d5d8dcd4c1dd7bc7f6f863052a7edf076fadcae2fd1fe",
+    "input": "none",
+    "start_condition": "power_on",
+    "tap_install_frame": 1,
+    "capture_frames": [
+      1,
+      600
+    ],
+    "trace_flags": [
+      "ADSP data-space read/write 0x0000-0x2fff",
+      "ADSP program-space read 0x1000-0x1fff (register-dependent PM lookups)",
+      "MC68010 ADSP control writes 0x818000-0x81807f",
+      "MC68010 SOM window reads 0x810000-0x813fff",
+      "MC68010 HSTDAT writes 0x00c0000c-0x00c0000f",
+      "MC68010 ADSP IRQ ack writes 0x818060-0x81807f"
+    ],
+    "max_events": 50000
+  },
+  "observed_transaction": {
+    "frame": 551,
+    "somclk_sequence": 982438,
+    "gint_sequence": 986458,
+    "som_words": 146,
+    "som_stream_sha256_big_endian_words": "dffb76c5cc2869a9ffd35594e42c6a08ac9aabe9e289229cab9146082647d259",
+    "gint_value": "0x0045",
+    "gint_pc": "0x0000004c",
+    "host_bank_at_somclk": 1,
+    "adsp_writes_opposite_bank": 0,
+    "maincpu_irq_ack": {
+      "frame": 551,
+      "pc": "0x00021402",
+      "address": "0x00818060"
+    },
+    "same_window_post_gint": {
+      "som_buffer_reads": 5849,
+      "hstdat_writes": 13431,
+      "correlation_to_this_146-word_block": "not established; counts include later frame traffic"
+    }
+  },
+  "adsp_program_snapshot": {
+    "path": "tools/mame-adsp-program-dump at frames 551 and 600 (local captures /tmp/opencode/adsp-prog551 and /tmp/opencode/adsp-prog600)",
+    "mame_binary_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+    "frame_551_program_image_sha256": "dad3638678bab3045f6bb198a17a5a7207efdc7ca858a95ef0a99e3ed08d4367",
+    "frame_600_program_image_sha256": "b8c2d2594d609a110a26a47aa2cad11f8db3783643a5e3fb49b1897660051c02",
+    "pm_words": {
+      "0x103B": "0x00199900",
+      "0x103D": "0x00124900"
+    },
+    "interpretation": "24-bit PM values in 32-bit MAME containers; low branch reads MY0 from bits 23:8 at base 0x1036 plus selector. These PM cells match at frames 551 and 600 and the transaction's MY0 register snapshots confirm them. The full PM images differ by 2748 bytes, so whole-image stability is not claimed."
+  },
+  "math_vectors": [
+    {
+      "helper": "ADSP PC 0x05dd",
+      "inputs": {
+        "DM[0x0044]": "0x00fb",
+        "DM[0x0042]": "0x00ff",
+        "AR": "0xfffc",
+        "MY0": "0x1249"
+      },
+      "output": {
+        "MR0": "0x6db8",
+        "MR1": "0xffff",
+        "DM[0x003e]": "0x6db8",
+        "DM[0x003f]": "0xffff"
+      }
+    },
+    {
+      "helper": "ADSP PC 0x0607",
+      "inputs": {
+        "DM[0x0040]": "0x00f4",
+        "DM[0x0042]": "0x00ff",
+        "AR": "0xfff5",
+        "MY0": "0x1999"
+      },
+      "output": {
+        "MR0": "0xccda",
+        "MR1": "0xfffd",
+        "DM[0x003c]": "0xccda",
+        "DM[0x003d]": "0xfffd"
+      }
+    }
+  ],
+  "limitations": [
+    "This is one transaction on the 600-frame input=none path, not a full gameplay trace.",
+    "The captured output is SOMLATCH traffic; it does not prove the semantic meaning of every emitted word.",
+    "The post-GINT SOM-buffer/HSTDAT counts include later frame traffic and are not attributed one-to-one to this block.",
+    "The C implementation in this slice is only the signed-by-unsigned ADSP multiply kernel; it is not the ADSP producer routine or a geometry pipeline.",
+    "The DM window is a capture limit. The walk is validated only where the indices fall inside DM[$0040..$0045]; a polygon needing a wider ring would read past the window and the tool refuses to guess.",
+    "Header word order is still not discriminated: every captured record latches DM(I1,M1) and DM(I2,M2) to equal values."
+  ],
+  "result": "result.json",
+  "result_schema": "stunrun-adsp-som-transaction/v1",
+  "transaction_sha256": "c41715380aabbd4e71f46afcda28cbaa0e48828264b9dc5a768a73b4ab238ea4",
+  "derived_record_layout": {
+    "note": "Interpretation of the raw producer_events stream, not raw evidence. Every SOMLATCH word in this capture is attributed to the ADSP program counter that latched it.",
+    "see": "docs/mc68010-boot-findings.md section 66",
+    "transaction_envelope": {
+      "0x0034": "SOMCLK DM($2003) = $0000, resets the SOM word pointer",
+      "0x0035": "SOMLATCH word 0 = $0000 (AR still $0000)",
+      "0x0039": "SOMLATCH word 1 = $0000 (AR still $0000)",
+      "0x0834": "calls the record emitter",
+      "0x004C": "GINT DM($2006) = $0045"
+    },
+    "record_word_offsets": [
+      2,
+      18,
+      34,
+      50,
+      66,
+      82,
+      98,
+      114,
+      130
+    ],
+    "record_layout_words": [
+      {
+        "pc": "0x0515",
+        "role": "control",
+        "source": "AR = DM($0036)"
+      },
+      {
+        "pc": "0x0565",
+        "role": "start_x",
+        "source": "AR = DM(I1,M1)"
+      },
+      {
+        "pc": "0x0567",
+        "role": "delta_x",
+        "source": "AR = DM(I2,M2)"
+      },
+      {
+        "pc": "0x056B",
+        "role": "start_y",
+        "source": "AX1 = DM(I0,M0)"
+      },
+      {
+        "pc": "0x0580/0x05A0/0x05BA",
+        "role": "span",
+        "source": "five words: DM($003E), DM($003F), DM($003C), DM($003D), run length"
+      },
+      {
+        "pc": "0x05D2",
+        "role": "terminator",
+        "source": "AR = $FFFF"
+      },
+      {
+        "pc": "0x05D4",
+        "role": "terminator",
+        "source": "AR = $FFFF"
+      }
+    ],
+    "spans_per_record": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "span_branch_histogram": {
+      "0x05A0 (AY1 > AY0)": 4,
+      "0x05BA (AY1 < AY0)": 4,
+      "0x0580 (AY1 == AY0)": 10
+    },
+    "span_run_length_rule": "min(AY0,AY1) - AX1 + 1, verified against all 18 captured spans",
+    "guard_levels": {
+      "prologue": "$0574/$0577 use IF LE; AY0 and AY1 must be strictly greater than AX1",
+      "loop_tails": "$0594/$059A/$05B4/$05CE use IF LT; equality is legal, and record 2's second span has AY0 == AY1 == AX1 with run length 1",
+      "asymmetry": "only $059A re-checks AY0; the $0595 and $05CF tails return to $0579 without it"
+    },
+    "limitation": "All nine records latch DM(I1,M1) and DM(I2,M2) to equal values, so start_x and delta_x cannot be distinguished by value from this capture; only the per-word program-counter attribution pins their order."
+  },
+  "dm_window_capture": {
+    "pc": "0x0564",
+    "why": "the first read of the record emitter output path, where both header pointers are settled (after any $0563 MODIFY (I2,M0))",
+    "window": "DM[$0030..$005F], 48 words",
+    "records": 9,
+    "indices_observed": "DM[$0040..$0045] -- the six-word ring the L register selects",
+    "l_register": "L0 = L1 = L2 = L4 = $0006",
+    "reentrancy_note": "the window is read from inside the data-memory read tap; the tap suppresses its own re-entry so the dump does not appear as ADSP traffic. An earlier version did not, and produced duplicate events."
+  }
+}

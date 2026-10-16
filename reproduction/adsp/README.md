@@ -1,5 +1,27 @@
 # ADSP replacement image
 
+## SOM span walk (`som_walk.c`)
+
+`som_walk.c` transcribes the index/modifier walk at ADSP PCs `$0564`-`$05D1`:
+the two header reads, then the merge of the two vertex chains until their
+pointers meet. It owns the ADSP's **circular-buffer addressing**, which is not
+`index + modifier` — the address is the current index, the modifier is applied
+afterwards, and the index wraps inside the L register's window. That wrap is
+load-bearing: the vertex data is a six-word ring, and it is what makes two of
+the nine captured records take the back edge at `$056A`.
+
+`adsp-som-walk-slice-c` derives all nine captured records from their DM rings
+and entry pointers alone — header words, span count, each span's
+`AX1/AY0/AY1`, and every run length — and compares the assembled records against
+the capture. Eleven rebuilt negative controls fail.
+
+The walk leaves each span's two 32-bit side values at zero; those are what
+`$05DD`/`$0607` leave in `DM($003E/$003F)` and `DM($003C/$003D)`, owned by
+`som_math.c` and filled in by the caller. The `$052F`-`$0544` scan that picks
+`I1`/`I2` before `$0564` is not transcribed, so the entry pointers are measured
+inputs. The DM window is a capture limit: a read outside it fails rather than
+guessing.
+
 ## SOM record emitter (`som_record.c`)
 
 `som_record.c` transcribes the output sequence of the SOM record emitter at ADSP

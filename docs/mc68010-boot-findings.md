@@ -10870,3 +10870,112 @@ writing a partial record when a guard fails.
   `$058E`/`$05AE`/`$05C7`. That is the next slice.
 - No field is given a geometric meaning. "Run length in rows" describes what the
   instruction computes, not what a GSP primitive does with it.
+
+## 67. The span walk and ADSP circular-buffer addressing (`alo` / `1fv`)
+
+§66 decoded what the emitter writes. This section recovers *where the values
+come from*: the index/modifier walk at `$0564`-`$05D1`, and an addressing rule
+that is not the one the instruction text suggests.
+
+### 67.1 `DM(I,M)` reads at the index, then adds the modifier
+
+The pinned MAME source settles it
+(`src/devices/cpu/adsp2100/2100ops.hxx`, `data_read_dag1`/`data_read_dag2`):
+
+```cpp
+res = data_read(i);
+i = (i + m_m[mreg]) & 0x3fff;
+if (i < base) i += l;
+else if (i >= base + l) i -= l;
+m_i[ireg] = i;
+```
+
+with `base = m_i[ireg] & m_lmask[ireg]` recomputed by `update_i` on every
+register **write** (`2100ops.hxx:333-336`). So the address is the *current*
+index, not `index + modifier`, and the index then wraps inside the L register's
+circular window. `m_lmask` is `m_mask_table`, the threshold table built in
+`adsp2100.cpp:1089-1107`.
+
+The capture agrees. Record 0, `$0564`: `I1=$0042`, `M1=$0001`, and the tap
+records a read of **DM[$0042]** with `I1` afterwards at `$0043`. Under the
+naive `index + modifier` rule the read would have been DM[$0043].
+
+### 67.2 The wrap is load-bearing, and it explains two records
+
+`L0 = L1 = L2 = L4 = $0006`, so `lmask(6) = $3FF8` and `base = index & $3FF8`.
+The vertex data is a **six-word ring** at DM[$0040..$0045].
+
+Record 0's `I4` runs `$0043 -> $0041 -> $0045`: the second step computes
+`$003F`, which is below `base = $0040`, so `+6` lifts it back to `$0045`. Without
+the wrap the walk would run off the buffer.
+
+That same wrap is why records 4 and 6 look wrong under any non-wrapping model:
+at `$056A` their `I0` computes `$0047`, which is `>= base + 6`, so `-6` gives
+`$0041` — and `$0041` is the address actually read. Records 0-3 and 5, 7, 8
+compute `$0045` or lower, do not wrap, and read where the arithmetic says. This
+was the anomaly that forced the circular-buffer model rather than a fudge.
+
+### 67.3 The walk itself
+
+`$0568` seeds `I0` from `I2`; the two chains then walk toward each other,
+forward by `M0/M2 = +2` and backward by `M1/M4 = -2`, and the record ends when
+`I4 == I0` (`$058D`/`$058E`). The branch at `$057B`/`$057C` decides which chain
+advances: when `AY1 > AY0` the `$05AF` tail walks the backward chain and
+promotes `AY0`; otherwise the `$058F`/`$05C9` tails walk the forward chain and
+promote `AY1`.
+
+Validated against all nine captured records: header words, span count, each
+span's `(AX1, AY0, AY1)`, every run length, and the terminator — **9/9 exact**,
+derived from DM plus the entry pointers alone.
+
+### 67.4 The third C slice
+
+`reproduction/adsp/som_walk.{h,c}` transcribes the walk and the circular
+addressing. CTest `adsp-som-walk-slice-c` supplies the captured DM ring and the
+entry pointers for all nine records, derives the record, fills in only the two
+32-bit side values per span (which `som_math.c` owns), and compares the
+assembled 16 words against the capture.
+
+Eleven rebuilt negative controls all fail and the restored code passes:
+switching to `index + modifier` addressing, dropping the circular wrap, walking
+the backward chain forward, promoting the wrong endpoint in either branch,
+skipping the `$056D` back step, terminating immediately instead of merging,
+using the post-`$0571` modifier for the header read, not advancing `I0` at
+`$0569`, weakening the prologue guard, and stopping the walk early.
+
+### 67.5 Harness defect found and fixed
+
+The DM window is read from inside the data-memory read tap, and that re-enters
+the same tap. The first version guarded the *state dump* but not the event
+emission, so the dump's own reads were recorded as ADSP traffic: 4,009 producer
+events became several thousand more, while the 146-word SOM stream was
+unchanged. The corrected harness suppresses the whole tap while the dump runs.
+
+The corrected capture is **bit-identical** to the register-snapshot fixture —
+same `transaction_sha256`
+`c41715380aabbd4e71f46afcda28cbaa0e48828264b9dc5a768a73b4ab238ea4`, same 4,009
+events, same 146 words — which is a determinism check on the harness change as
+well as on the emulator.
+
+### 67.6 One control is an equivalent mutant, not a gap
+
+A mutation that recomputes `base` inside every step rather than only on write
+**passes**, and that is correct behaviour for the test to have. The wrap always
+returns the index to `[base, base+length)`, which lies inside one `$3FF8`-aligned
+block, so the block bits cannot change and the resulting index is identical.
+A 400,000-case sweep over `(length, index, modifier)` found **zero** cases where
+recomputing the base changes the resulting index; only the stored `base` field
+differs, and the walk never reads it after the initial write. Recorded here so
+the control count is not reported as stronger than it is.
+
+### 67.7 What this still does not establish
+
+- The **side values** — the two 32-bit pairs per span — are still inputs.
+  `som_math.c` implements the `$05DD`/`$0607` arithmetic, but nothing yet wires
+  it to the walk: the selectors are the span deltas (`AY1 - AX1` and
+  `AY0 - AX1`, confirmed against two captured vectors), and joining those two
+  slices needs the PM coefficient table as a checked-in input.
+- The **`$052F`-`$0544` scan** that chooses `I1`/`I2` before `$0564` is not
+  transcribed. The entry pointers are still measured inputs.
+- The DM window is a **capture limit**: the walk is only validated where the
+  indices land inside DM[$0040..$0045], and the tool refuses to read outside it.

@@ -930,7 +930,7 @@ class PublicToolTests(unittest.TestCase):
                 "print('M1_ADSP_TX_EVENT seq=13 frame=550 cpu=maincpu access=W address=00818060 data=00000000 mask=0000FFFF pc=000213FE bank=1')\n"
                 "print('M1_ADSP_TX_EVENT seq=14 frame=551 cpu=maincpu access=R address=00810000 data=00000030 mask=0000FFFF pc=0002D000 bank=1')\n"
                 "print('M1_ADSP_TX_EVENT seq=15 frame=551 cpu=maincpu access=W address=00C0000C data=00000030 mask=0000FFFF pc=0002D010 bank=1')\n"
-                "print('M1_ADSP_TX_DONE frames=556 events=6 truncated=false bank_events=1 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=12')\n",
+                "print('M1_ADSP_TX_DONE frames=556 events=6 truncated=false bank_events=1 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=12 records=0')\n",
                 encoding="utf-8")
             mame.chmod(0o755)
             output = temp / "capture"
@@ -963,7 +963,7 @@ class PublicToolTests(unittest.TestCase):
                 "#!/usr/bin/env python3\n"
                 "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=0')\n"
                 "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=0')\n"
-                "print('M1_ADSP_TX_DONE frames=556 events=2 truncated=false bank_events=0 tx_start_frame=550 tx_start_seq=10 tx_end_frame=nil tx_end_seq=nil')\n",
+                "print('M1_ADSP_TX_DONE frames=556 events=2 truncated=false bank_events=0 tx_start_frame=550 tx_start_seq=10 tx_end_frame=nil tx_end_seq=nil records=0')\n",
                 encoding="utf-8")
             mame.chmod(0o755)
             output = temp / "capture"
@@ -973,6 +973,127 @@ class PublicToolTests(unittest.TestCase):
                 cwd=ROOT, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("no complete SOMCLK->GINT transaction", result.stderr)
+
+    def test_capture_adsp_som_transaction_carries_per_record_dm_window(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "stunrun.manifest.json").write_text("{}\n", encoding="utf-8")
+            mame = temp / "mame-stub"
+            words = ",".join("%04X" % v for v in range(0x30, 0x60))
+            mame.write_text(
+                "#!/usr/bin/env python3\n"
+                "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=1')\n"
+                "print('M1_ADSP_TX_STATE record=1 frame=550 i1=66 i2=66 m1=1 m2=1 dm=0030..005F words=%s')\n"
+                "print('M1_ADSP_TX_EVENT seq=12 frame=550 cpu=adsp access=W address=00002006 data=00000045 mask=0000FFFF pc=0000004C bank=1')\n"
+                "print('M1_ADSP_TX_DONE frames=556 events=3 truncated=false bank_events=0 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=12 records=1')\n" % words,
+                encoding="utf-8")
+            mame.chmod(0o755)
+            output = temp / "capture"
+            result = subprocess.run(
+                [str(ROOT / "tools" / "capture-adsp-som-transaction"),
+                 str(roms), str(output), "--frames", "556", "--mame", str(mame)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads((output / "result.json").read_text())
+            states = report["record_states"]
+            self.assertEqual(len(states), 1)
+            self.assertEqual(states[0]["i1"], 66)
+            self.assertEqual(states[0]["i2"], 66)
+            self.assertEqual(states[0]["dm_base"], 0x30)
+            self.assertEqual(states[0]["dm_limit"], 0x60)
+            self.assertEqual(len(states[0]["dm_words"]), 48)
+            self.assertEqual(states[0]["dm_words"][0], 0x30)
+            self.assertEqual(states[0]["dm_words"][-1], 0x5F)
+
+    def test_capture_adsp_som_transaction_rejects_truncated_dm_window(self):
+        """A window whose word count disagrees with its stated bounds must fail.
+
+        These are unversioned struct dumps; a reader built against a different
+        window would otherwise invent plausible geometry instead of failing.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "stunrun.manifest.json").write_text("{}\n", encoding="utf-8")
+            mame = temp / "mame-stub"
+            words = ",".join("%04X" % v for v in range(0x30, 0x50))  # 32, not 48
+            mame.write_text(
+                "#!/usr/bin/env python3\n"
+                "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=1')\n"
+                "print('M1_ADSP_TX_STATE record=1 frame=550 i1=66 i2=66 m1=1 m2=1 dm=0030..005F words=%s')\n"
+                "print('M1_ADSP_TX_EVENT seq=12 frame=550 cpu=adsp access=W address=00002006 data=00000045 mask=0000FFFF pc=0000004C bank=1')\n"
+                "print('M1_ADSP_TX_DONE frames=556 events=3 truncated=false bank_events=0 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=12 records=1')\n" % words,
+                encoding="utf-8")
+            mame.chmod(0o755)
+            output = temp / "capture"
+            result = subprocess.run(
+                [str(ROOT / "tools" / "capture-adsp-som-transaction"),
+                 str(roms), str(output), "--frames", "556", "--mame", str(mame)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("is 48 words but 32 were captured", result.stderr)
+
+    def test_capture_adsp_som_transaction_rejects_count_mismatches(self):
+        """Self-reported totals must agree with the lines actually captured.
+
+        The DONE line is the harness's own summary. If the parser trusts it
+        over the log, a truncated or re-entrant capture silently reports a
+        transaction it did not fully observe.
+        """
+        cases = [
+            # (records count in DONE, events count in DONE, STATE lines emitted)
+            ("2", "events=3", 1,
+             "record state count mismatch: 1 captured, 2 reported"),
+            ("1", "events=9", 1,
+             "event count mismatch: event lines=3/9"),
+        ]
+        for records_field, events_field, state_lines, expected in cases:
+            with self.subTest(records_field=records_field):
+                with tempfile.TemporaryDirectory() as temp:
+                    temp = pathlib.Path(temp)
+                    roms = temp / "roms"
+                    roms.mkdir()
+                    (roms / "stunrun.manifest.json").write_text("{}\n",
+                                                                 encoding="utf-8")
+                    mame = temp / "mame-stub"
+                    words = ",".join("%04X" % v for v in range(0x30, 0x60))
+                    body = [
+                        "#!/usr/bin/env python3",
+                        "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp "
+                        "access=W address=00002003 data=00000000 mask=0000FFFF "
+                        "pc=00000034 bank=1')",
+                        "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp "
+                        "access=W address=00002002 data=00000030 mask=0000FFFF "
+                        "pc=00000515 bank=1')",
+                    ]
+                    for n in range(state_lines):
+                        body.append("print('M1_ADSP_TX_STATE record=%d frame=550 "
+                                    "i1=66 i2=66 m1=1 m2=1 dm=0030..005F words=%s')"
+                                    % (n + 1, words))
+                    body += [
+                        "print('M1_ADSP_TX_EVENT seq=12 frame=550 cpu=adsp "
+                        "access=W address=00002006 data=00000045 mask=0000FFFF "
+                        "pc=0000004C bank=1')",
+                        "print('M1_ADSP_TX_DONE frames=556 %s truncated=false "
+                        "bank_events=0 tx_start_frame=550 tx_start_seq=10 "
+                        "tx_end_frame=550 tx_end_seq=12 records=%s')"
+                        % (events_field, records_field),
+                    ]
+                    mame.write_text("\n".join(body) + "\n", encoding="utf-8")
+                    mame.chmod(0o755)
+                    output = temp / "capture"
+                    result = subprocess.run(
+                        [str(ROOT / "tools" / "capture-adsp-som-transaction"),
+                         str(roms), str(output), "--frames", "556",
+                         "--mame", str(mame)],
+                        cwd=ROOT, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(expected, result.stderr)
 
     # ---- MC68010 -> GSP halt protocol -------------------------------
     #

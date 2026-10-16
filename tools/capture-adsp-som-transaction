@@ -37,10 +37,14 @@ BANK = re.compile(
     r"M1_ADSP_TX_BANK seq=(\d+) frame=(\d+) address=([0-9A-Fa-f]+) "
     r"offset=([0-9A-Fa-f]+) bank=(\d+) pc=([0-9A-Fa-f]+)"
 )
+STATE = re.compile(
+    r"M1_ADSP_TX_STATE record=(\d+) frame=(\d+) i1=(\d+) i2=(\d+) "
+    r"m1=(\d+) m2=(\d+) dm=([0-9A-Fa-f]+)\.\.([0-9A-Fa-f]+) words=([0-9A-Fa-f,]+)"
+)
 DONE = re.compile(
     r"M1_ADSP_TX_DONE frames=(\d+) events=(\d+) truncated=(true|false) "
     r"bank_events=(\d+) tx_start_frame=(nil|\d+) tx_start_seq=(nil|\d+) "
-    r"tx_end_frame=(nil|\d+) tx_end_seq=(nil|\d+)"
+    r"tx_end_frame=(nil|\d+) tx_end_seq=(nil|\d+) records=(\d+)"
 )
 
 
@@ -129,13 +133,37 @@ def main() -> int:
     if completed.returncode or not done:
         raise SystemExit(f"transaction capture did not complete; see {log}")
     _, event_count, truncated_text, bank_event_count, tx_start_frame, tx_start_seq, \
-        tx_end_frame, tx_end_seq = done[-1]
+        tx_end_frame, tx_end_seq, record_count = done[-1]
     if truncated_text == "true":
         raise SystemExit(f"event cap reached ({args.max_events}); capture is incomplete: {log}")
     if "nil" in (tx_start_frame, tx_start_seq, tx_end_frame, tx_end_seq):
         raise SystemExit(f"no complete SOMCLK->GINT transaction; see {log}")
 
     events = [parse_event(m) for m in EVENT.finditer(text)]
+    record_states = []
+    for m in STATE.finditer(text):
+        base = int(m.group(7), 16)
+        words = [int(w, 16) for w in m.group(9).split(",")]
+        # The Lua header prints the inclusive last address, so the window is
+        # [base, limit]; an unversioned struct dump read against a different
+        # window would otherwise invent plausible geometry instead of failing.
+        expected = int(m.group(8), 16) - base + 1
+        if len(words) != expected:
+            raise SystemExit(
+                f"record {m.group(1)}: DM window {base:04X}..{int(m.group(8), 16):04X} "
+                f"is {expected} words but {len(words)} were captured")
+        record_states.append({
+            "record": int(m.group(1)),
+            "frame": int(m.group(2)),
+            "i1": int(m.group(3)), "i2": int(m.group(4)),
+            "m1": int(m.group(5)), "m2": int(m.group(6)),
+            "dm_base": base, "dm_limit": base + len(words),
+            "dm_words": words,
+        })
+    if len(record_states) != int(record_count):
+        raise SystemExit(
+            f"record state count mismatch: {len(record_states)} captured, "
+            f"{record_count} reported")
     banks = [{"seq": int(m.group(1)), "frame": int(m.group(2)),
               "address": int(m.group(3), 16), "offset": int(m.group(4), 16),
               "bank": int(m.group(5)), "pc": int(m.group(6), 16)}
@@ -221,6 +249,7 @@ def main() -> int:
         "max_events": args.max_events,
         "truncated": False,
         "bank_events": banks,
+        "record_states": record_states,
         "transaction": transaction,
         "lua_errors": lua_errors,
     }
