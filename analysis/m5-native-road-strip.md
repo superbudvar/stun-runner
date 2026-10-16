@@ -16,7 +16,8 @@ The native game loop separately preserves the observed original transport:
 ```text
 384-word course-table fan-out
   -> base/twin road buffers
-  -> 192 even-word FIFO submissions
+  -> 192 packed longs = 384 host writes to $C0000C/$C0000E
+     (was "192 even-word FIFO submissions"; corrected in findings 75)
 ```
 
 The two boundaries are not silently conflated. The fixture strip is a

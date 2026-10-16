@@ -178,6 +178,13 @@ appear verbatim across the downstream GSP VRAM snapshot. This strengthens the
 producer boundary and indicates GSP-side interpretation, but still does not
 identify curvature, width, or scanline fields.
 
+**Superseded by findings 75.** "Matches the even words" was an inference from a
+CPU-side read trace that had no write-side values to check against. A direct
+host write trace shows the drain is a `move.l`: consecutive source words packed
+two per long, delivered high-halfword-first to `$C0000C`. Every source word
+reaches the host port, so the buffer is not subsampled. The GSP-side
+interpretation of that buffer remains UNKNOWN.
+
 A GSP VRAM write tap in the same interval attributes the display-side writes to
 four PCs: broad writer `0xFFF454E0`, `FILL L` at `0xFFF43030`, and the periodic
 `PIXBLT B,XY`/paired writers at `0xFFF46590` and `0xFFF47AB0`. Their cadence is

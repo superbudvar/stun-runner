@@ -92,8 +92,18 @@ size_t stunrun_game_loop_submit_road(stunrun_game_loop_t *loop)
     loop->road_fifo_count = stunrun_road_fifo_drain(
         loop->road_base, STUNRUN_GAME_LOOP_ROAD_WORDS,
         loop->road_fifo, STUNRUN_GAME_LOOP_FIFO_WORDS);
-    for (i = 0u; i < loop->road_fifo_count; i++)
-        if (!stunrun_gsp_fifo_push(loop->ports, loop->road_fifo[i]))
-            return i;
-    return loop->road_fifo_count;
+    /* Each datum is a 32-bit long carried by two 16-bit host writes, the high
+     * halfword to $C0000C first and the low halfword to $C0000E second
+     * (findings 75). Split it here so the FIFO sees the measured bus shape. */
+    for (i = 0u; i < loop->road_fifo_count; i++) {
+        uint16_t half[2];
+        size_t n;
+
+        if (stunrun_road_fifo_host_writes(&loop->road_fifo[i], 1u, half, 2u) != 2u)
+            return 0u;
+        for (n = 0u; n < 2u; n++)
+            if (!stunrun_gsp_fifo_push(loop->ports, half[n]))
+                return i;
+    }
+    return loop->road_fifo_count * 2u;
 }

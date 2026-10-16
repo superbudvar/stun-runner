@@ -20,7 +20,7 @@ typedef struct stunrun_game_loop {
     int16_t motion_delta;
     uint16_t road_base[STUNRUN_GAME_LOOP_ROAD_WORDS];
     uint16_t road_twin[STUNRUN_GAME_LOOP_ROAD_WORDS];
-    uint16_t road_fifo[STUNRUN_GAME_LOOP_FIFO_WORDS];
+    uint32_t road_fifo[STUNRUN_GAME_LOOP_FIFO_WORDS];
     size_t road_fifo_count;
     int road_ready;
 } stunrun_game_loop_t;

@@ -11616,3 +11616,91 @@ reproduces 5/5 across five MAME processes. Its sha256 is
 `dda9cba51823fb32da9bc1551288589f0f15a3fce1f938c9ea290b84b4f7a648` — and per
 §74.1 that buffer is 384/384 verbatim ROM, so it is recorded here as a number
 and deliberately not as a file.
+
+## 75. The road FIFO is a 32-bit `move.l`, not an even-lane selection
+
+Chasing the 68010-side seam instead of the ADSP produced a refutation of our own
+slice, plus the transport the road path actually uses.
+
+### 75.1 What was measured
+
+The road drain had never been observed on the write side. `road_fifo.c` modelled
+it as 384 halfword reads producing 192 FIFO words on an **even lane**
+(`base[2i]`), derived from a CPU-side read trace
+(`m5-road-buffer-consumer-trace.metadata.json`) that carried addresses but no
+values. There was nothing to check that reading against.
+
+```sh
+tools/mame-ram-write-trace roms OUT \
+  --device :mainpcb:maincpu --space program \
+  --base 0xC0000C --end 0xC0000E \
+  --frames 1300 --start-frame 1280 --end-frame 1300 \
+  --pc 0x02248E --input late_drive --nothrottle \
+  --mame /mnt/build/mame-oracle/mame
+```
+
+32 524 writes, every one from PC `$02248E`, split evenly across **`0xC0000C`
+(16 262) and `0xC0000E` (16 262)**. The even-lane model had one destination
+register and therefore predicted a 2:1 write ratio it could not produce. The
+ordering is strict `$C0000C` then `$C0000E`, **0 exceptions in 16 262 pairs** —
+a 68010 big-endian `move.l` writing the high halfword of a long at the base
+address first. No re-run was needed to settle this; the structure is in a single
+capture.
+
+Frame 1290 contributed exactly 192 pairs. Capturing the base road buffer at that
+same frame and input:
+
+```sh
+tools/mame-memory-snapshot roms OUT --device :mainpcb:maincpu --space program \
+  --base 0xFF9584 --count 0x600 --width 8 \
+  --frames 1291 --targets 1290 --input late_drive --nothrottle
+```
+
+Packing those 384 source words two per long, high halfword first:
+
+| | result |
+|---|---|
+| frame-1290 burst vs the packed base buffer | **192 / 192 exact** |
+| occurrences of the full table in the 16 262-pair window | **1** (pair index 9347) |
+| sha256 of the 192 packed longs | `a1064bce98f3d80acfa2a83ec9df46654e7108e580b9cae5e9967fa5a256789c` |
+
+### 75.2 Why the old model passed its own test
+
+`road_fifo.c` asserted `fifo[i] == base[2i]`. Under the true reading, `base[2i]`
+is the **high halfword** of long `i`, so a `uint16_t` comparison against it
+matches under both models. The test could not distinguish them, and neither could
+any assertion of the form "output equals source word *2i*". That is the same
+shape of failure as the two render controls in 73.5 and the SIGBUS assertion in
+71.1: a test that looks like it pins the behaviour and pins half of it.
+
+`road_fifo_test.c` now asserts the low halfword too
+(`(uint16_t)fifo[i] == base[2i + 1]`) and, over the whole burst, that the host
+writes reproduce the source sequence unmodified — which is the sharpest
+available statement that the drain selects nothing and reorders nothing.
+
+### 75.3 Why it mattered
+
+The even-lane reading says the 68010 throws away half the table and the GSP
+receives a subsample. The truth is that **every source word reaches the GSP**,
+carried two per 32-bit write. Any decoder built on the old model was reading a
+sequence that never existed, and any renderer built on it was drawing half the
+data it should have had.
+
+Three call sites carried the error and are corrected: `road_fifo.c`/`.h` (now
+packs consecutive pairs and exposes `stunrun_road_fifo_host_writes` for the
+bus split), `native/game_loop.c` (now pushes 384 halfwords rather than 192), and
+the shell's own `fifo_match` self-check. Two analysis files that stated the even
+lane as fact are marked superseded rather than silently edited.
+
+Negative control: restoring `fifo_out[i] = base[i * 2u]` in the slice and
+rebuilding produces **934 test failures**; the restored implementation passes.
+
+### 75.4 Still UNKNOWN
+
+This fixes the transport and refutes the subsample claim. It does **not** decode
+the payload. Per 74.1 the buffer is commercial ROM, so the words carry no
+established field meaning, and `analysis/gsp-road-fifo-consumer.md` still records
+the GSP-side consumer's destination buffers as UNKNOWN. The next step on this
+seam is decoding what `0xFFF48C20` does with the stream — it recombines adjacent
+byte lanes with `SLL 8h`/`OR` and writes two work buffers, so the payload is
+consumed on the GSP side, not the 68010 side.

@@ -1757,14 +1757,23 @@ static int run_walk(void)
                                                        geometry_table) ?
                      STUNRUN_GEOM_COPY_COUNT : 0u;
             size_t fifo_words = stunrun_game_loop_submit_road(&game_loop);
-            int fifo_match = fifo_words == STUNRUN_ROAD_FIFO_WRITES;
+            /* Measured transport (findings 75): the 384 source words ride the
+             * host port as 192 packed longs, i.e. 384 16-bit writes that
+             * reproduce the source sequence in order. Checking each packed
+             * long against both halves of its source pair -- not against
+             * road_base[2i] alone, which is the refuted even-lane reading. */
+            int fifo_match =
+                fifo_words == 2u * STUNRUN_ROAD_FIFO_WRITES;
             for (i = 0; i < STUNRUN_GEOM_MARCH_WORDS; i++)
                 if (game_loop.road_base[i] != game_loop.road_twin[i] ||
                     game_loop.road_base[i] != geometry_table[i])
                     copies_match = 0;
-            for (i = 0; i < STUNRUN_ROAD_FIFO_WRITES; i++)
-                if (game_loop.road_fifo[i] != game_loop.road_base[i * 2u])
+            for (i = 0; i < STUNRUN_ROAD_FIFO_WRITES; i++) {
+                if (game_loop.road_fifo[i] !=
+                        (((uint32_t)game_loop.road_base[i * 2u] << 16) |
+                         (uint32_t)game_loop.road_base[i * 2u + 1u]))
                     fifo_match = 0;
+            }
             expect(passes == STUNRUN_GEOM_COPY_COUNT);
             expect(copies_match);
             expect(fifo_match);

@@ -39,11 +39,15 @@ int main(void)
     for (i = 0u; i < STUNRUN_GAME_LOOP_ROAD_WORDS; i++)
         table[i] = (uint16_t)(0x1000u + i);
     assert(stunrun_game_loop_load_road_table(&loop, table));
+    /* 192 packed longs ride the host port as 384 16-bit writes, the source
+     * words in order (findings 75). The previous expectation -- that the last
+     * FIFO entry was source word 382 -- is the refuted even-lane reading and
+     * now fails, which is what this test is here to catch. */
     assert(stunrun_game_loop_submit_road(&loop) ==
-           STUNRUN_GAME_LOOP_FIFO_WORDS);
-    assert(ports.gsp_fifo_count == STUNRUN_GAME_LOOP_FIFO_WORDS);
-    assert(ports.gsp_fifo[0] == table[0]);
-    assert(ports.gsp_fifo[STUNRUN_GAME_LOOP_FIFO_WORDS - 1u] == table[382]);
+           2u * STUNRUN_GAME_LOOP_FIFO_WORDS);
+    assert(ports.gsp_fifo_count == 2u * STUNRUN_GAME_LOOP_FIFO_WORDS);
+    for (i = 0u; i < STUNRUN_GAME_LOOP_ROAD_WORDS; i++)
+        assert(ports.gsp_fifo[i] == table[i]);
     puts("native game loop and fake ports: all checks passed");
     return 0;
 }
