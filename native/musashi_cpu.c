@@ -81,6 +81,24 @@ static musashi_irq_watch_t s_irq_watch;
 static uint32_t s_insn_start;
 static uint32_t s_insn_count;
 
+/* ── ADSP transport observer (OBSERVATION ONLY) ─────────────────────────────
+ * File-static like the watch above, so the per-access cost when off is one
+ * load-and-test of a NULL pointer.  See musashi_cpu.h for the full note: we do
+ * not execute the ADSP-2100, this sees only the 68010's own stores into
+ * 0x818000-0x81FFFF, and `pc` is the prefetch PC rather than the instruction
+ * address because this observer does not single-step. */
+static musashi_adsp_write_observer_t s_adsp_write_observer;
+static void *s_adsp_write_ctx;
+
+static void adsp_write_note(uint32_t address, uint16_t data,
+                            unsigned width_bits)
+{
+    if (!s_adsp_write_observer)
+        return;
+    s_adsp_write_observer(s_adsp_write_ctx, address, data,
+                          m68k_get_reg(NULL, M68K_REG_PC), width_bits);
+}
+
 /* A bus write of `width_bits` at `address` touches [address, address + width).
  * A watch on `base` is a hit when the two byte ranges overlap, so watching a
  * word also catches a long store at the address below it. */
@@ -823,6 +841,15 @@ int musashi_cpu_run(musashi_cpu_t *cpu, int cycles)
         dot_clock_advance(cpu, (uint32_t)done);
     }
     return done;
+}
+
+void musashi_cpu_set_adsp_write_observer(musashi_cpu_t *cpu,
+                                         musashi_adsp_write_observer_t observer,
+                                         void *context)
+{
+    (void)cpu;
+    s_adsp_write_observer = observer;
+    s_adsp_write_ctx = context;
 }
 
 void musashi_cpu_set_irq(musashi_cpu_t *cpu, unsigned level)
@@ -2252,8 +2279,14 @@ void m68k_write_memory_8(unsigned int address, unsigned int value)
         gsp_emit_reset_control_event(s_cpu, address, bus_value, lane_mask, 8u);
         break;
     }
-    case REGION_ADSP_DATA: case REGION_ADSP_BUF:
     case REGION_ADSP_CTRL:
+        /* Dropped by the model (harddriv_m.cpp:685-765 owns these on the
+         * board); observed so the 68010's transport is visible.  `value` is
+         * the raw bus byte, not the device word MAME's COMBINE_DATA would
+         * have produced -- we do not model that register, so we cannot. */
+        adsp_write_note(address, (uint16_t)(value & 0xFFu), 8u);
+        break;
+    case REGION_ADSP_DATA: case REGION_ADSP_BUF:
     case REGION_INPUT: case REGION_GSP_PAL:
     case REGION_GSP_VRAM_MIRROR: case REGION_ADSP_IRQ:
         /* TODO: wire to proper MMIO handlers */
@@ -2322,8 +2355,11 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
         (void)stunrun_jsa_transport_write(s_cpu->jsa_latches, offset, 2u,
                                           (uint16_t)value);
         break;
-    case REGION_ADSP_DATA: case REGION_ADSP_BUF:
     case REGION_ADSP_CTRL:
+        /* Dropped by the model; observed.  See the 8-bit arm above. */
+        adsp_write_note(address, (uint16_t)value, 16u);
+        break;
+    case REGION_ADSP_DATA: case REGION_ADSP_BUF:
     case REGION_INPUT: case REGION_GSP_PAL:
     case REGION_ADSP_IRQ:
         break;
@@ -2379,6 +2415,13 @@ void m68k_write_memory_32(unsigned int address, unsigned int value)
     case REGION_SOUND:
         /* harddriv.cpp:4806 main_command_w (8-bit device split). */
         (void)stunrun_jsa_transport_write(s_cpu->jsa_latches, offset, 4u, value);
+        break;
+    case REGION_ADSP_CTRL:
+        /* Dropped by the model; observed as two 16-bit events, high half
+         * first at the lower address, which is both the real bus order and
+         * what gsp_emit_reset_control_event() does for /GSPRES. */
+        adsp_write_note(address, (uint16_t)(value >> 16), 16u);
+        adsp_write_note(address + 2u, (uint16_t)value, 16u);
         break;
     default:
         break;

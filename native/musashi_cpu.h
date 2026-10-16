@@ -221,6 +221,42 @@ void musashi_cpu_write_pc_histogram(const musashi_cpu_t *cpu, const char *path);
 /* Peek a register by name (for debugging) */
 uint32_t musashi_cpu_get_reg(const musashi_cpu_t *cpu, const char *reg_name);
 
+/* ── ADSP transport observer (OBSERVATION ONLY) ───────────────────────────
+ *
+ * We do NOT execute the ADSP-2100.  There is no ADSP instruction decoder in
+ * this tree, no ADSP PC and no ADSP bus, so nothing here can observe the DSP
+ * executing anything, emitting a SOMLATCH, or raising GINT.  This observer
+ * covers only what the MC68010 itself does: its stores into the ADSP window
+ * 0x818000-0x81FFFF (the LEDs, /BR, /HALT, the reset assert/release pair, the
+ * deferred bank switch, the default controls, and the IRQ-clear pair at
+ * 0x818060).  The window's device side is DROPPED by the model; this hook sits
+ * in front of the drop.
+ *
+ * `pc` is the MC68010 PC as seen INSIDE the bus callback, and that is NOT the
+ * address of the executing instruction.  Musashi fetches the opcode through
+ * m68ki_read_imm_16(), which advances REG_PC by two per word consumed, and
+ * M68K_EMULATE_PREFETCH is off in this tree (third_party/musashi/m68kconf.h),
+ * so REG_PC here is instruction_address + 2 + 2 * extension_words_consumed --
+ * `move.b d0,$818002.l` reports six bytes past the instruction that issued it.
+ * musashi_cpu_write_watch() recovers the true address because arming it
+ * single-steps musashi_cpu_run(); this observer deliberately does not, because
+ * single-stepping moves m68ki_check_interrupts() to every instruction boundary
+ * and therefore changes interrupt latency.  A log that changes the machine it
+ * is logging is worse than one whose PC field is a few bytes off, so callers
+ * must treat `pc` as a bus-callback PC and NOT as writer attribution; MAME
+ * remains the authority for which routine wrote these.
+ *
+ * 32-bit stores are reported as two 16-bit events, high half first at the
+ * lower address, matching the real bus and gsp_emit_reset_control_event().
+ * With no observer installed the cost is one load-and-test of a NULL
+ * file-static pointer in the REGION_ADSP_CTRL arm, which already existed. */
+typedef void (*musashi_adsp_write_observer_t)(
+    void *context, uint32_t address, uint16_t data, uint32_t pc,
+    unsigned width_bits);
+
+void musashi_cpu_set_adsp_write_observer(
+    musashi_cpu_t *cpu, musashi_adsp_write_observer_t observer, void *context);
+
 /* ROM loader: loads all 6 STUN Runner ROM banks into the CPU instance.
  * Returns 0 on success, -1 on I/O or internal failure.
  * Logs reset vector on success. */

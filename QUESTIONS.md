@@ -595,3 +595,95 @@ exact hashes are in
 human-facing detail is in `analysis/object-record-wall-delay.md`.
 The paired `0xFF9578–0xFF957D` sidecar shows no course-index write at the
 frame-883 burst; only adjacent input/transition-state fields change before it.
+
+## IRQ-0007
+
+Status: OPEN
+From: Implementer (state-log slice, `alo`)
+To: Investigator / Verifier
+Priority: HIGH
+
+### Location / subsystem
+
+Two things the new labelled state log (`STUNRUN_STATE_LOG=1`, findings section 77)
+surfaced that are not this slice's to settle.
+
+### 1. `0x818002` — the LED register — sees 1 write natively and 54 in MAME
+
+The log's ADSP transport classifier reproduces MAME's recorded 600-frame
+control-window multiset exactly at **10 of the 11** recorded addresses
+(73 control writes total in MAME, 20 here), and differs only at `0x818002`:
+**1** here, **54** recorded. See the table in findings section 77.3.
+
+The obvious hypothesis is that `0x818002` is the one control address whose MAME
+handler carries state the native model drops, so a 68010 polling it back sees a
+different value and its write loop runs a different number of times. That is a
+hypothesis, not a measurement, and it is consistent with every other address
+matching exactly — but it could equally be an IRQ cadence difference or an
+unmodelled reader of that word.
+
+Note this is the same class of question as findings 77.4: a difference that is
+*explained by a known model gap* must still be shown to be that, and not merely
+assumed from the fact that a gap exists nearby.
+
+### 2. `0x818040` — inside the control window, absent from the recorded set
+
+The 68010 stores there twice in a 600-frame run (frames 40 and 364), data
+`0x0004`, both from an instruction `STUNRUN_DISASM` decodes as:
+
+```text
+021432: 33 fc 00 04 00 81 80 40  move.w #$4, $818040.l
+02143a: 4e 75  rts
+```
+
+`adsp_control_seq.h`'s eleven recorded addresses stop at `0x81801E`, so this is a
+control-window write the MAME tap that produced that table never recorded. It is
+the only control-window store observed natively whose data is **not** `0x0000`.
+The log prints it as `label=unrecorded confidence="UNKNOWN"` rather than dropping
+it.
+
+### 3. Sub-question on that same instruction — the immediate size selector
+
+`33 fc` with an absolute-long destination is `move.s #imm,(xxx).L`, whose size is
+selected by the low two bits of the immediate field. Here those bits are `00`.
+Vendored Musashi **executes** it as a 16-bit move (one `m68k_write_memory_16` of
+`0x0004`, instruction length 8, PC advance to the `rts` at `02143a` — both
+verified directly), and its **disassembler** renders the same bytes as
+`move.w #$4, $818040.l`. Whether the 68000 encoding for low-bits `00` is a byte
+or a word move is **not established here**; I did not find an authoritative
+statement in the pinned tree and I am not going to infer one from Musashi's two
+agreeing with each other.
+
+It does not matter for this slice — the ADSP window's device side is dropped, so
+the width only shows up as a `width=16` field on a log line. It would matter on
+any 8-bit device window, so the answer is worth recording before someone builds
+one.
+
+### Observed mismatch
+
+Not a mismatch in the reconstruction — three open questions that the new log made
+visible for the first time, which is the point of having it.
+
+### Evidence
+
+- `native/state_watch.c` table + `analysis/ram-map.md` confidence strings
+- `STUNRUN_STATE_LOG=1 STUNRUN_LIVE_VIDEO=0 STUNRUN_FRAMES=600 ./run.sh`,
+  `RESULT PASS`, 25 ADSP transport events, 0 dropped
+- `STUNRUN_WATCH_WRITE=0xFF8014,0xFF9582,0xFF9566,0xFF954E` cross-run for the
+  `irq-tick` half-word result (findings 77.5)
+- `STUNRUN_DISASM=0x02141A:0x021450:OUT` via `./run.sh`, for the instruction bytes
+- `docs/mc68010-boot-findings.md` section 77
+
+### Required output
+
+- MAME writer-PC attribution for `0x818002` over 600 frames, compared against the
+  native count, so the LED difference is characterised rather than assumed;
+- what `0x818040` is, from `harddriv_m.cpp`'s handler map plus the writer trace —
+  a registered control bit the 11-address table missed, or an unmapped write;
+- the 68000 size-selector rule for `move.s #imm,(xxx).L`, from a primary source.
+
+### Why it matters
+
+The state log is what the user reads next to the screen. Every line it prints has
+to be defensible, and an `UNKNOWN` line that nobody ever resolves becomes a line
+someone eventually quotes as fact.

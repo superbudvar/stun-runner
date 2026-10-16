@@ -51,6 +51,20 @@ Environment:
                       summary only reports the LAST frame, and the thing worth
                       watching here is the MC68010 -> GSP handoff, which are
                       two different authors drawing the same window.
+  STUNRUN_STATE_LOG=1   Labelled game-state / event log, one line per CHANGE,
+                      each carrying the analysis/ram-map.md confidence string:
+                        shell: state frame=1234 kind=word name=track-index \
+                               addr=0xFF9578 value=0x0003 (was 0x0002)
+                      Use this to match machine state to what you see. OFF by
+                      default: it spams, and the headless test runs must not
+                      depend on it. Two limits worth knowing: the sampler runs
+                      once per frame at the frame boundary, so a value set and
+                      cleared inside one frame is invisible; and the
+                      kind=adsp-* lines are 68010 TRANSPORT only -- there is no
+                      ADSP-2100 in this build, so nothing here observes the
+                      DSP executing. Filter with:
+                        ... | grep 'kind=word'          # game state only
+                        ... | grep -v 'name=irq-tick'  # drop the heartbeat
 
 Examples:
   ./run.sh                      # normal boot, GSP core running

@@ -95,6 +95,7 @@ static void mkpath(const char *path, mode_t mode)
 #include "experiment.h"
 #include "jsa_latch.h"
 #include "sound_dispatch.h"
+#include "state_watch.h"
 #include "checkpoint.h"
 #include "render.h"
 #include "gsp_display.h"
@@ -380,6 +381,33 @@ static uint32_t g_watch_frames_addr[MUSASHI_WRITE_WATCH_MAX];
 static uint16_t g_watch_frames_value[MUSASHI_WRITE_WATCH_MAX];
 static unsigned g_watch_frames_armed;
 static uint32_t g_watch_frames_sr;
+
+/* STUNRUN_STATE_LOG=1: the labelled game-state / event log in state_watch.h.
+ *
+ * Off by default.  It is a per-frame readback plus a per-change printf, so it
+ * spams by construction, and the headless CTest runs must not depend on it:
+ * g_state_log_active is 0 in every default run and the frame-loop call is one
+ * branch on it.  The context is static because the ADSP observer callback
+ * receives only a void* and there is exactly one CPU.
+ *
+ * It complements g_watch_frames_* rather than replacing them.  That watch
+ * counts EVERY store with its writing PC, including several inside one frame,
+ * but prints a bare address; this prints a name and a confidence string, but
+ * samples once per frame and so cannot see a set-and-clear inside one frame. */
+static stunrun_state_watch_t g_state_watch;
+static int g_state_log_active;
+
+/* MC68010 store into the ADSP window, forwarded from musashi_cpu.c's
+ * observation-only observer.  See musashi_cpu.h: we do not execute the
+ * ADSP-2100, and `pc` is the PC inside the bus callback, not the address of
+ * the instruction that issued the store. */
+static void state_watch_adsp_observer(void *context, uint32_t address,
+                                      uint16_t data, uint32_t pc,
+                                      unsigned width_bits)
+{
+    stunrun_state_watch_note_adsp_write((stunrun_state_watch_t *)context,
+                                        address, data, pc, width_bits);
+}
 
 /* STUNRUN_PCLOG=<path>: one "frame pc cycles" line per frame.  Comparing this
  * against the same series from MAME answers "behind or stuck" in one look,
@@ -1701,6 +1729,30 @@ static int run_walk(void)
                             g_watch_frames_armed = n;
                         }
                     }
+                    /* STUNRUN_STATE_LOG=1: named game-state words and the
+                     * 68010-side ADSP transport, printed on change, each
+                     * line carrying the analysis/ram-map.md confidence
+                     * string.  Arm it HERE, after reset and before the first
+                     * frame, so the baseline sample is the post-reset image
+                     * and no change is missed.  OBSERVATION ONLY and OFF by
+                     * default: it reads work RAM through the same
+                     * stunrun_mem_read16_be() the watch above uses, and
+                     * installs the ADSP observer, which is one NULL test in
+                     * musashi_cpu.c's REGION_ADSP_CTRL arm when detached.
+                     * What it cannot show is the ADSP-2100 executing --
+                     * there is no ADSP core here, so the ADSP lines are
+                     * transport only.  See state_watch.h. */
+                    {
+                        const char *sl = getenv("STUNRUN_STATE_LOG");
+                        if (sl && sl[0] && strcmp(sl, "0") != 0) {
+                            stunrun_state_watch_init(&g_state_watch);
+                            stunrun_state_watch_enable(&g_state_watch);
+                            musashi_cpu_set_adsp_write_observer(
+                                g_cpu, state_watch_adsp_observer,
+                                &g_state_watch);
+                            g_state_log_active = 1;
+                        }
+                    }
                     /* STUNRUN_TEXT_LOG=1: decode every string the MC68010
                      * draws through the GSP host port and print one line each,
                      * so a service-mode run reads as commentary instead of a
@@ -1858,8 +1910,15 @@ static int run_walk(void)
                 }
                 for (i = 0; i < g_watch_frames_armed; i++) {
                     uint16_t v = 0;
+                    /* stunrun_mem_read16_be() returns NON-ZERO ON SUCCESS
+                     * (fake_ports.c:83-92) and every other call site in the
+                     * tree reads it that way.  This loop had it inverted --
+                     * `!= 0 -> continue` skips the word exactly when the read
+                     * SUCCEEDED, so `shell: watch-word` could only ever print
+                     * for an address the RAM model refuses, and in practice
+                     * printed nothing at all.  Findings section 77.4. */
                     if (stunrun_mem_read16_be(&ports, g_watch_frames_addr[i],
-                                             &v) != 0)
+                                             &v) == 0)
                         continue;
                     if (v == g_watch_frames_value[i])
                         continue;
@@ -1870,6 +1929,15 @@ static int run_walk(void)
                     g_watch_frames_value[i] = v;
                 }
             }
+            /* Named state/event log.  Same sampling point as the readback
+             * above and the same limitation: once per frame at the frame
+             * boundary, so a value set and cleared inside one frame is
+             * invisible here.  state_watch.h says so at the definition too,
+             * and points at STUNRUN_WATCH_WRITE as the per-store
+             * complement.  Frame 0 is the baseline and prints no word lines,
+             * so every `(was ...)` is a value an earlier frame really held. */
+            if (g_state_log_active)
+                stunrun_state_watch_frame(&g_state_watch, &ports, frame);
         } else if (frame != 0u) {
             stunrun_game_loop_step(&game_loop);
         }
@@ -2127,6 +2195,13 @@ static int run_walk(void)
     if (g_terminal != 600u)
         printf("shell: frame=%u full-contract=skipped terminal!=600\n",
                g_terminal);
+
+    /* Per-word change counts, so a watched address that never moved is a
+     * NUMBER rather than an absence.  With change-only printing, "no line for
+     * track-index" and "track-index was never watched" print identically, and
+     * only this table tells them apart. */
+    if (g_state_log_active)
+        stunrun_state_watch_summary(&g_state_watch);
 
     /* Second IRQ4 response walkthrough. Two entries are observed per
      * 600-frame run but exact frames are not established, so this is
