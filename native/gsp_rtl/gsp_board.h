@@ -85,6 +85,7 @@ typedef struct {
     uint8_t  pal_hi[GSP_BOARD_PAL_BYTES];
     uint8_t  ctrl_lo[GSP_BOARD_CTRL_BYTES];
     uint8_t  ctrl_hi[GSP_BOARD_CTRL_BYTES];
+    uint8_t  palette_bank; /* control-high write-address-selected bank */
 
     /* Host-port state.  HSTADR is held masked to its 16-byte cell: MAME
      * applies `addr & 0xfffffff0` before the store (tms34010.cpp:1898), and a

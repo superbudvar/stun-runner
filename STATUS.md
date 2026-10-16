@@ -379,12 +379,20 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
   its first text cell byte-for-byte at physical `$12C08`. The old 4 MiB/16-byte
   claims, Lua zero-read conclusion, and disabled text/upload tests were our
   mistakes and are retracted in findings §34.
-- **Native screen scanout is still incomplete.** With diagnostic
-  `STUNRUN_FORCE_FRAMEBUF=12C08`, the native rasteriser shows text from the
-  physical share, but the image is only a 148×8 approximation at the top versus
-  MAME's 237×7 prompt at y=150. The shell currently falls back to frame-600
-  display registers when the GSP RTL is halted; frame-48 scanout origin/stride
-  remains the next focused task.
+- **Palette bank decode corrected in the shared GSP board model.** MAME selects
+  palette banks from control-high write-address bits, not the stored control
+  word. Regression coverage passes; frame-600 raw palette-plane agreement rose
+  to 75–77%, but exact color/frame parity remains open (findings §69).
+- **Frame-48 service-text comparison is not yet a stable acceptance check.**
+  The 68010 is still in the `$25E8` character loop at native frame 48 (19/30
+  characters emitted); its frame-49 internal framebuffer, cropped to MAME's
+  512×229 visible area, is pixel-identical to one MAME frame-48 prompt capture.
+  The diagnostic `STUNRUN_FORCE_FRAMEBUF` row-to-DPYADR encoding is fixed and
+  regression-tested (it had put the physical row number directly into DPYADR
+  instead of DPYADR[15:4]). However, five fresh `--input service` oracle runs
+  alternate between prompt and black at frame 48, so do not infer a glyph-byte-
+  order bug or claim stable parity from the matching run. A deterministic
+  startup service oracle is still needed (findings §70).
 - **CLOSED: the Verilated `native/gsp_rtl/gsp_board.c` model now consumes the
   512 KiB bit-addressed backing** (gsvp.3, 2026-10-14). It was the last model
   carrying the unit error; see the gsvp.3 entry above and findings section 35

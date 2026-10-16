@@ -94,6 +94,26 @@ unsigned stunrun_gsp_display_word_from_bit_address(uint32_t gsp_bit_address)
     return byte_offset >> 1;
 }
 
+int stunrun_gsp_display_force_byte_offset(stunrun_gsp_display_regs_t *regs,
+                                          uint32_t byte_offset)
+{
+    unsigned rowaddr;
+    unsigned row_byte_base;
+
+    if (regs == NULL || byte_offset >= STUNRUN_GSP_VRAM_WORDS * 2u)
+        return 0;
+
+    rowaddr = byte_offset >> 11u; /* 2048 physical bytes per display row */
+    row_byte_base = rowaddr << 11u;
+    /* DPYADR[15:4] contains the packed row field. For ORG=0 it is the
+     * one's-complement of SRFADR; encode rowaddr<<4 before complementing.
+     * Using rowaddr directly here silently truncated the row to rowaddr>>4. */
+    regs->dpyadr = (uint16_t)(((rowaddr << 4u) ^ 0xFFFCu) & 0xFFFFu);
+    regs->dpytap = (uint16_t)((byte_offset - row_byte_base) >> 3u);
+    regs->dpyctl &= (uint16_t)~STUNRUN_DPYCTL_ORG;
+    return 1;
+}
+
 int stunrun_gsp_display_build_palette(const uint16_t *lo, const uint16_t *hi,
                                       size_t count, uint8_t *rgb,
                                       size_t rgb_size)

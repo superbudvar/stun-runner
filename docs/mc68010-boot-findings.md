@@ -11111,7 +11111,50 @@ existing pinned MAME direct-share hook. The raw comparison files are local under
 `/tmp/opencode/native-title-600-fixed-state/` and `/tmp/srshare/`; they are not
 committed evidence fixtures.
 
-## 69. The `$052F`-`$0544` scan: the last measured input is gone (`alo` / `1fv`)
+## 70. Frame-48 service glyphs: byte order is not the mismatch
+
+The suggested byte-order explanation does not fit the observed service prompt.
+The native frame-48 CPU run reaches `$2686: dbra D1,$265E` while rendering the
+30-character `$47` string; its VRAM dump has text writes through character 18
+(`"PRESS START TO BYPA"`) and the remaining character cells are still blank.
+One more native frame completes the loop. The frame-49 internal framebuffer,
+cropped to MAME's 512x229 visible area, is **pixel-identical** to one MAME
+frame-48 screenshot (`tools/frame_diff` with its documented two-image form:
+0/117248 differing pixels, max RGB delta 0). That is direct evidence against
+reversing the glyph bytes: the completed glyph rendering can match the oracle
+exactly. It is a one-frame CPU/text-loop boundary difference, not a demonstrated
+byte-order defect.
+
+There is a separate real bug in the debug override `STUNRUN_FORCE_FRAMEBUF`.
+It converted a physical row number directly to DPYADR, but DPYADR stores the row
+in bits 15:4. The correct encoding for physical byte `$12C08` is row `$25`,
+`DPYADR=$FDAC`, `DPYTAP=$0081`; the old encoding `$FFD9` decoded to row 2. The
+conversion now lives in `stunrun_gsp_display_force_byte_offset()` and is pinned
+by the `gsp-display-slice-c` regression test. This only fixes the diagnostic
+override; it does not change the ordinary live scanout path.
+
+**Oracle limitation:** five fresh runs of
+`tools/mame-gsp-state-snapshot ... --input service --frames 60 --targets 48`
+produced two different frame-48 screenshots (three black, two with the prompt).
+The screenshots with the prompt were identical to each other; the black result
+was also repeatable. Do not promote the one matching prompt screenshot as a
+stable oracle or change glyph code to make it fit. The wrapper's scripted input
+timing is nondeterministic (tracked separately by `stun-runner-0p0`). The MAME
+run used the pinned local binary (`75b09ee4...`), ROM manifest
+`b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d`, and the
+service input schedule; native used `./run.sh --service` (IN0 `$C7`). Captures
+and the repeated run results are retained under `/tmp/opencode/` for this
+investigation, not as canonical fixtures.
+
+**Check correction:** an earlier comparison invoked `tools/frame_diff` with an
+unsupported `--diff <path>` option. The third positional argument is the numeric
+threshold, so `atoi("--diff")` made the tool count every pixel (`threshold=0`)
+even when the images were identical. Those `pixels_different` percentages were
+invalid. Re-run with only two image paths (or a numeric third threshold); the
+frame-49/native vs frame-48/MAME crop above reports zero differences. The
+independent ImageMagick pixel comparison also reports zero differing pixels.
+
+## 71. The `$052F`-`$0544` scan: the last measured input is gone (`alo` / `1fv`)
 
 ### 69.1 Both derived quantities come from one word
 

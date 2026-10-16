@@ -116,18 +116,18 @@ static uint32_t gsp_2bpp_mask_word(uint16_t data, unsigned half)
     return mask;
 }
 
-/* Palette entry index.  hdgsp_control_hi_w (harddriv_v.cpp:211-256) selects
- * the bank from the low three bits of control_high, and only the first 256
- * entries of each plane are addressable.
+/* Palette entry index.  hdgsp_control_hi_w (harddriv_v.cpp:215-249) selects
+ * bank bits from the CONTROL-HIGH WRITE ADDRESS (offset bits 3+), not from
+ * the value stored in the control share. Only the first 256 entries of each
+ * plane are addressable.
  *
  * `addr` is a BIT address, so the within-bank entry index is `addr >> 4` (the
  * map's offset unit is one 16-bit access per 0x10 address bits), not a byte
  * offset.  This matches native/musashi_cpu.c's gsp_palette_index. */
 static unsigned gsp_board_palette_index(const gsp_board_t *b, uint32_t addr)
 {
-    unsigned bank = (unsigned)(b->ctrl_hi[0] & 0x07u);
     unsigned off = (unsigned)(addr >> 4) & 0xffu;
-    return bank * 0x100u + off;
+    return (unsigned)b->palette_bank * 0x100u + off;
 }
 
 unsigned gsp_board_host_reg(uint32_t byte_offset)
@@ -178,11 +178,11 @@ uint16_t gsp_board_read16(gsp_board_t *b, uint32_t byte_addr)
     case GSP_REGION_CTRL_HI:
         return (uint16_t)(b->ctrl_hi[byte_addr & 0xffu]);
     case GSP_REGION_PAL_LO: {
-        uint32_t off = byte_addr & (GSP_BOARD_PAL_BYTES - 1u);
+        uint32_t off = gsp_board_palette_index(b, byte_addr) * 2u;
         return (uint16_t)(b->pal_lo[off] | ((uint16_t)b->pal_lo[off + 1] << 8));
     }
     case GSP_REGION_PAL_HI: {
-        uint32_t off = byte_addr & (GSP_BOARD_PAL_BYTES - 1u);
+        uint32_t off = gsp_board_palette_index(b, byte_addr) * 2u;
         return (uint16_t)(b->pal_hi[off] | ((uint16_t)b->pal_hi[off + 1] << 8));
     }
     case GSP_REGION_UNMAPPED:
@@ -291,15 +291,39 @@ void gsp_board_write16(gsp_board_t *b, uint32_t byte_addr, uint16_t value)
         return;
     case GSP_REGION_CTRL_HI:
         b->ctrl_hi[byte_addr & 0xffu] = (uint8_t)(value & 0xffu);
+        /* MAME's hdgsp_control_hi_w derives val from offset>>3, then updates
+         * the selected bank bit according to offset&7. The data word is
+         * stored separately; treating ctrl_hi[0] as the bank number makes
+         * CPU/GSP palette writes land in the wrong 256-entry bank. */
+        {
+            unsigned reg = (byte_addr - 0xf4800000u) >> 4u;
+            unsigned val = (reg >> 3u) & 1u;
+            switch (reg & 7u) {
+            case 2u:
+                b->palette_bank = (uint8_t)((b->palette_bank & ~1u) | val);
+                break;
+            case 3u:
+                b->palette_bank = (uint8_t)((b->palette_bank & ~2u) | (val << 1u));
+                break;
+            case 4u:
+                /* MAME only wires this third bank bit when the palette has
+                 * at least eight 256-entry banks. This board has four. */
+                if (GSP_BOARD_PAL_BYTES / 2u >= 2048u)
+                    b->palette_bank = (uint8_t)((b->palette_bank & ~4u) | (val << 2u));
+                break;
+            default:
+                break;
+            }
+        }
         return;
     case GSP_REGION_PAL_LO: {
-        uint32_t off = byte_addr & (GSP_BOARD_PAL_BYTES - 1u);
+        uint32_t off = gsp_board_palette_index(b, byte_addr) * 2u;
         b->pal_lo[off]     = (uint8_t)(value & 0xffu);
         b->pal_lo[off + 1] = (uint8_t)(value >> 8);
         return;
     }
     case GSP_REGION_PAL_HI: {
-        uint32_t off = byte_addr & (GSP_BOARD_PAL_BYTES - 1u);
+        uint32_t off = gsp_board_palette_index(b, byte_addr) * 2u;
         b->pal_hi[off]     = (uint8_t)(value & 0xffu);
         b->pal_hi[off + 1] = (uint8_t)(value >> 8);
         return;

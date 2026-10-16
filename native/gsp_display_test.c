@@ -384,6 +384,33 @@ static void test_high_row_base(void)
     }
 }
 
+static void test_physical_byte_to_dpyadr(void)
+{
+    stunrun_gsp_display_regs_t regs;
+    unsigned rowaddr = 0, coladdr = 0, yoffset = 0;
+
+    memset(&regs, 0, sizeof(regs));
+    check(stunrun_gsp_display_force_byte_offset(&regs, 0x12C08u),
+          "force framebuffer accepts physical byte 0x12C08");
+    check(regs.dpyadr == 0xFDACu,
+          "physical row 0x25 encodes DPYADR row field as 0xFDAC");
+    check(regs.dpytap == 0x81u,
+          "byte offset 0x408 within row encodes DPYTAP 0x81");
+    check((regs.dpyctl & STUNRUN_DPYCTL_ORG) == 0u,
+          "forced framebuffer uses ORG=0 address complement");
+
+    stunrun_gsp_display_params(&regs, regs.dpyadr, &rowaddr, &coladdr,
+                               &yoffset);
+    check(rowaddr == 0x25u,
+          "encoded DPYADR decodes back to physical VRAM row 0x25");
+    check(stunrun_gsp_display_row_base_word(rowaddr) * 2u == 0x12800u,
+          "decoded row base is physical byte 0x12800");
+
+    check(!stunrun_gsp_display_force_byte_offset(
+              &regs, STUNRUN_GSP_VRAM_WORDS * 2u),
+          "one-past-share byte offset is rejected");
+}
+
 static uint8_t *read_file(const char *path, size_t *size_out)
 {
     FILE *f = fopen(path, "rb");
@@ -526,6 +553,7 @@ int main(void)
     test_mame_recorded_geometry();
     test_synthetic_addressing();
     test_high_row_base();
+    test_physical_byte_to_dpyadr();
     test_mame_capture_fetch();
     test_acceptance();
     printf("gsp-display-slice: %s\n", g_failures == 0 ? "PASS" : "FAIL");

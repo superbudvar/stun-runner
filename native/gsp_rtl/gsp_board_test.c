@@ -418,6 +418,36 @@ static void test_hstdat_dispatches_on_address(void)
     CHECK_EQ(b.vram_writes, vram_before);
 }
 
+/* MAME selects palette banks from the control-high WRITE ADDRESS, not from
+ * the value stored in control_hi[0].  Exercise the address-derived bank via
+ * the same mapped write path the GSP core uses. */
+static void test_palette_bank_comes_from_control_hi_address(void)
+{
+    static gsp_board_t b;
+    gsp_board_reset(&b);
+
+    /* F48000A0 is control-high offset 10: offset&7 == 2 and offset>>3 == 1,
+     * so MAME selects palette-bank bit 0 even though the written data is zero. */
+    gsp_board_write16(&b, 0xf48000a0u, 0x0000u);
+    gsp_board_write16(&b, 0xf5000000u, 0x1234u);
+
+    CHECK_EQ(b.pal_lo[0], 0u);
+    CHECK_EQ(b.pal_lo[1], 0u);
+    CHECK_EQ(b.pal_lo[0x200u], 0x34u);
+    CHECK_EQ(b.pal_lo[0x201u], 0x12u);
+    CHECK_EQ(gsp_board_read16(&b, 0xf5000000u), 0x1234u);
+
+    /* Offset 0x20 has bit value zero and must return to bank zero even when
+     * its register data is nonzero. */
+    gsp_board_write16(&b, 0xf4800020u, 0xffffu);
+    gsp_board_write16(&b, 0xf5000000u, 0x5678u);
+    CHECK_EQ(b.pal_lo[0], 0x78u);
+    CHECK_EQ(b.pal_lo[1], 0x56u);
+    CHECK_EQ(b.pal_lo[0x200u], 0x34u);
+    CHECK_EQ(b.pal_lo[0x201u], 0x12u);
+    CHECK_EQ(gsp_board_read16(&b, 0xf5000000u), 0x5678u);
+}
+
 static void test_host_readback(void)
 {
     static gsp_board_t b;   /* 1.5 MiB model: static, never on the stack */
@@ -466,6 +496,7 @@ int main(void)
     test_hstdat_discards_low_address_bits();
     test_hstctl_increment();
     test_hstdat_dispatches_on_address();
+    test_palette_bank_comes_from_control_hi_address();
     test_host_readback();
     test_region_roundtrip();
 

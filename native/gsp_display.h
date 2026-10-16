@@ -118,6 +118,12 @@ unsigned stunrun_gsp_display_row_base_word(unsigned rowaddr);
  * share with the right units" a checked statement rather than a comment. */
 unsigned stunrun_gsp_display_word_from_bit_address(uint32_t gsp_bit_address);
 
+/* Diagnostic bridge from a physical share byte offset to the TMS34010's
+ * packed DPYADR/DPYTAP refresh registers. `byte_offset` must be in the
+ * 512-KiB share. */
+int stunrun_gsp_display_force_byte_offset(stunrun_gsp_display_regs_t *regs,
+                                          uint32_t byte_offset);
+
 /* gsp_palette_change(): red=(lo>>8)&0xff, green=lo&0xff, blue=hi&0xff.
  * `count` is the number of 16-bit entries in each plane. */
 int stunrun_gsp_display_build_palette(const uint16_t *lo, const uint16_t *hi,

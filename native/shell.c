@@ -758,30 +758,28 @@ static int get_live_gsp_state(musashi_gsp_memory_t *mem,
         }
     }
 
-    /* STUNRUN_FORCE_FRAMEBUF=<hex>: diagnostic scanout of a physical byte offset
-     * in the 512 KiB share. The rasterizer's row base is a uint16 word index:
-     * byte_base = rowaddr << 11. The low address remainder is converted into
-     * DPYTAP (8 display pixels per tap unit). For the $25E8 text target
-     * HSTADR=$FF896040 -> share byte $12C08 -> rowaddr=$25, tap=$81. */
+    /* STUNRUN_FORCE_FRAMEBUF=<hex>: diagnostic scanout of a physical byte
+     * offset in the 512 KiB share. Keep the byte-offset -> packed DPYADR
+     * conversion in gsp_display.c so its row-field encoding is directly tested. */
     {
         static unsigned s_force_row = 0xFFFFu;
         const char *fb = getenv("STUNRUN_FORCE_FRAMEBUF");
         if (fb && fb[0]) {
             char *end = NULL;
             unsigned long v = strtoul(fb, &end, 16);
-            /* v is a physical byte offset; display base is in 16-bit words. */
             if (end != fb && *end == '\0' && v < MUSASHI_GSP_VRAM_WORDS * 2u) {
-                unsigned row = (unsigned)(v >> 11);
-                unsigned row_byte_base = row << 11;
-                if (s_force_row == 0xFFFFu) {
-                    printf("shell: force-framebuf=0x%lX byte-base=0x%lX row=0x%X dpyadr=0x%04X\n",
-                           v, (unsigned long)row_byte_base,
-                           row, (row ^ 0xFFFCu) & 0xFFFFu);
+                unsigned row = (unsigned)(v >> 11u);
+                unsigned row_byte_base = row << 11u;
+                if (stunrun_gsp_display_force_byte_offset(dregs,
+                                                           (uint32_t)v)) {
+                    if (s_force_row == 0xFFFFu) {
+                        printf("shell: force-framebuf=0x%lX byte-base=0x%X "
+                               "row=0x%X dpyadr=0x%04X dpytap=0x%04X\n",
+                               v, row_byte_base, row, dregs->dpyadr,
+                               dregs->dpytap);
+                    }
+                    s_force_row = row;
                 }
-                s_force_row = row;
-                dregs->dpyadr = (uint16_t)((row ^ 0xFFFCu) & 0xFFFFu);
-                dregs->dpytap = (uint16_t)((v - row_byte_base) / 8u);
-                dregs->dpyctl &= ~STUNRUN_DPYCTL_ORG;
             }
         }
     }
