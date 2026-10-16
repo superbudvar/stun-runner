@@ -11238,3 +11238,156 @@ Nothing between `DM($0036)` and the emitted record. The remaining unknowns are
 elsewhere: the caller that fills the ring before `$0514`, the `$0631` tail after
 `$05DC`, and the `> $40` scaled branch of the two helpers. `./run.sh` still
 shows nothing new, because nothing calls this from the native shell yet.
+
+## 72. The ring has four writers and only one of them survives (`alo` / `1fv`)
+
+§69.5 listed "the caller that fills the ring before `$0514`" as unmeasured. It is
+now measured, and the answer is that it is not one routine. Four of them write
+`DM($0040..$0045)`, three of them are entirely overwritten, and the fourth is the
+only thing the emitter ever reads.
+
+**[ROM]** All counts and values below are from
+`reference/experiments/stunrun/adsp-som-transaction-f551-regs/result.json`,
+`transaction.producer_events`, 4009 events, `truncated: false`, transaction sha256
+`c41715380aabbd4e71f46afcda28cbaa0e48828264b9dc5a768a73b4ab238ea4`, frame 551,
+start condition `power_on`, ROM manifest `b3cf2b61…`, machine map `b9106e5c…`,
+MAME `/mnt/build/mame-oracle/mame` sha256 `75b09ee4…`, harness
+`tools/capture-adsp-som-transaction` + `mame/lua/adsp-som-transaction.lua`.
+`DM($0039) = 3`, so the ring length is `2 * 3 = 6` words, matching §68.
+
+### 72.1 The four writers, in the order they execute
+
+The per-record dispatcher is `$01D4`–`$01DC`:
+
+```
+01D2: AR = DM($0039)
+01D3: AF = AR
+01D4: IF EQ JUMP $01DF
+01D5: CALL $04B2            <- pass 1 and pass 2
+01D6: AR = DM($0038)
+01D7: AF = AR
+01D8: IF EQ JUMP $01DB
+01D9: CALL $0663
+01DA: JUMP $01DF
+01DB: CALL $04EB            <- the clamp, then straight into the emitter
+```
+
+Before that dispatcher, `$01A8: CALL $01E8` has already run. Bounding each record's
+window by the *previous* record's `$0515` write — so the leading prologue belongs
+to the record it feeds — counting writes to `DM($0040..$0045)` by PC gives
+**24 writes and a byte-identical histogram in all nine records**:
+
+| PC | count | what |
+|---|---|---|
+| `$01B8` / `$01BA` / `$01BC` | 1 / 1 / 1 | 3 ring words, written by the scan at `$01B0` |
+| `$0201` / `$0206` / `$020F` | 1 / 1 / 1 | 3 ring words, written by routine `$01E8` |
+| `$04C8` / `$04CA` | 3 / 3 | **pass 1**, 6 words |
+| `$04D9` / `$04DC` | 3 / 3 | **pass 2**, 6 words |
+| `$050D` | 6 | **the clamp**, 6 words |
+
+Routine `$01E8` also mirrors its three words into `DM($08E7..$08E9)` at `$0202`,
+`$0207`, `$0210` — 27 writes, nine per record, and those mirrors survive because
+nothing overwrites them. It sources them from the `DM($2000)` word stream
+(`$01EC`, `$01FC`), which is the SIMBUF, i.e. `/MP`, the object ROM. The scan at
+`$01B0` stores its running maximum to `DM($08EA)` at `$01C3` and its iteration
+count to `DM($0039)` at `$01C2`.
+
+Pass 1 runs `CNTR = DM($0039)` iterations of a `DO $04CA UNTIL CE` loop, two words
+per iteration. Pass 2 repeats the shape with `DO $04DC UNTIL CE`, also
+`CNTR = DM($0039)`. The clamp's count is built explicitly: `$0501: SR = ASHIFT AR
+BY 1 (LO)`, `$0502: CNTR = SR0`, which is the ring length doubled — one word per
+iteration instead of two.
+
+### 72.2 Only pass 2 survives
+
+Every one of the three earlier writers is dead in this capture, which is a
+property of the *observed data*, not of the code:
+
+- `$01E8` and `$01B0` together write all six words, and pass 1 overwrites all six.
+- Pass 1 differs from pass 2 in **9 of 9** records, so pass 2 overwrites pass 1.
+- The clamp at `$050D` reproduces pass 2's output **byte for byte in 9 of 9**.
+  Its bounds are `AY0 = 0`, `AY1 = $01FF` (`$0505`, `$0506`), and every pass-1 and
+  pass-2 value observed is already inside `[0, $01FF]`.
+
+Per record, the six words that the `$0514` scan actually reads:
+
+| rec | pass 1 | pass 2 (== what is read) |
+|---|---|---|
+| 0 | `00F4 00FD 00FF 00F6 00FB 0101` | `00F4 009E 00FF 0099 00FB 00A0` |
+| 1 | `0103 0101 00FF 00F6 010A 00FD` | `0103 00A0 00FF 0099 010A 009E` |
+| 2 | `00FB 0101 00FF 00F6 0103 0101` | `00FB 00A0 00FF 0099 0103 00A0` |
+| 3 | `00F2 00F3 00FF 00F6 00F4 00FD` | `00F2 0097 00FF 0099 00F4 009E` |
+| 4 | `010A 00FD 00FF 00F6 010C 00F3` | `010A 009E 00FF 0099 010C 0097` |
+| 5 | `00FF 00E8 00FF 00F6 00F6 00EC` | `00FF 0091 00FF 0099 00F6 0093` |
+| 6 | `010C 00F3 00FF 00F6 0108 00EC` | `010C 0097 00FF 0099 0108 0093` |
+| 7 | `00F6 00EC 00FF 00F6 00F2 00F3` | `00F6 0093 00FF 0099 00F2 0097` |
+| 8 | `00FF 00E8 0108 00EC 00FF 00F6` | `00FF 0091 0108 0093 00FF 0099` |
+
+### 72.3 Our refutation: `$04DD` is a converged epilogue, not a skipped branch
+
+I first read `$04DD` as the target of the untaken `IF EQ JUMP $04DD` at `$04CD`
+and recorded it alongside `$053D` as an unexecuted branch. **That was wrong.**
+`$04DD` executes in 9 of 9 records:
+
+```
+983473 PC04DD R DM[0031]=0001
+983474 PC04DE W DM[2007]=0001      ... x9
+```
+
+`DM($0031)` is read only ever at `$04DD` (9 reads, no other PC), so this is the
+routine's epilogue, not a stray instruction.
+
+The reason is that pass 2's `DO $04DC UNTIL CE` **falls out the bottom** when
+`CNTR` reaches zero instead of branching away, so `$04DD` is reached by ordinary
+fall-through. `$04CD`'s `IF EQ JUMP $04DD` targets the same address, so the
+early-exit path and the normal path converge on one epilogue:
+
+```
+04CB: AR = DM($1FE4)
+04CC: AR = AR
+04CD: IF EQ JUMP $04DD     <- skips pass 2 entirely when DM($1FE4) == 0
+04CE: CNTR = DM($0039)
+     ... pass 2 ...
+04DC: DM(I1,M1) = AR       <- end of loop, falls through
+04DD: AR = DM($0031)       <- shared epilogue
+04DE: DM($2007) = AR
+04DF: RTS
+```
+
+Reading the fall-through as a skipped branch would have produced a routine that
+never returns. `DM($1FE4)` is `$0200` on all nine reads at `$04CB`, so the
+early-exit is genuinely untaken here and the convergence is what keeps the
+routine honest.
+
+### 72.4 Coverage gaps this adds
+
+Two new unexercised paths, both in the same family as `$053D`–`$0541`:
+
+1. **`$04E0`–`$04EA`**, the `IF LE JUMP $04E0` sibling at `$04C3`. Zero events. It
+   is a second interpolation of the same three outputs, but computed differently
+   from the executed `$04C4`–`$04CA` path: `(SS)` scaling followed by
+   `LSHIFT MR BY 9` (`$04E3`, `$04E4`, `$04E7`, `$04E8`) instead of `(RND)` with
+   `MR1 + AY0`. It ends `JUMP $04CA`, so it rejoins the same store.
+2. **The clamp's clamping.** `$050D`'s six writes are no-ops in 9 of 9, so
+   `$050A: IF LT AR = AY0` and `$050C: IF LT AR = AY1` never take either
+   assignment, and neither did they need to.
+
+Pass 1, pass 2, the fall-through epilogue and the clamp loop are all fully
+exercised, so they are the only parts of the ring producer that a C replacement
+can be tested against today.
+
+### 72.5 What a C replacement of the ring producer now needs
+
+Not one routine but a chain, and it drags in the object ROM:
+
+- `DM($2000)` — the SIMBUF `/MP` word stream, read 27 times per transaction at
+  `$04C5` alone. This is the largest new dependency and it is a separate
+  banked buffer, not the `PM` table `som_math` already consumes.
+- `DM($1FE4)`, `DM($1FE5)` — the pass-2 guard and one of its multipliers.
+- `DM($0928)` — pass 1's `I0` base.
+- `DM($08EA)`, `DM($08E7..$08E9)`, `DM($0039)`, `DM($0031)`, `DM($2007)` — loop
+  counts, the scan's running maximum, and the `$01E8` mirrors.
+
+Recommended order, now that the shape is known: pass 2 first (it is the only
+output the emitter reads, and it is fully exercised), then pass 1, then the
+`$01E8` mirrors as a separate slice, and only then the object ROM itself.

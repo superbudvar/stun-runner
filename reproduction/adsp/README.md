@@ -41,6 +41,32 @@ Two coverage gaps, both deliberate and recorded in findings §71:
 
 The DM window is a capture limit: a read outside it fails rather than guessing.
 
+## What fills the ring (identified, not transcribed)
+
+Findings §72 answers §69.5's open item — "the caller that fills the ring before
+`$0514`". It is not one routine. Four of them write `DM($0040..$0045)` per
+record, and the capture shows a byte-identical 24-write histogram in all nine:
+
+| writer | writes | survives to the emitter? |
+|---|---|---|
+| routine `$01E8` (`$0201`/`$0206`/`$020F`) | 3 words | no — overwritten by pass 1 |
+| scan at `$01B0` (`$01B8`/`$01BA`/`$01BC`) | 3 words | no — overwritten by pass 1 |
+| pass 1 of `$04B2` (`$04C8`/`$04CA`) | 6 words | no — differs from pass 2 in 9/9 |
+| pass 2 of `$04B2` (`$04D9`/`$04DC`) | 6 words | **yes** |
+| clamp of `$04EB` (`$050D`) | 6 words | byte-identical to pass 2 in 9/9 |
+
+**No C slice exists for any of this yet.** Nothing under `reproduction/adsp/`
+computes the ring; `som_walk.c` is still fed the ring as an input, which is what
+makes `stunrun_adsp_som_derive_record` an entry point with no measured input.
+
+Pass 2 is the right first slice: it is the only output the emitter reads and it is
+fully exercised. Its blockers are the SIMBUF word stream at `DM($2000)` — the
+object ROM on `/MP`, read 27 times per transaction at `$04C5` alone — and the
+`DM($1FE4)` guard and `DM($1FE5)` multiplier. Recorded as two further unexercised
+paths in §72.4: `$04E0`-`$04EA` (the `IF LE` sibling, which scales by `LSHIFT 9`
+where the executed path uses `(RND)`) and the clamp's two assignments, which never
+fire because no observed value leaves `[0, $01FF]`.
+
 ## SOM record emitter (`som_record.c`)
 
 `som_record.c` transcribes the output sequence of the SOM record emitter at ADSP
