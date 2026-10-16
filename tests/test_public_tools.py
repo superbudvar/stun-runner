@@ -1852,5 +1852,73 @@ class AdspSomFixtureCheckTests(unittest.TestCase):
         self.assertIn("missing", r.stderr)
 
 
+class MameCfgIsolationTests(unittest.TestCase):
+    """tools/mame-memory-snapshot must not share a cfg directory between runs.
+
+    MAME writes stunrun.cfg at exit including current input-port (DIP) state,
+    and -noreadconfig does not prevent the next run reading it back. With one
+    shared cfg directory, a run that toggles a DIP -- service_probe presses
+    "Service Mode" on :mainpcb:IN0 -- silently forced that DIP off in every
+    later run: main RAM stayed all-0xFF, the exit status was 0 and the tool
+    reported success. Measured against the pinned oracle: the reference
+    capture returned nonzero=1536 (all 0xFF) after contamination and nonzero=1262
+    after the cfg was deleted. See findings section 74.
+
+    These are source-level guards because the bug needs a real MAME run to
+    reproduce, and the public suite is ROM-free by rule.
+    """
+
+    TOOL = ROOT / "tools" / "mame-memory-snapshot"
+
+    def test_tool_exists(self):
+        self.assertTrue(self.TOOL.is_file())
+
+    def test_cfg_directory_is_not_a_shared_hardcoded_path(self):
+        """A fixed -cfg_directory is the bug itself; it must be unique per run."""
+        text = self.TOOL.read_text()
+        offenders = [
+            line.strip() for line in text.splitlines()
+            if "-cfg_directory" in line and "/tmp/stunrun-mame-cfg" in line
+        ]
+        self.assertEqual(
+            offenders, [],
+            "cfg directory must not be a shared fixed path: %s" % offenders)
+
+    def test_cfg_directory_is_created_per_run(self):
+        text = self.TOOL.read_text()
+        self.assertIn("tempfile.mkdtemp(prefix=", text,
+                      "cfg directory must be created uniquely per invocation")
+        self.assertIn('"cfg_directory": str(cfg_directory)', text,
+                      "result must record the cfg directory for provenance")
+        self.assertIn('"cfg_directory_isolated": True', text)
+
+    def test_cfg_directory_is_cleaned_up(self):
+        text = self.TOOL.read_text()
+        self.assertIn("shutil.rmtree(cfg_directory, ignore_errors=True)", text,
+                      "per-run cfg directory must be removed in the finally block")
+
+
+class GeometryFixtureCommittabilityTests(unittest.TestCase):
+    """The road twin-buffer capture is ROM content and must not be committed.
+
+    A capture of maincpu 0xFF9584/0xFF9884 is a near-verbatim copy of a ROM
+    slot: words 0-359 bit-identical to 0x044930-0x044B2E in the attract state,
+    and 384/384 verbatim in the gameplay state. It looked like a committable
+    regression fixture; it is not, and quietly committing it would have put
+    commercial ROM into the tree. See findings section 74.
+    """
+
+    def test_no_road_twin_binary_is_committed(self):
+        for path in (ROOT / "reference").rglob("road-twin*.bin"):
+            self.fail("ROM-derived road buffer is committed: %s" % path)
+
+    def test_export_tool_still_exports_on_demand(self):
+        """The export path stays: it is correct, it just may not be committed."""
+        tool = ROOT / "tools" / "export-geometry-native-state"
+        self.assertTrue(tool.is_file())
+        self.assertIn("road-buffer twin mismatch", tool.read_text(),
+                      "the twin-equality guard must remain")
+
+
 if __name__ == "__main__":
     unittest.main()

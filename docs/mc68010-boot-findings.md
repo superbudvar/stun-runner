@@ -11507,3 +11507,112 @@ also share a column centre, so there is no x-axis evidence either.
 Catching it needs per-span discrimination, which this check does not do. It is
 noted in `adsp_som_view_test.c` next to the check so the next reader does not
 mistake the passing control for a covered one.
+
+## 74. The road twin buffer is ROM, and the capture tool leaked DIP state
+
+This section records two findings from an attempt to give the 68010 geometry
+work a visible fixture. The fixture was not built. What came out of the attempt
+was worth more.
+
+### 74.1 A captured work-RAM buffer is a verbatim copy of a ROM slot
+
+**Question.** Could `stunrun_geom_upload`'s 384-word march table be committed as
+a regression fixture, the way the SOM capture was?
+
+**Answer: no.** `geom_upload.h` already records that the upload "matches work RAM
+verbatim, 768/768 bytes at both `0xFF9584` and `0xFF9884`". That fidelity is the
+problem — the buffer is mostly ROM that the 68010 copied there.
+
+Measured by reading ROM through the emulator, never by reading chip files:
+
+```
+tools/mame-memory-snapshot roms /tmp/q1/rom-40000 \
+  --device :mainpcb:maincpu --space program \
+  --base 0x40000 --count 0x3000 --width 16 --address-stride 2 \
+  --frames 1300 --targets 600,1200,1300 --input none --nothrottle \
+  --mame /mnt/build/mame-oracle/mame
+```
+
+`--width 16 --address-stride 2` is the only faithful read: the 68010 has a
+16-bit bus and fetches big-endian words at even addresses, and `--width 32`
+would synthesize an unaligned fetch the CPU cannot perform.
+
+| captured state | ROM slot | words matching |
+|---|---:|---:|
+| frame 1200, attract | `0x044930` | **360 / 384** |
+| frame 3600, course 1 | `0x044630` | **384 / 384** |
+
+In the attract capture only the final 48 bytes (words 360-383) differ, which
+independently corroborates `analysis/track-storage.md`. In the gameplay capture
+nothing differs at all. **So there is no version of this fixture that is safe to
+commit** — driven or not, and no better capture to go looking for. A regression
+guard here has to be a sha256 or a hand-derived delta, not the bytes.
+
+A previous session's note that the buffer's head words matched a march at
+`0x44630` was true but attributed to the wrong slot: `0x044630` and `0x044930`
+share their first 24 words, which is what made eight head words look like a
+match. `0x44630` remains a legitimate course-0 base per `geom_upload.h`.
+
+Added `GeometryFixtureCommittabilityTests` so a `road-twin*.bin` appearing under
+`reference/` fails the public suite rather than the review that missed it.
+
+**Bank state was established, not assumed:** a throwaway Lua probe compared
+`space.read_u16` against `memory.regions[":mainpcb:maincpu"].read_u16` over all
+384 words at ten frames spanning attract and gameplay — 384/384 identical at
+every probe, so no bank remaps that window.
+
+### 74.2 `tools/mame-memory-snapshot` leaked input-port state between runs
+
+**This is the bug worth having found.** The tool hardcoded
+`-cfg_directory /tmp/stunrun-mame-cfg`. MAME writes `stunrun.cfg` there at exit
+**including current DIP-switch state**, and `-noreadconfig` does not stop the
+*next* run from reading it back.
+
+A run whose schedule presses "Service Mode" on `:mainpcb:IN0` — that is what
+`--input service_probe` does — persisted
+
+```xml
+<input>
+    <port tag=":mainpcb:IN0" type="DIPSWITCH" mask="32" defvalue="32" value="0" />
+</input>
+```
+
+so every later run started with that DIP forced **off**. Main RAM then stayed
+all-`0xFF`, the exit status was still 0, and the tool reported success. An entire
+input-mode sweep was corrupted by this and read as a set of clean null results.
+
+Measured against the pinned oracle, same command line, the only difference being
+whether a `service_probe` run preceded it:
+
+| | nonzero bytes in the 1536-byte capture | |
+|---|---:|---|
+| reference capture, clean cfg | 1262 | correct |
+| reference capture, contaminated | **1536 (all `0xFF`)** | silently wrong, rc=0 |
+| reference capture, after the fix | 1262 | correct |
+
+Each run now gets its own `tempfile.mkdtemp()` cfg directory, removed in the
+`finally` block, and the path is recorded in `result.json` for provenance.
+Guarded by `MameCfgIsolationTests`.
+
+**The general lesson is trap 4 wearing a disguise.** Trap 4 says scripted input
+is nondeterministic and to run five times. This was the opposite: perfectly
+reproducible, five times identical, and consistently wrong — because the
+corruption was in the emulator's *persisted state*, not its scheduling. Five
+identical wrong answers looked exactly like five correct ones. The only thing
+that caught it was comparing against a capture whose provenance was already
+trusted.
+
+### 74.3 `drive_hold` never starts the game
+
+`--input drive_hold` is two events, both at frame 2: AD Stick X = 220 and P1
+Button 1 pressed. No coin, no start. Frame 1200 under it is the **attract**
+state, and its road buffer is byte-identical to an `--input none` run. A
+reproduction checked against it would be checked against an attract upload, not
+a driven race.
+
+`--input course_sweep` does reach gameplay: the course word at `0xFF9578/79`
+becomes nonzero (value 1) at frame **3207**, and at frame 3600 the twin buffer
+reproduces 5/5 across five MAME processes. Its sha256 is
+`dda9cba51823fb32da9bc1551288589f0f15a3fce1f938c9ea290b84b4f7a648` — and per
+§74.1 that buffer is 384/384 verbatim ROM, so it is recorded here as a number
+and deliberately not as a file.

@@ -70,8 +70,17 @@ def main() -> int:
         playback = args.playback.resolve()
         if args.input != "none":
             parser.error("--playback requires --input none")
+    # Per-run cfg directory.  MAME writes stunrun.cfg there at exit INCLUDING
+    # current input-port (DIP switch) state, and -noreadconfig does not stop it
+    # from being READ on the next run.  A shared /tmp/stunrun-mame-cfg meant one
+    # run that toggled a DIP -- service_probe presses "Service Mode" on
+    # :mainpcb:IN0 -- silently forced that DIP off in every later run: main RAM
+    # stayed all-0xFF and the tool still reported success.  Observed directly
+    # while sweeping input modes; it corrupts a whole sweep and looks like a
+    # clean null result.  See docs/mc68010-boot-findings.md section 74.
+    cfg_directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-mame-cfg-"))
     config_args = ["-noreadconfig", "-nowriteconfig",
-                   "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save"]
+                   "-cfg_directory", str(cfg_directory), "-nonvram_save"]
     if args.nvram_directory:
         config_args += ["-nvram_directory", str(args.nvram_directory)]
         config_args.remove("-nonvram_save")
@@ -124,6 +133,15 @@ def main() -> int:
     finally:
         if state_stage is not None:
             shutil.rmtree(state_stage, ignore_errors=True)
+        # The per-run cfg directory held this run's input-port state. Leaving
+        # it behind would be harmless now that the path is unique, but the
+        # stale /tmp/stunrun-mame-cfg from older versions is NOT: remove it so
+        # a contaminated file cannot be inherited by a later tool that still
+        # points there.
+        shutil.rmtree(cfg_directory, ignore_errors=True)
+        stale_cfg = pathlib.Path("/tmp/stunrun-mame-cfg")
+        if stale_cfg.is_dir() and not any(stale_cfg.iterdir()):
+            stale_cfg.rmdir()
     matches = MARKER.findall(text)
     expected = [int(value) for value in targets.split(',')]
     snapshots = []
@@ -162,6 +180,10 @@ def main() -> int:
         "save_state": str(args.save_state) if args.save_state else None,
         "load_state": str(args.load_state) if args.load_state else None,
         "nvram_directory": str(args.nvram_directory) if args.nvram_directory else None,
+        # Recorded for provenance: it was unique per run, so no input-port
+        # state carried between captures. See section 74.
+        "cfg_directory": str(cfg_directory),
+        "cfg_directory_isolated": True,
         "returncode": completed.returncode,
         "lua_errors": lua_errors,
         "snapshots": [{"frame": item["frame"], "sha256": item["sha256"],
