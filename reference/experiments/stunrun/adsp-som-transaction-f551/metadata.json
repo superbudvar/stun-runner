@@ -55,11 +55,12 @@
     }
   },
   "adsp_program_snapshot": {
-    "path": "tools/mame-adsp-program-dump at frame 600 (local capture /tmp/opencode/adsp-prog600)",
+    "path": "tools/mame-adsp-program-dump at frames 551 and 600 (local captures /tmp/opencode/adsp-prog551 and /tmp/opencode/adsp-prog600)",
     "mame_binary_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
-    "program_image_sha256": "b8c2d2594d609a110a26a47aa2cad11f8db3783643a5e3fb49b1897660051c02",
+    "frame_551_program_image_sha256": "dad3638678bab3045f6bb198a17a5a7207efdc7ca858a95ef0a99e3ed08d4367",
+    "frame_600_program_image_sha256": "b8c2d2594d609a110a26a47aa2cad11f8db3783643a5e3fb49b1897660051c02",
     "pm_words": {"0x103B": "0x00199900", "0x103D": "0x00124900"},
-    "interpretation": "24-bit PM values in 32-bit MAME containers; low branch read MY0 from bits 23:8 at base 0x1036 plus selector. This is separate from the SOM transaction capture but same frozen MAME binary and ROM manifest."
+    "interpretation": "24-bit PM values in 32-bit MAME containers; low branch reads MY0 from bits 23:8 at base 0x1036 plus selector. These PM cells match at frames 551 and 600 and the transaction's MY0 register snapshots confirm them. The full PM images differ by 2748 bytes, so whole-image stability is not claimed."
   },
   "math_vectors": [
     {

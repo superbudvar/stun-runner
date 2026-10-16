@@ -10714,11 +10714,13 @@ same-run capture records the DM samples, register snapshots, and output writes:
 
 The ADSP listing for both sites executes `MR = AR * MY0 (SU)`. Both captured
 outputs equal the low 32 bits of `2 * signed_AR * unsigned_MY0` exactly. The
-PM table values are separately captured from the same frozen MAME binary's
-frame-600 ADSP image (`PM[$103D]=$00124900`, `PM[$103B]=$00199900`; program
-image sha256 `b8c2d2594d609a110a26a47aa2cad11f8db3783643a5e3fb49b1897660051c02`).
-The C test supplies these PM words and DM samples as inputs; it calculates, it
-does not look up the expected SOM outputs.
+PM cells are captured by `tools/mame-adsp-program-dump` at frames 551 and 600
+from the same frozen MAME binary: `PM[$103D]=$00124900`, `PM[$103B]=$00199900`;
+bits 23:8 supply the `MY0` values in the transaction. The whole program images
+differ by 2748 bytes between those checkpoints, so this finding promotes only
+the two matching cells (corroborated by the same-run `MY0` register snapshots),
+not whole-image stability. The C test supplies the PM words and DM samples as
+inputs; it calculates, it does not look up expected SOM outputs.
 
 ### 64.2 The first C slice
 
@@ -10736,3 +10738,36 @@ ADSP emulator. The `AR > $40` scaling branch remains unimplemented. The next
 slice is that branch and its MR-to-SR shift, followed by the caller-level
 routine's comparison against the captured SOM sequence. The 146-word
 transaction remains the acceptance oracle, not the GSP's eventual pixels.
+
+## 65. Same transaction recaptured with caller/helper register snapshots
+
+The capture harness was extended to record the ADSP register file at memory
+accesses in `$FFF514-$FFF5D4` and `$FFF5DD-$FFF630`, while still capturing the
+same no-input SOMCLK-to-GINT transaction. The expanded result is
+`reference/experiments/stunrun/adsp-som-transaction-f551-regs/result.json`.
+
+It contains 576 register snapshots, including 464 in the caller range and the
+two interpolation-helper ranges. This exposed the full setup around the two
+tested multiply vectors:
+
+* At `$05ED/$05EF`, `I0=$45`, `I2=$43`, `M6=$07`, `MY0=$1249`; the reads are
+  DM `$44=$00FB`, `$42=$00FF`, and the result stores `$6DB8/$FFFF` at `$003E/$003F`.
+* At `$0617/$0619`, `I4=$41`, `I1=$43`, `M6=$05`, `MY0=$1999`; the reads are
+  DM `$40=$00F4`, `$42=$00FF`, and the result stores `$CCDA/$FFFD` at `$003C/$003D`.
+
+The new run's SOM words and all 4,009 producer events are exactly equal to the
+base frame-551 capture after removing the added register fields. This is a
+second no-input MAME observation of the same transaction, not the scripted
+service_f2 arm that failed to reproduce in §62.
+
+The attempted ADSP program-space read tap still records **zero** PM lookups. The
+PM table values used in the C test are therefore independently sourced from the
+frame-551/frame-600 ADSP program snapshots (metadata records both image hashes)
+and corroborated by `MY0` in the same-run live register snapshots. No claim is
+made that the whole program image is static: the two captured images differ by
+2,748 bytes, while these two table words match.
+
+Next C slice: implement more of the caller around `$0514-$05D4` using these
+register/input snapshots, and compare its complete 146 SOMLATCH words against
+the captured stream. The current multiply kernel is only one mathematical
+operation and remains uncalled by `./run.sh`.

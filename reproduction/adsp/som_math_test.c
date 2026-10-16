@@ -2,8 +2,8 @@
  *
  * DM operands, selector AR, MY0, and MR results come from the same-run capture
  * reference/experiments/stunrun/adsp-som-transaction-f551/result.json. The PM
- * lookup words are from the MAME oracle's frame-600 ADSP program snapshot
- * (image SHA-256 b8c2d2594d609a110a26a47aa2cad11f8db3783643a5e3fb49b1897660051c02):
+ * lookup words are from MAME oracle ADSP program snapshots at frames 551 and
+ * 600 (image SHA-256 values are in the adjacent metadata):
  * PM[$103D]=$00124900 -> MY0=$1249; PM[$103B]=$00199900 -> MY0=$1999.
  * The outputs match the observed stores at PC=$05F2/$05F3 and $061C/$061D.
  */

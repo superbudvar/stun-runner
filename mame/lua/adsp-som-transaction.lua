@@ -23,12 +23,13 @@ local tx_end_seq = nil
 local taps = {} -- retain the tap objects; Lua GC otherwise removes them
 local snapshot_regs = {
     'AR', 'AF', 'AX0', 'AX1', 'AY0', 'AY1', 'MY0', 'MR0', 'MR1', 'MR2',
-    'SR', 'SI', 'SE', 'I0', 'I1', 'I2', 'I3', 'I4', 'I5', 'I6',
-    'M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'L0', 'L1', 'L2', 'L3',
+    'SR', 'SI', 'SE', 'I0', 'I1', 'I2', 'I3', 'I4', 'I5', 'I6', 'I7',
+    'M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7',
+    'L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'CNTR',
 }
 
 local function snapshot_suffix(device, pc)
-    if not ((pc >= 0x0570 and pc <= 0x0580) or
+    if not ((pc >= 0x0514 and pc <= 0x05d4) or
             (pc >= 0x05dd and pc <= 0x0630)) then return '' end
     local parts = {}
     for _, name in ipairs(snapshot_regs) do
