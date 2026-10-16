@@ -31,7 +31,7 @@ entry pointers for all nine records. The coefficient table at `PM[$1036 + n]` is
 exactly `floor($8000/n)` for `n = 1..$40` and zero at `n = 0`, byte-identical at
 frames 551 and 600 — so each helper divides by its own side's extent.
 
-Two coverage gaps, both deliberate and recorded in findings §69:
+Two coverage gaps, both deliberate and recorded in findings §71:
 
 - `$053D` has **zero** reads across the whole capture, so the `$053D`-`$0541`
   block (the `I2` comparison, its `IF LT` guard, and the `I2 = I3` update) is
