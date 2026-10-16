@@ -118,5 +118,87 @@
     ],
     "program_space_lookup_events": 0,
     "same_as_base_capture": "SOM word vector identical; ADSP producer-event stream identical when removing register snapshot fields."
+  },
+  "derived_record_layout": {
+    "note": "Interpretation of the raw producer_events stream, not raw evidence. Every SOMLATCH word in this capture is attributed to the ADSP program counter that latched it.",
+    "see": "docs/mc68010-boot-findings.md section 66",
+    "transaction_envelope": {
+      "0x0034": "SOMCLK DM($2003) = $0000, resets the SOM word pointer",
+      "0x0035": "SOMLATCH word 0 = $0000 (AR still $0000)",
+      "0x0039": "SOMLATCH word 1 = $0000 (AR still $0000)",
+      "0x0834": "calls the record emitter",
+      "0x004C": "GINT DM($2006) = $0045"
+    },
+    "record_word_offsets": [
+      2,
+      18,
+      34,
+      50,
+      66,
+      82,
+      98,
+      114,
+      130
+    ],
+    "record_layout_words": [
+      {
+        "pc": "0x0515",
+        "role": "control",
+        "source": "AR = DM($0036)"
+      },
+      {
+        "pc": "0x0565",
+        "role": "start_x",
+        "source": "AR = DM(I1,M1)"
+      },
+      {
+        "pc": "0x0567",
+        "role": "delta_x",
+        "source": "AR = DM(I2,M2)"
+      },
+      {
+        "pc": "0x056B",
+        "role": "start_y",
+        "source": "AX1 = DM(I0,M0)"
+      },
+      {
+        "pc": "0x0580/0x05A0/0x05BA",
+        "role": "span",
+        "source": "five words: DM($003E), DM($003F), DM($003C), DM($003D), run length"
+      },
+      {
+        "pc": "0x05D2",
+        "role": "terminator",
+        "source": "AR = $FFFF"
+      },
+      {
+        "pc": "0x05D4",
+        "role": "terminator",
+        "source": "AR = $FFFF"
+      }
+    ],
+    "spans_per_record": [
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "span_branch_histogram": {
+      "0x05A0 (AY1 > AY0)": 4,
+      "0x05BA (AY1 < AY0)": 4,
+      "0x0580 (AY1 == AY0)": 10
+    },
+    "span_run_length_rule": "min(AY0,AY1) - AX1 + 1, verified against all 18 captured spans",
+    "guard_levels": {
+      "prologue": "$0574/$0577 use IF LE; AY0 and AY1 must be strictly greater than AX1",
+      "loop_tails": "$0594/$059A/$05B4/$05CE use IF LT; equality is legal, and record 2's second span has AY0 == AY1 == AX1 with run length 1",
+      "asymmetry": "only $059A re-checks AY0; the $0595 and $05CF tails return to $0579 without it"
+    },
+    "limitation": "All nine records latch DM(I1,M1) and DM(I2,M2) to equal values, so start_x and delta_x cannot be distinguished by value from this capture; only the per-word program-counter attribution pins their order."
   }
 }

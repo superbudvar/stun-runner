@@ -430,6 +430,15 @@ target_include_directories(stunrun-adsp-som-math-slice-test PRIVATE
   ../reproduction/adsp)
 set_target_properties(stunrun-adsp-som-math-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME adsp-som-math-slice-c COMMAND stunrun-adsp-som-math-slice-test)
+# SOM record output sequence from the captured $0515-$05D4 emitter: header,
+# variable five-word spans, $FFFF terminator. Span contents are inputs here.
+add_executable(stunrun-adsp-som-record-slice-test
+  ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_record_test.c)
+target_include_directories(stunrun-adsp-som-record-slice-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-som-record-slice-test PROPERTIES C_STANDARD 99)
+add_test(NAME adsp-som-record-slice-c COMMAND stunrun-adsp-som-record-slice-test)
 # GSP record control-word dispatch from the race-1800 walk decode: bit 15
 # skips, bit 12 takes the perspective-sprite path, else the FILL worker.
 if(EXISTS ../reproduction/gsp/record_dispatch.c)

@@ -10771,3 +10771,102 @@ Next C slice: implement more of the caller around `$0514-$05D4` using these
 register/input snapshots, and compare its complete 146 SOMLATCH words against
 the captured stream. The current multiply kernel is only one mathematical
 operation and remains uncalled by `./run.sh`.
+
+## 66. SOM record layout decoded from the ADSP emitter (`alo` / `1fv`)
+
+The transaction captured in §64 is fully attributable: the capture records the
+ADSP program counter for every one of the 146 SOMLATCH words, so the whole
+stream can be split by which instruction latched each word.
+
+### 66.1 Transaction envelope
+
+```text
+$0033/$0034  AR = $0000 ; DM($2003) = AR    SOMCLK, resets the SOM word pointer
+$0035        DM($2002) = AR                word 0 = $0000
+$0039        DM($2002) = AR                word 1 = $0000
+$003D/$003E  CALL $0780 / CALL $0834        $0834 runs the record emitter
+   ...       9 records, 16 words each      $0515 .. $05D4
+$004C        DM($2006) = AX0                GINT, value $0045
+```
+
+`AR` is still `$0000` at both prologue writes, which is why the first two words
+are zero. Record boundaries therefore fall at SOM word offsets 2, 18, 34, 50,
+66, 82, 98, 114, 130 — sixteen words each.
+
+### 66.2 One record
+
+```text
+$0515  control    AR  = DM($0036)          -> $0030 in all nine records
+$0565  start_x    AR  = DM(I1,M1)
+$0567  delta_x    AR  = DM(I2,M2)
+$056B  start_y    AX1 = DM(I0,M0)
+       span       AX0 = DM($003E)           side value, low word
+       span       AX0 = DM($003F)           side value, high word
+       span       AX0 = DM($003C)           other side, low word
+       span       AX0 = DM($003D)           other side, high word
+       span       DM($2002) = AR            run length in rows
+$05D2  DM($2002) = $FFFF
+$05D4  DM($2002) = $FFFF
+```
+
+Four header words, **N** five-word spans, two `$FFFF` terminator words. All nine
+captured records carry two spans, but the count is a loop bound and not fixed.
+
+The two 32-bit side values are not arbitrary: they are what `$05DD` and `$0607`
+leave in `DM($003E)/DM($003F)` and `DM($003C)/DM($003D)`, i.e. the outputs of the
+interpolation helper already ported as `som_math.c`.
+
+### 66.3 The three span branches all compute one run length
+
+The loop body at `$0579` picks a branch on `AY1 - AY0`:
+
+| branch | condition | instruction | run length |
+|---|---|---|---|
+| `$059D` | `AY1 >  AY0` | `AF = AY0 - AX1` | `AY0 - AX1 + 1` |
+| `$057D` | `AY1 == AY0` | `AF = AY1 - AX1` | `AY1 - AX1 + 1` |
+| `$05B7` | `AY1 <  AY0` | `AF = AY1 - AX1` | `AY1 - AX1 + 1` |
+
+All three reduce to `min(AY0,AY1) - AX1 + 1` over unsigned 16-bit arithmetic.
+Checked against all eighteen captured spans: **18/18 exact, no mismatches.** The
+capture exercises all three branch forms (`$05A0` four times, `$05BA` four
+times, `$0580` ten times).
+
+### 66.4 Guard levels are not uniform, and the capture proves it
+
+The `$0574`/`$0577` prologue guards use `IF LE`, while every loop tail
+(`$0594`, `$059A`, `$05B4`, `$05CE`) uses `IF LT`. The difference is observable:
+record 2's second span has `AY0 == AY1 == AX1 == $00A0` and still emits a span
+with run length 1, which the `IF LE` prologue would have rejected.
+
+A second asymmetry: every tail checks `AY1`, but only `$059A` checks `AY0`. The
+`$0595` and `$05CF` tails jump back to `$0579` without re-checking `AY0`. So
+`AY0 >= AX1` is a conservative precondition, not a property of every path.
+
+### 66.5 The second C slice
+
+`reproduction/adsp/som_record.{h,c}` implements the output sequence: header
+order, the three-way run-length branch, the two guard levels, the five-word span
+layout, and the `$FFFF $FFFF` terminator. The test reassembles all 146 captured
+words from the nine measured records and `memcmp`s them against the capture.
+
+Fourteen rebuilt negative controls all fail and the restored code passes:
+swapping the `DM($003E)`/`DM($003C)` pair, swapping either pair's low/high
+halves, using `max` instead of `min`, dropping the `+1`, swapping header words,
+swapping `control` and `start_y`, emitting one terminator word, using a
+non-`$FFFF` terminator, emitting the terminator before the spans, applying
+either guard level to the wrong position, misreporting the word count, and
+writing a partial record when a guard fails.
+
+### 66.6 What this does not establish
+
+- **Header word order is not discriminated by the capture.** All nine records
+  latch `DM(I1,M1)` and `DM(I2,M2)` to equal values, so `start_x` and `delta_x`
+  are indistinguishable by value. The capture pins only the attribution (word 1
+  at `$0565`, word 2 at `$0567`). The order rests on the disassembly, and the
+  test carries a clearly-labelled synthetic record to stop a swap passing
+  silently. This is a limit of the fixture, not a finding about the hardware.
+- The **span list is an input**. This slice does not model the index/modifier
+  walk (`$0550`-`$0563`) that chooses the spans, nor the loop bound at
+  `$058E`/`$05AE`/`$05C7`. That is the next slice.
+- No field is given a geometric meaning. "Run length in rows" describes what the
+  instruction computes, not what a GSP primitive does with it.

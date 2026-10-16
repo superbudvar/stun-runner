@@ -1,8 +1,30 @@
 # ADSP replacement image
 
-## First SOM math kernel (q9t / 1fv)
+## SOM record emitter (`som_record.c`)
 
-`som_math.c` is the first small C transcription of an ADSP operation observed in
+`som_record.c` transcribes the output sequence of the SOM record emitter at ADSP
+PCs `$0515`-`$05D4`. Each record is four header words (`control`, `start_x`,
+`delta_x`, `start_y`), then **N** five-word spans, then a two-word `$FFFF`
+terminator. A span is `DM($003E)`, `DM($003F)`, `DM($003C)`, `DM($003D)`, then a
+run length. All three span branches (`$059D`, `$057D`, `$05B7`) reduce to
+`min(AY0,AY1) - AX1 + 1`, verified against all eighteen spans in the capture.
+
+`adsp-som-record-slice-c` reassembles the complete captured 146-word transaction
+from the nine measured records and compares it word for word with
+`reference/experiments/stunrun/adsp-som-transaction-f551/result.json`. Fourteen
+rebuilt negative controls fail.
+
+Scope limits, all deliberate: the **span list is an input** — this file does not
+model the index/modifier walk at `$0550`-`$0563` that chooses the spans, nor the
+loop bound. The two 32-bit side values per span are the outputs `som_math.c`
+computes, not a lookup table. No field is given a geometric meaning, and the
+header word order is not discriminated by the capture (all nine records latch
+`DM(I1,M1)` and `DM(I2,M2)` to equal values), so that order rests on the
+disassembly and is pinned by a labelled synthetic vector.
+
+## First SOM math kernel (`som_math.c`)
+
+`som_math.c` is a small C transcription of an ADSP operation observed in
 the SOM producer: the low-index branch of the interpolation helper at ADSP PCs
 `$05DD` / `$0607`. It looks up `MY0` from PM, reads the two DM samples selected
 by its caller's I registers, forms the signed 16-bit difference, executes
