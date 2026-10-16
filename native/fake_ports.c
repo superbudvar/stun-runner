@@ -134,6 +134,24 @@ int stunrun_port_write(stunrun_fake_ports_t *ports, stunrun_port_id_t id,
     return 1;
 }
 
+int stunrun_port_set_active_low(stunrun_fake_ports_t *ports,
+                                stunrun_port_id_t id, uint16_t mask,
+                                int pressed)
+{
+    uint16_t value;
+
+    if (ports == NULL || mask == 0u ||
+        (id != STUNRUN_PORT_MAIN_IN0 && id != STUNRUN_PORT_MAIN_A800) ||
+        (id == STUNRUN_PORT_MAIN_IN0 && (mask & 0xff00u) != 0u))
+        return 0;
+
+    value = (uint16_t)ports->values[id];
+    value = pressed ? (uint16_t)(value & (uint16_t)~mask)
+                    : (uint16_t)(value | mask);
+    ports->values[id] = value;
+    return 1;
+}
+
 static stunrun_port_id_t named_port_id(const char *port, const char *field)
 {
     stunrun_port_id_t id;

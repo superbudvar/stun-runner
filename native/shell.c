@@ -12,12 +12,12 @@
  *   dispatched at their frames as telemetry. Only the "frame" expect kind
  *   runs; "bounded_observation" is refused with a clear message.
  *
- * Inputs have no consumer model yet (the shell owns no game state by
- * design), so dispatch logging IS the replay plumbing being proven here:
- * file -> strict parse -> deterministic frame dispatch. Whole-run
- * contracts (control tally, title counts) are 600-frame title-path facts
- * and assert only when the terminal frame is 600; shorter/longer runs log
- * them as skipped instead of failing on unestablished ground.
+ * Scripted experiment inputs are dispatched into the native port model at
+ * their recorded frames. In unbounded interactive video mode, SDL keyboard
+ * events also drive the MAME-supported coin/start/button bits. Whole-run
+ * contracts (control tally, title counts) are 600-frame title-path facts and
+ * assert only when the terminal frame is 600; shorter/longer runs log them as
+ * skipped instead of failing on unestablished ground.
  *
  * Anchors (see the slice headers for full provenance):
  * - frame 1:   6502 startup response 0xFF at $2A02 (sound-boundary-tap)
@@ -1015,6 +1015,93 @@ static void dispatch_inputs(stunrun_fake_ports_t *ports)
     }
 }
 
+typedef struct shell_keyboard_binding {
+    SDL_Keycode key;
+    stunrun_port_id_t port;
+    uint16_t mask;
+    uint32_t state_bit;
+    const char *name;
+} shell_keyboard_binding_t;
+
+/* Only fields in MAME's INPUT_PORTS_START(stunrun) are mapped here. The
+ * manual's left/right service triggers use additional /SW2 lines whose bit
+ * positions are not represented by MAME's current a80000 map; do not guess
+ * those positions. */
+static const shell_keyboard_binding_t k_keyboard_bindings[] = {
+    { SDLK_5, STUNRUN_PORT_MAIN_IN0, 0x0080u, 1u << 0, "Coin 1" },
+    { SDLK_6, STUNRUN_PORT_MAIN_IN0, 0x0040u, 1u << 1, "Coin 2" },
+    { SDLK_RETURN, STUNRUN_PORT_MAIN_A800, 0x0004u, 1u << 2, "Start" },
+    { SDLK_SPACE, STUNRUN_PORT_MAIN_A800, 0x0001u, 1u << 3, "Button 1" },
+    { SDLK_x, STUNRUN_PORT_MAIN_A800, 0x0002u, 1u << 4, "Button 2" },
+};
+
+static SDL_Keycode normalize_keyboard_key(SDL_Keycode key)
+{
+    return key == SDLK_KP_ENTER ? SDLK_RETURN : key;
+}
+
+static void update_keyboard_input(stunrun_fake_ports_t *ports,
+                                 uint32_t *pressed_keys, SDL_Keycode key,
+                                 int pressed)
+{
+    size_t i;
+    if (ports == NULL || pressed_keys == NULL)
+        return;
+    key = normalize_keyboard_key(key);
+    for (i = 0u; i < sizeof(k_keyboard_bindings) /
+                              sizeof(k_keyboard_bindings[0]); ++i) {
+        const shell_keyboard_binding_t *binding = &k_keyboard_bindings[i];
+        int was_pressed;
+        if (binding->key != key)
+            continue;
+        was_pressed = (*pressed_keys & binding->state_bit) != 0u;
+        if (was_pressed == (pressed != 0))
+            return;
+        if (!stunrun_port_set_active_low(ports, binding->port,
+                                         binding->mask, pressed))
+            return;
+        if (pressed)
+            *pressed_keys |= binding->state_bit;
+        else
+            *pressed_keys &= ~binding->state_bit;
+        printf("shell: keyboard %s %s\n", binding->name,
+               pressed ? "pressed" : "released");
+        return;
+    }
+}
+
+static void release_keyboard_inputs(stunrun_fake_ports_t *ports,
+                                    uint32_t *pressed_keys)
+{
+    size_t i;
+    if (ports == NULL || pressed_keys == NULL)
+        return;
+    for (i = 0u; i < sizeof(k_keyboard_bindings) /
+                              sizeof(k_keyboard_bindings[0]); ++i) {
+        const shell_keyboard_binding_t *binding = &k_keyboard_bindings[i];
+        if ((*pressed_keys & binding->state_bit) == 0u)
+            continue;
+        (void)stunrun_port_set_active_low(ports, binding->port,
+                                          binding->mask, 0);
+        *pressed_keys &= ~binding->state_bit;
+        printf("shell: keyboard %s released (focus lost)\n", binding->name);
+    }
+}
+
+static void sdl_keyboard_event(stunrun_fake_ports_t *ports,
+                               uint32_t *pressed_keys,
+                               const SDL_Event *event)
+{
+    if (event == NULL || pressed_keys == NULL)
+        return;
+    if (event->type == SDL_KEYDOWN && event->key.repeat != 0)
+        return;
+    if (event->type != SDL_KEYDOWN && event->type != SDL_KEYUP)
+        return;
+    update_keyboard_input(ports, pressed_keys, event->key.keysym.sym,
+                          event->type == SDL_KEYDOWN);
+}
+
 static const char *upload_name(stunrun_adsp_upload_state_t state)
 {
     switch (state) {
@@ -1093,6 +1180,8 @@ static int run_walk(void)
     const char *counts_state = "skipped";
     size_t emitted;
     unsigned i;
+    uint32_t keyboard_pressed = 0u;
+    int keyboard_input_enabled = 0;
     const char *gsp_vram_path = getenv("STUNRUN_GSP_VRAM_BIN");
     const char *gsp_palette_path = getenv("STUNRUN_GSP_PALETTE_BIN");
     const char *gsp_palette_low_path = getenv("STUNRUN_GSP_PALETTE_LOW_BIN");
@@ -1534,6 +1623,18 @@ static int run_walk(void)
                     if (f > 0) g_live_video_fps = (unsigned)f;
                 }
             }
+            /* Enable live keyboard input only for an unbounded visible run.
+             * Bounded frame runs remain deterministic and keep the historical
+             * auto-start A800 value unless the user supplies an override. */
+            if (g_run_until_quit && g_live_video && g_window != NULL) {
+                keyboard_input_enabled = 1;
+                if (getenv("STUNRUN_A800") == NULL)
+                    (void)stunrun_port_write(&ports,
+                                             STUNRUN_PORT_MAIN_A800, 0xFFFF);
+                printf("shell: keyboard controls active: 5/6=Coin 1/2, "
+                       "Enter=Start, Space=Button 1, X=Button 2; "
+                       "service trigger navigation is not mapped\n");
+            }
             if (g_pc_hist_path[0])
                 musashi_cpu_set_pc_hist(1);
             g_cpu = musashi_cpu_create();
@@ -1772,7 +1873,14 @@ static int run_walk(void)
         if (g_backend_active) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
-                if (e.type == SDL_WINDOWEVENT &&
+                if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) &&
+                    keyboard_input_enabled) {
+                    sdl_keyboard_event(&ports, &keyboard_pressed, &e);
+                } else if (e.type == SDL_WINDOWEVENT &&
+                           e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) {
+                    if (keyboard_input_enabled)
+                        release_keyboard_inputs(&ports, &keyboard_pressed);
+                } else if (e.type == SDL_WINDOWEVENT &&
                     e.window.event == SDL_WINDOWEVENT_RESIZED) {
 #ifdef STUNRUN_GSP_GL_SCANOUT
                     if (g_gl_scanout_window &&

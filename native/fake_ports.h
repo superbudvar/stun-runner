@@ -78,6 +78,11 @@ int stunrun_port_read(const stunrun_fake_ports_t *ports, stunrun_port_id_t id,
                       int32_t *value);
 int stunrun_port_write(stunrun_fake_ports_t *ports, stunrun_port_id_t id,
                        int32_t value);
+/* Update an IP_ACTIVE_LOW input bit: pressed clears the bit, released sets it.
+ * Only the raw IN0 and A80000 input ports are accepted. */
+int stunrun_port_set_active_low(stunrun_fake_ports_t *ports,
+                                stunrun_port_id_t id, uint16_t mask,
+                                int pressed);
 int stunrun_port_set_named(stunrun_fake_ports_t *ports, const char *port,
                            const char *field, int32_t value);
 int stunrun_port_get_named(const stunrun_fake_ports_t *ports, const char *port,
