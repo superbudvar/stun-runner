@@ -11076,3 +11076,122 @@ bits 23:8, and ignore the DM window base.
 - The relationship between the emitted run length and the two divisors (§68.2)
   is arithmetic, not intent.
 - `./run.sh` still shows nothing new.
+
+## 69. Palette-bank decode in the shared GSP board model
+
+The title capture's colour mismatch was not caused by RGB channel order. MAME's
+`gsp_palette_change()` and `native/gsp_display.c` both decode red from the high
+byte of palette-low, green from its low byte, and blue from the low byte of
+palette-high. The defect was earlier in the pipeline: the shared native GSP
+board model did not model the palette-bank hardware consistently.
+
+MAME's `hdgsp_control_hi_w()` derives the bank bit from the **control-high
+register write offset** (`(offset >> 3) & 1`) and the selected register
+(`offset & 7`), then palette accesses resolve to
+`bank * 256 + (offset & 0xff)`. Native `gsp_board.c` instead derived the bank
+from `ctrl_hi[0] & 7`; its local palette read/write paths also used the raw
+address low bits, bypassing the bank resolver. That made GSP-local writes land
+in a different palette entry than MAME and left the scanout with stale/wrong
+colours.
+
+The regression test selects bank 1 by writing zero to `$F48000A0` (the address
+encodes bank bit 0), writes `$1234` to palette entry 0, and checks that the
+value appears at physical palette entry 256—not entry 0. It then selects bank
+0 using `$F4800020` with nonzero data and proves the selected bank follows the
+address, not the stored data. Before the fix this test failed six assertions;
+after the fix `stunrun-gsp-board-test` passes.
+
+**Measured improvement, not parity.** At frame 600, byte comparison of native
+and direct MAME palette-plane dumps improved low-plane agreement from 167/2048
+bytes to 1544/2048 (75.4%), and high-plane agreement from 744/2048 to 1584/2048
+(77.3%). The rendered frame is still not MAME-matched; display geometry and
+remaining palette-state differences are open. Captures used
+`STUNRUN_FRAMES=600 STUNRUN_LIVE_VIDEO=0 STUNRUN_DUMP_DIR=... ./run.sh` and the
+existing pinned MAME direct-share hook. The raw comparison files are local under
+`/tmp/opencode/native-title-600-fixed-state/` and `/tmp/srshare/`; they are not
+committed evidence fixtures.
+
+## 69. The `$052F`-`$0544` scan: the last measured input is gone (`alo` / `1fv`)
+
+### 69.1 Both derived quantities come from one word
+
+`$0526` reads `DM($0039)` into `MR0`, `$0529` doubles it into `L0`, and `$052E`
+reads the **same** address into `CNTR`. So the ring length and the loop count
+are one input. `DM($0039) = $0003` in all nine captured records, giving
+`L0 = $0006` — the six-word ring §67 established — and a three-iteration scan.
+`$051F`-`$0525` seed `I0 = I1 = I2 = I3 = $0040` with `M0 = +1` and
+`M1 = M2 = M3 = 0`, so the scan steps one word at a time, unlike the walk's
+stride of two.
+
+The scan compares each new sample against a running minimum `AR` and moves the
+`I1`/`I2` chains to whichever side tracks it: `$0531` `GT` leaves both alone,
+`$0533` (`LT`) pulls both, and `$0537` (`EQ`) compares `AY0` against `DM(I1)`
+and moves `I1` at `$053B`, or falls through to `$053D` to do the same for `I2`.
+
+Reproduces the captured entry pointers for all nine records: `(42,42)` three
+times, `(40,40)` four times, `(44,44)` twice.
+
+### 69.2 The `$053D` block is dead in this transaction
+
+Counting ADSP data-space events at each read site in the scan, across the whole
+transaction:
+
+| PC | reads | note |
+|---|---:|---|
+| `$0537` | 9 | one per record |
+| `$053D` | **0** | never executed |
+| `$0543`, `$0544` | 27 each | 9 records x 3 iterations |
+
+So `$0539 IF GT` is never taken, and the whole `$053D`-`$0541` block — the `I2`
+comparison, the `$053F IF LT` guard and the `$0540`/`$0541` `I2 = I3` update —
+never runs. My C implements it from the disassembly, but **this capture provides
+no evidence for it**, and the test cannot exercise it.
+
+Three negative controls pass for exactly this reason, and the explanation is
+recorded here rather than quietly counted as coverage:
+
+| control | why it passes |
+|---|---|
+| signed vs unsigned `AF` at `$0539`/`$053F` | those tests are unreached |
+| drop the `$053F IF LT` guard | unreached |
+| run the loop one extra iteration | the extra iteration changes neither `I1` nor `I2` in any of the nine |
+
+They are equivalent mutants for this data, not weak assertions. Exercising them
+needs a record whose ring actually drives `AY0` above `DM(I1)`.
+
+Branch coverage that *is* real: `$0531 GT` 12, `$0532 EQ` 9, `$0533 LT` 6,
+`$053A I1 = I3` 9.
+
+### 69.3 A trap worth naming
+
+`AF = AY1 - AR` is a 16-bit result and `IF GT` / `IF LT` are **signed** tests on
+it. My first version cast the 16-bit difference to a wider signed type without
+sign-extending, so every comparison was "greater than zero" whenever the values
+differed. That is not a subtle rounding difference: it sends every record down
+the `$0531` path and the scan returns `$0040` for all nine instead of the
+captured `$0042`/`$0040`/`$0044`. `adsp_diff` now sign-extends explicitly, for
+the same reason `som_math.c` does.
+
+### 69.4 The fifth C slice, and the first fully derived transaction
+
+`stunrun_adsp_som_derive_record` composes control word (`$0514`), scan
+(`$0526`-`$0544`), walk and interpolation, and fills a
+`stunrun_adsp_som_record_t`. Its only inputs are a data-memory window covering
+`DM($0036)`, `DM($0039)` and the ring, plus the coefficient table.
+
+`adsp-som-walk-slice-c` now assembles **all 146 captured SOMLATCH words** —
+the two `$0000` prologue words plus nine generated 16-word records — and
+compares them word for word. No pointer, span list, side value or record word
+is supplied to the C anywhere in that path.
+
+Six rebuilt negative controls fail and the restored code passes: treat `AF` as
+unsigned at `$0531`, swap the `$0531`/`$0532` branches, let the `LT` tail move
+only `I1`, seed the scan a word high, use the counter as the ring length
+without doubling, and read the control word from `$0039` instead of `$0036`.
+
+### 69.5 What is now fully unmeasured in this path
+
+Nothing between `DM($0036)` and the emitted record. The remaining unknowns are
+elsewhere: the caller that fills the ring before `$0514`, the `$0631` tail after
+`$05DC`, and the `> $40` scaled branch of the two helpers. `./run.sh` still
+shows nothing new, because nothing calls this from the native shell yet.

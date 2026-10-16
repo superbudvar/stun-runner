@@ -38,6 +38,27 @@ void stunrun_adsp_index_modify(stunrun_adsp_index_t *reg, int modifier)
     reg->index = (uint16_t)i & 0x3fffu;
 }
 
+/* ADSP AF is 16-bit and the IF GT / IF LT tests are signed on it. Making the
+ * sign extension explicit avoids relying on implementation-defined
+ * uint16_t -> int16_t conversion. */
+static int32_t adsp_diff(uint16_t a, uint16_t b)
+{
+    uint16_t bits = (uint16_t)(a - b);
+    return (bits & 0x8000u) != 0u ? (int32_t)bits - 0x10000 : (int32_t)bits;
+}
+
+/* DM(constant): read by absolute address, with no index register involved. */
+static int dm_peek(const uint16_t *dm, size_t dm_word_count, uint16_t dm_base,
+                   uint16_t address, uint16_t *value)
+{
+    if (address < dm_base)
+        return 0;
+    if ((size_t)(address - dm_base) >= dm_word_count)
+        return 0;
+    *value = dm[address - dm_base];
+    return 1;
+}
+
 /* DM(Ix,Mx): read at the current index, then apply the modifier. */
 static int dm_read(const uint16_t *dm, size_t dm_word_count, uint16_t dm_base,
                    stunrun_adsp_index_t *reg, int modifier, uint16_t *value)
@@ -52,6 +73,128 @@ static int dm_read(const uint16_t *dm, size_t dm_word_count, uint16_t dm_base,
 
     *value = dm[offset];
     stunrun_adsp_index_modify(reg, modifier);
+    return 1;
+}
+
+/* $0526-$0544: walk the ring to find the two chain starting pointers. */
+int stunrun_adsp_som_scan_select(
+    const uint16_t *dm, size_t dm_word_count, uint16_t dm_base,
+    uint16_t cntr, uint16_t *i1, uint16_t *i2, uint16_t *ring_length)
+{
+    stunrun_adsp_index_t i0, i1r, i2r, i3;
+    uint16_t length;
+    uint16_t ay0, ay1, ar;
+    uint32_t iteration;
+
+    if (dm == NULL || i1 == NULL || i2 == NULL || ring_length == NULL)
+        return 0;
+    /* $0529 doubles the counter into L0; a ring shorter than two words cannot
+     * carry both the forward and backward chains. Untested by the capture. */
+    if (cntr < 2u)
+        return 0;
+
+    length = (uint16_t)(cntr * 2u);
+    i0.length = i1r.length = i2r.length = i3.length = length;
+
+    /* $051F-$0525 seed all four index registers at $0040 with M0 = +1 and
+     * M1 = M2 = M3 = 0. */
+    stunrun_adsp_index_write(&i0, STUNRUN_ADSP_SOM_SCAN_BASE);
+    stunrun_adsp_index_write(&i1r, STUNRUN_ADSP_SOM_SCAN_BASE);
+    stunrun_adsp_index_write(&i2r, STUNRUN_ADSP_SOM_SCAN_BASE);
+    stunrun_adsp_index_write(&i3, STUNRUN_ADSP_SOM_SCAN_BASE);
+
+    /* $052B/$052C seed the first pair of samples, one word apart. */
+    if (!dm_read(dm, dm_word_count, dm_base, &i0, 1, &ay0))
+        return 0;
+    if (!dm_read(dm, dm_word_count, dm_base, &i0, 1, &ay1))
+        return 0;
+    ar = ay1;                       /* $052D */
+
+    /* $052F: DO $0544 UNTIL CE, with CNTR = DM($0039). */
+    for (iteration = 0; iteration < (uint32_t)cntr; iteration++) {
+        /* AF is a 16-bit result and IF GT / IF LT are signed tests on it. */
+        int32_t difference = adsp_diff(ay1, ar);
+
+        if (difference > 0) {
+            /* $0531: the new pair is above AR; leave both chains put. */
+        } else if (difference == 0) {
+            /* $0532 -> $0537: compare AY0 against each chain's current value. */
+            uint16_t sample;
+            if (!dm_read(dm, dm_word_count, dm_base, &i1r, 0, &sample))
+                return 0;
+            difference = adsp_diff(ay0, sample);
+            if (difference > 0) {
+                if (!dm_read(dm, dm_word_count, dm_base, &i2r, 0, &sample))
+                    return 0;
+                difference = adsp_diff(ay0, sample);
+                if (!(difference < 0)) {
+                    /* $0540/$0541: the I2 chain is the larger minimum. */
+                    ar = ay1;
+                    i2r = i3;
+                }
+            } else {
+                /* $053A/$053B: AY0 beats the I1 chain. */
+                ar = ay1;
+                i1r = i3;
+            }
+        } else {
+            /* $0533-$0535: AY1 dropped below AR; both chains follow it. */
+            ar = ay1;
+            i1r = i3;
+            i2r = i3;
+        }
+
+        /* $0542-$0544: lag I3 one step behind I0, then read the next pair. */
+        i3 = i0;
+        if (!dm_read(dm, dm_word_count, dm_base, &i0, 1, &ay0))
+            return 0;
+        if (!dm_read(dm, dm_word_count, dm_base, &i0, 1, &ay1))
+            return 0;
+    }
+
+    *i1 = i1r.index;
+    *i2 = i2r.index;
+    *ring_length = length;
+    return 1;
+}
+
+int stunrun_adsp_som_derive_record(
+    const uint16_t *dm, size_t dm_word_count, uint16_t dm_base,
+    const uint32_t *program_words, size_t program_word_count,
+    stunrun_adsp_som_span_t *spans, size_t span_capacity,
+    stunrun_adsp_som_record_t *record)
+{
+    stunrun_adsp_som_walk_t walk;
+    stunrun_adsp_som_record_t built;
+    uint16_t control, cntr, i1, i2, length;
+
+    if (dm == NULL || record == NULL || program_words == NULL)
+        return 0;
+    if (span_capacity > 0 && spans == NULL)
+        return 0;
+
+    /* $0514/$0515 and $0526/$052E both read data memory by absolute address. */
+    if (!dm_peek(dm, dm_word_count, dm_base, STUNRUN_ADSP_SOM_CONTROL_ADDR,
+                 &control))
+        return 0;
+    if (!dm_peek(dm, dm_word_count, dm_base, STUNRUN_ADSP_SOM_CNTR_ADDR, &cntr))
+        return 0;
+    if (!stunrun_adsp_som_scan_select(dm, dm_word_count, dm_base, cntr,
+                                      &i1, &i2, &length))
+        return 0;
+    if (!stunrun_adsp_som_walk_record(dm, dm_word_count, dm_base,
+                                      program_words, program_word_count,
+                                      i1, i2, length, spans, span_capacity,
+                                      &walk))
+        return 0;
+
+    built.control = control;
+    built.start_x = walk.start_x;
+    built.delta_x = walk.delta_x;
+    built.start_y = walk.start_y;
+    built.spans = spans;
+    built.span_count = walk.span_count;
+    *record = built;
     return 1;
 }
 

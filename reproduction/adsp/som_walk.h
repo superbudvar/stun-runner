@@ -105,6 +105,48 @@ int stunrun_adsp_som_walk_record(
     stunrun_adsp_som_span_t *spans, size_t span_capacity,
     stunrun_adsp_som_walk_t *out);
 
+/* Addresses the emitter uses before the walk, all ROM constants: $0514 reads
+ * the control word, $051F seeds the scan at $0040, and $0526/$052E both read
+ * the same word for the ring length and the loop count. */
+#define STUNRUN_ADSP_SOM_CONTROL_ADDR 0x0036u
+#define STUNRUN_ADSP_SOM_CNTR_ADDR    0x0039u
+#define STUNRUN_ADSP_SOM_SCAN_BASE    0x0040u
+
+/* $0526-$0544: pick the two chain starting pointers by walking the ring.
+ *
+ * $0529 derives the ring length L = 2 * cntr and $052E loads the same word
+ * into the loop counter, so both come from DM($0039). The walk advances I0
+ * with M0 = +1, one word at a time, and keeps I1/I2 on whichever chain tracks
+ * the smaller value at each step.
+ *
+ * cntr is the caller's DM($0039). cntr below 2 is rejected rather than guessed:
+ * the capture only exercises cntr = 3, and a ring that short has no
+ * meaningful wrap.
+ *
+ * Returns 1 on success, writing *ring_length with 2 * cntr. Returns 0 on a
+ * NULL argument, a DM address outside the window, or an unsupported cntr. */
+int stunrun_adsp_som_scan_select(
+    const uint16_t *dm, size_t dm_word_count, uint16_t dm_base,
+    uint16_t cntr, uint16_t *i1, uint16_t *i2, uint16_t *ring_length);
+
+/* $0514-$05D1 end to end: control word, pointer scan, span walk, interpolation.
+ *
+ * This is the first entry point that takes no measured value. Give it the
+ * data-memory window covering DM($0036), DM($0039) and the ring, plus the
+ * coefficient table, and it produces the complete record; the caller then
+ * passes *record to stunrun_adsp_som_emit_record.
+ *
+ * spans must have room for the record's span list and stays pointed at by
+ * record->spans, so keep it alive as long as the record is used.
+ *
+ * Returns 1 on success; 0 on any argument, bounds, or unsupported-selector
+ * failure, writing nothing. */
+int stunrun_adsp_som_derive_record(
+    const uint16_t *dm, size_t dm_word_count, uint16_t dm_base,
+    const uint32_t *program_words, size_t program_word_count,
+    stunrun_adsp_som_span_t *spans, size_t span_capacity,
+    stunrun_adsp_som_record_t *record);
+
 #ifdef __cplusplus
 }
 #endif

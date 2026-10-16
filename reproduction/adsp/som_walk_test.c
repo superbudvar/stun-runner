@@ -106,111 +106,238 @@ static const uint32_t PM_PROGRAM[PM_PROGRAM_WORDS] = {
 
 #define RECORDS 9u
 #define RECORD_WORDS 16u
+#define PROLOGUE_WORDS 2u   /* PC $0035 and $0039, AR still $0000 */
 #define RING_BASE 0x0040u
 #define RING_WORDS 6u
 #define RING_LENGTH 6u /* L0 = L1 = L2 = L4 = $0006 in the capture */
 
-typedef struct {
-    uint16_t i1, i2;                         /* index registers at $0564 */
-    uint16_t ring[RING_WORDS];              /* DM[$0040..$0045] */
-    uint16_t expected[RECORD_WORDS];        /* the captured record words */
-} walk_vector_t;
+/* DM[$0030..$0045] per record, captured at $0564 from the frozen oracle:
+ * control word at $0036, ring length/count at $0039, and the six-word
+ * ring at $0040..$0045. The entry pointers in the comments are what
+ * $052F-$0544 selects and are NOT inputs -- derive_record computes
+ * them and the test asserts they match. */
+#define DM_BASE 0x0030u
+#define DM_WORDS 22u
+static const uint16_t DM_WINDOWS[RECORDS][DM_WORDS] = {
+    /* record 0: entry I1=$0042 I2=$0042 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x998B, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x00F4, 0x009E, 0x00FF, 0x0099, 0x00FB, 0x00A0,
 
-/* Records 0-8 in capture order. The control word ($0515, DM($0036)) is the
- * same $0030 for all of them and is not derived by the walk. */
-static const walk_vector_t VECTORS[RECORDS] = {
-    { 66, 66, { 0x00F4, 0x009E, 0x00FF, 0x0099, 0x00FB, 0x00A0 },
-      { 0x0030, 0x00FF, 0x00FF, 0x0099, 0x6DB8, 0xFFFF, 0xCCDA, 0xFFFD, 0x0006,
-        0x6DB8, 0xFFFF, 0x8000, 0x0003, 0x0003, 0xFFFF, 0xFFFF } },
-    { 66, 66, { 0x0103, 0x00A0, 0x00FF, 0x0099, 0x010A, 0x009E },
-      { 0x0030, 0x00FF, 0x00FF, 0x0099, 0x3326, 0x0002, 0x9248, 0x0000, 0x0006,
-        0x8000, 0xFFFC, 0x9248, 0x0000, 0x0003, 0xFFFF, 0xFFFF } },
-    { 66, 66, { 0x00FB, 0x00A0, 0x00FF, 0x0099, 0x0103, 0x00A0 },
-      { 0x0030, 0x00FF, 0x00FF, 0x0099, 0x9248, 0x0000, 0x6DB8, 0xFFFF, 0x0008,
-        0x0000, 0x0000, 0x0000, 0x0000, 0x0001, 0xFFFF, 0xFFFF } },
-    { 64, 64, { 0x00F2, 0x0097, 0x00FF, 0x0099, 0x00F4, 0x009E },
-      { 0x0030, 0x00F2, 0x00F2, 0x0097, 0x8000, 0x0006, 0x4924, 0x0000, 0x0003,
-        0xCCDA, 0xFFFD, 0x4924, 0x0000, 0x0006, 0xFFFF, 0xFFFF } },
-    { 68, 68, { 0x010A, 0x009E, 0x00FF, 0x0099, 0x010C, 0x0097 },
-      { 0x0030, 0x010C, 0x010C, 0x0097, 0xB6DC, 0xFFFF, 0x8000, 0xFFF9, 0x0003,
-        0xB6DC, 0xFFFF, 0x3326, 0x0002, 0x0006, 0xFFFF, 0xFFFF } },
-    { 64, 64, { 0x00FF, 0x0091, 0x00FF, 0x0099, 0x00F6, 0x0093 },
-      { 0x0030, 0x00FF, 0x00FF, 0x0091, 0x0000, 0x0000, 0x8000, 0xFFFB, 0x0003,
-        0x0000, 0x0000, 0x7FFA, 0x0001, 0x0007, 0xFFFF, 0xFFFF } },
-    { 68, 68, { 0x010C, 0x0097, 0x00FF, 0x0099, 0x0108, 0x0093 },
-      { 0x0030, 0x0108, 0x0108, 0x0093, 0x0000, 0x0001, 0x8006, 0xFFFE, 0x0005,
-        0x8000, 0xFFF9, 0x8006, 0xFFFE, 0x0003, 0xFFFF, 0xFFFF } },
-    { 64, 64, { 0x00F6, 0x0093, 0x00FF, 0x0099, 0x00F2, 0x0097 },
-      { 0x0030, 0x00F6, 0x00F6, 0x0093, 0x7FFA, 0x0001, 0x0000, 0xFFFF, 0x0005,
-        0x7FFA, 0x0001, 0x8000, 0x0006, 0x0003, 0xFFFF, 0xFFFF } },
-    { 64, 64, { 0x00FF, 0x0091, 0x0108, 0x0093, 0x00FF, 0x0099 },
-      { 0x0030, 0x00FF, 0x00FF, 0x0091, 0x8000, 0x0004, 0x0000, 0x0000, 0x0003,
-        0x8006, 0xFFFE, 0x0000, 0x0000, 0x0007, 0xFFFF, 0xFFFF } },
+
+
+
+
+    },
+    /* record 1: entry I1=$0042 I2=$0042 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x998D, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x8000, 0x0003, 0x6DB8, 0xFFFF,
+    0x0103, 0x00A0, 0x00FF, 0x0099, 0x010A, 0x009E,
+
+
+
+
+
+    },
+    /* record 2: entry I1=$0042 I2=$0042 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x998F, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x9248, 0x0000, 0x8000, 0xFFFC,
+    0x00FB, 0x00A0, 0x00FF, 0x0099, 0x0103, 0x00A0,
+
+
+
+
+
+    },
+    /* record 3: entry I1=$0040 I2=$0040 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x9991, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+    0x00F2, 0x0097, 0x00FF, 0x0099, 0x00F4, 0x009E,
+
+
+
+
+
+    },
+    /* record 4: entry I1=$0044 I2=$0044 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x9993, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x4924, 0x0000, 0xCCDA, 0xFFFD,
+    0x010A, 0x009E, 0x00FF, 0x0099, 0x010C, 0x0097,
+
+
+
+
+
+    },
+    /* record 5: entry I1=$0040 I2=$0040 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x9995, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x3326, 0x0002, 0xB6DC, 0xFFFF,
+    0x00FF, 0x0091, 0x00FF, 0x0099, 0x00F6, 0x0093,
+
+
+
+
+
+    },
+    /* record 6: entry I1=$0044 I2=$0044 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x9997, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x7FFA, 0x0001, 0x0000, 0x0000,
+    0x010C, 0x0097, 0x00FF, 0x0099, 0x0108, 0x0093,
+
+
+
+
+
+    },
+    /* record 7: entry I1=$0040 I2=$0040 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x9999, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x8006, 0xFFFE, 0x8000, 0xFFF9,
+    0x00F6, 0x0093, 0x00FF, 0x0099, 0x00F2, 0x0097,
+
+
+
+
+
+    },
+    /* record 8: entry I1=$0040 I2=$0040 */
+    {
+    0x0000, 0x0001, 0x000A, 0xFFFE, 0x999B, 0x0001, 0x0030, 0x0000,
+    0x0000, 0x0003, 0x0000, 0x0000, 0x8000, 0x0006, 0x7FFA, 0x0001,
+    0x00FF, 0x0091, 0x0108, 0x0093, 0x00FF, 0x0099,
+
+
+
+
+
+    },
+};
+
+/* The captured record words, which the C must reproduce. */
+static const uint16_t EXPECTED[RECORDS][RECORD_WORDS] = {
+    /* record 0 */
+    {
+    0x0030, 0x00FF, 0x00FF, 0x0099, 0x6DB8, 0xFFFF, 0xCCDA, 0xFFFD,
+    0x0006, 0x6DB8, 0xFFFF, 0x8000, 0x0003, 0x0003, 0xFFFF, 0xFFFF,
+    },
+    /* record 1 */
+    {
+    0x0030, 0x00FF, 0x00FF, 0x0099, 0x3326, 0x0002, 0x9248, 0x0000,
+    0x0006, 0x8000, 0xFFFC, 0x9248, 0x0000, 0x0003, 0xFFFF, 0xFFFF,
+    },
+    /* record 2 */
+    {
+    0x0030, 0x00FF, 0x00FF, 0x0099, 0x9248, 0x0000, 0x6DB8, 0xFFFF,
+    0x0008, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001, 0xFFFF, 0xFFFF,
+    },
+    /* record 3 */
+    {
+    0x0030, 0x00F2, 0x00F2, 0x0097, 0x8000, 0x0006, 0x4924, 0x0000,
+    0x0003, 0xCCDA, 0xFFFD, 0x4924, 0x0000, 0x0006, 0xFFFF, 0xFFFF,
+    },
+    /* record 4 */
+    {
+    0x0030, 0x010C, 0x010C, 0x0097, 0xB6DC, 0xFFFF, 0x8000, 0xFFF9,
+    0x0003, 0xB6DC, 0xFFFF, 0x3326, 0x0002, 0x0006, 0xFFFF, 0xFFFF,
+    },
+    /* record 5 */
+    {
+    0x0030, 0x00FF, 0x00FF, 0x0091, 0x0000, 0x0000, 0x8000, 0xFFFB,
+    0x0003, 0x0000, 0x0000, 0x7FFA, 0x0001, 0x0007, 0xFFFF, 0xFFFF,
+    },
+    /* record 6 */
+    {
+    0x0030, 0x0108, 0x0108, 0x0093, 0x0000, 0x0001, 0x8006, 0xFFFE,
+    0x0005, 0x8000, 0xFFF9, 0x8006, 0xFFFE, 0x0003, 0xFFFF, 0xFFFF,
+    },
+    /* record 7 */
+    {
+    0x0030, 0x00F6, 0x00F6, 0x0093, 0x7FFA, 0x0001, 0x0000, 0xFFFF,
+    0x0005, 0x7FFA, 0x0001, 0x8000, 0x0006, 0x0003, 0xFFFF, 0xFFFF,
+    },
+    /* record 8 */
+    {
+    0x0030, 0x00FF, 0x00FF, 0x0091, 0x8000, 0x0004, 0x0000, 0x0000,
+    0x0003, 0x8006, 0xFFFE, 0x0000, 0x0000, 0x0007, 0xFFFF, 0xFFFF,
+    },
 };
 
 int main(void)
 {
     stunrun_adsp_som_span_t spans[8];
     uint16_t out[RECORD_WORDS];
+    uint16_t entry_i1[RECORDS], entry_i2[RECORDS], ring_length[RECORDS];
     size_t i, k;
 
+    /* The headline assertion. For each record the C is given only the
+     * data-memory window and the coefficient table -- no pointer, no span
+     * list, no side value -- and must produce all sixteen captured words. */
     for (i = 0; i < RECORDS; i++) {
-        stunrun_adsp_som_walk_t walk;
         stunrun_adsp_som_record_t record;
 
         memset(spans, 0, sizeof(spans));
-        check(stunrun_adsp_som_walk_record(
-            VECTORS[i].ring, RING_WORDS, RING_BASE,
-            PM_PROGRAM, PM_PROGRAM_WORDS,
-            VECTORS[i].i1, VECTORS[i].i2, RING_LENGTH,
-            spans, 8u, &walk));
-
-        /* Derived, not copied: these must equal the captured header words. */
-        check(walk.start_x == VECTORS[i].expected[1]);
-        check(walk.delta_x == VECTORS[i].expected[2]);
-        check(walk.start_y == VECTORS[i].expected[3]);
-        check(walk.terminated == 1);
-        /* Two spans in every captured record; 4 + 2*5 + 2 == 16 words. */
-        check(walk.span_count == 2u);
-        check(stunrun_adsp_som_record_words(walk.span_count) == RECORD_WORDS);
-
-        /* The two interpolated side values per span are computed by the walk
-         * now, so nothing is copied in before emitting. */
-        for (k = 0; k < walk.span_count; k++) {
-            check(spans[k].dm_3e.lo == VECTORS[i].expected[4 + k * 5 + 0]);
-            check(spans[k].dm_3e.hi == VECTORS[i].expected[4 + k * 5 + 1]);
-            check(spans[k].dm_3c.lo == VECTORS[i].expected[4 + k * 5 + 2]);
-            check(spans[k].dm_3c.hi == VECTORS[i].expected[4 + k * 5 + 3]);
-        }
-        record.control = VECTORS[i].expected[0];
-        record.start_x = walk.start_x;
-        record.delta_x = walk.delta_x;
-        record.start_y = walk.start_y;
-        record.spans = spans;
-        record.span_count = walk.span_count;
-
+        check(stunrun_adsp_som_derive_record(
+            DM_WINDOWS[i], DM_WORDS, DM_BASE,
+            PM_PROGRAM, PM_PROGRAM_WORDS, spans, 8u, &record));
+        check(record.control == EXPECTED[i][0]);
+        check(record.span_count == 2u);
+        check(stunrun_adsp_som_record_words(record.span_count) == RECORD_WORDS);
         check(stunrun_adsp_som_emit_record(&record, out, RECORD_WORDS)
               == RECORD_WORDS);
-        if (memcmp(out, VECTORS[i].expected, sizeof(VECTORS[i].expected)) != 0) {
+        if (memcmp(out, EXPECTED[i], sizeof(EXPECTED[i])) != 0) {
             printf("FAIL record %lu word stream\n", (unsigned long)i);
             for (k = 0; k < RECORD_WORDS; k++)
-                if (out[k] != VECTORS[i].expected[k])
+                if (out[k] != EXPECTED[i][k])
                     printf("   word %lu got %04X want %04X\n",
-                           (unsigned long)k, out[k], VECTORS[i].expected[k]);
+                           (unsigned long)k, out[k], EXPECTED[i][k]);
             failures++;
         }
     }
 
-    /* The walk's own arithmetic, isolated from the emitter. Every captured
-     * span is (AX1, AY0, AY1) with AY1/AY0 straddling AX1; these three cases
-     * pin which endpoint each branch promotes. */
+    /* The scan in isolation: the entry pointers it selects must equal the ones
+     * observed at $0564, and the ring length must be the doubled counter.
+     * DM($0039) is $0003 in all nine records, so L is $0006. */
+    for (i = 0; i < RECORDS; i++) {
+        uint16_t cntr = DM_WINDOWS[i][STUNRUN_ADSP_SOM_CNTR_ADDR - DM_BASE];
+        check(cntr == 3u);
+        check(stunrun_adsp_som_scan_select(
+            DM_WINDOWS[i], DM_WORDS, DM_BASE, cntr,
+            &entry_i1[i], &entry_i2[i], &ring_length[i]));
+        check(ring_length[i] == 6u);
+    }
+    /* Expected entry pointers, captured at $0564 in record order. */
+    {
+        static const uint16_t WANT_I1[RECORDS] = {
+            66, 66, 66, 64, 68, 64, 68, 64, 64
+        };
+        static const uint16_t WANT_I2[RECORDS] = {
+            66, 66, 66, 64, 68, 64, 68, 64, 64
+        };
+        for (i = 0; i < RECORDS; i++) {
+            check(entry_i1[i] == WANT_I1[i]);
+            check(entry_i2[i] == WANT_I2[i]);
+        }
+    }
+
+    /* The walk's own arithmetic, isolated from the scan: every captured span
+     * straddles AX1 strictly. */
     for (i = 0; i < RECORDS; i++) {
         stunrun_adsp_som_walk_t walk;
         memset(spans, 0, sizeof(spans));
         check(stunrun_adsp_som_walk_record(
-            VECTORS[i].ring, RING_WORDS, RING_BASE,
+            DM_WINDOWS[i] + (STUNRUN_ADSP_SOM_SCAN_BASE - DM_BASE),
+            DM_WORDS - (STUNRUN_ADSP_SOM_SCAN_BASE - DM_BASE),
+            STUNRUN_ADSP_SOM_SCAN_BASE,
             PM_PROGRAM, PM_PROGRAM_WORDS,
-            VECTORS[i].i1, VECTORS[i].i2, RING_LENGTH, spans, 8u, &walk));
+            entry_i1[i], entry_i2[i], ring_length[i], spans, 8u, &walk));
+        check(walk.terminated == 1);
         check(spans[0].ax1 == walk.start_y);
         check(spans[0].ay1 > spans[0].ax1);
         check(spans[0].ay0 > spans[0].ax1);
@@ -267,31 +394,90 @@ int main(void)
     /* A truncated capture must fail loudly rather than read past the window. */
     {
         stunrun_adsp_som_walk_t walk;
+        stunrun_adsp_som_record_t record;
+        uint16_t junk;
+
         memset(spans, 0, sizeof(spans));
         check(!stunrun_adsp_som_walk_record(
-            VECTORS[0].ring, 4u, RING_BASE,
+            DM_WINDOWS[0], 4u, DM_BASE,
             PM_PROGRAM, PM_PROGRAM_WORDS,
-            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 8u, &walk));
+            66, 66, RING_LENGTH, spans, 8u, &walk));
         check(!stunrun_adsp_som_walk_record(
-            NULL, RING_WORDS, RING_BASE,
-            PM_PROGRAM, PM_PROGRAM_WORDS,
-            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 8u, &walk));
+            NULL, DM_WORDS, DM_BASE, PM_PROGRAM, PM_PROGRAM_WORDS,
+            66, 66, RING_LENGTH, spans, 8u, &walk));
         check(!stunrun_adsp_som_walk_record(
-            VECTORS[0].ring, RING_WORDS, RING_BASE,
-            PM_PROGRAM, PM_PROGRAM_WORDS,
-            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 8u, NULL));
+            DM_WINDOWS[0], DM_WORDS, DM_BASE, PM_PROGRAM, PM_PROGRAM_WORDS,
+            66, 66, RING_LENGTH, spans, 8u, NULL));
         /* A coefficient table too short for the index the helper computes:
          * refuse rather than read past it. */
         check(!stunrun_adsp_som_walk_record(
-            VECTORS[0].ring, RING_WORDS, RING_BASE,
-            PM_PROGRAM, 2u,
-            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 8u, &walk));
+            DM_WINDOWS[0], DM_WORDS, DM_BASE, PM_PROGRAM, 2u,
+            66, 66, RING_LENGTH, spans, 8u, &walk));
         /* Too little room for the walk it actually needs: fail, do not
          * truncate the record. */
         check(!stunrun_adsp_som_walk_record(
-            VECTORS[0].ring, RING_WORDS, RING_BASE,
-            PM_PROGRAM, PM_PROGRAM_WORDS,
-            VECTORS[0].i1, VECTORS[0].i2, RING_LENGTH, spans, 1u, &walk));
+            DM_WINDOWS[0], DM_WORDS, DM_BASE, PM_PROGRAM, PM_PROGRAM_WORDS,
+            66, 66, RING_LENGTH, spans, 1u, &walk));
+
+        /* The same rejections through the composed entry point. */
+        check(!stunrun_adsp_som_derive_record(
+            DM_WINDOWS[0], DM_WORDS, DM_BASE, PM_PROGRAM, PM_PROGRAM_WORDS,
+            spans, 8u, NULL));
+        check(!stunrun_adsp_som_derive_record(
+            NULL, DM_WORDS, DM_BASE, PM_PROGRAM, PM_PROGRAM_WORDS,
+            spans, 8u, &record));
+        check(!stunrun_adsp_som_derive_record(
+            DM_WINDOWS[0], DM_WORDS, DM_BASE, PM_PROGRAM, PM_PROGRAM_WORDS,
+            spans, 1u, &record));
+        /* A window that does not reach DM($0036) cannot supply the control
+         * word. */
+        check(!stunrun_adsp_som_derive_record(
+            DM_WINDOWS[0] + 8, DM_WORDS - 8, DM_BASE + 8,
+            PM_PROGRAM, PM_PROGRAM_WORDS, spans, 8u, &record));
+
+        /* The scan rejects a ring too short to carry both chains, and NULL
+         * outputs, rather than inventing pointers. */
+        check(!stunrun_adsp_som_scan_select(
+            DM_WINDOWS[0], DM_WORDS, DM_BASE, 1u, &junk, &junk, &junk));
+        check(!stunrun_adsp_som_scan_select(
+            DM_WINDOWS[0], DM_WORDS, DM_BASE, 0u, &junk, &junk, &junk));
+        check(!stunrun_adsp_som_scan_select(
+            DM_WINDOWS[0], DM_WORDS, DM_BASE, 3u, NULL, &junk, &junk));
+        check(!stunrun_adsp_som_scan_select(
+            NULL, DM_WORDS, DM_BASE, 3u, &junk, &junk, &junk));
+    }
+
+    /* The complete captured transaction. The two leading words are the
+     * $0034-$0039 prologue -- SOMCLK, then AR still $0000 latched twice -- which
+     * this slice does not produce, so they are written as the captured zeros
+     * and only the nine records are generated. 2 + 9 * 16 == 146, which is
+     * exactly the captured SOMLATCH stream length. */
+    {
+        uint16_t stream[PROLOGUE_WORDS + RECORDS * RECORD_WORDS];
+        size_t cursor = 0;
+
+        stream[cursor++] = 0x0000;   /* PC $0035 */
+        stream[cursor++] = 0x0000;   /* PC $0039 */
+
+        for (i = 0; i < RECORDS; i++) {
+            stunrun_adsp_som_record_t record;
+            memset(spans, 0, sizeof(spans));
+            check(stunrun_adsp_som_derive_record(
+                DM_WINDOWS[i], DM_WORDS, DM_BASE,
+                PM_PROGRAM, PM_PROGRAM_WORDS, spans, 8u, &record));
+            {
+                size_t produced = stunrun_adsp_som_emit_record(
+                    &record, &stream[cursor],
+                    sizeof(stream) / sizeof(stream[0]) - cursor);
+                check(produced == RECORD_WORDS);
+                cursor += produced;
+            }
+        }
+
+        check(cursor == sizeof(stream) / sizeof(stream[0]));
+        for (i = 0; i < RECORDS; i++)
+            check(memcmp(&stream[PROLOGUE_WORDS + i * RECORD_WORDS],
+                         EXPECTED[i], sizeof(EXPECTED[i])) == 0);
     }
 
     if (failures == 0)
