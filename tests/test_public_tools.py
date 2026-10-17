@@ -1048,6 +1048,97 @@ class PublicToolTests(unittest.TestCase):
         self.assertIn('action="append"', wrapper)
         self.assertIn("read_pc_filters", lua)
 
+    def test_object_pointer_trace_crossreferences_rom_and_rejects_bad_data(self):
+        """Pointer operands and descriptor fields must agree with source ROM."""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            rom_path = temp / "maincpu.bin"
+            image = bytearray(0xC0000)
+            target = 0x49000
+            words = [0x1111, 0x2222, 0x3333, 0x4444, 0x5555,
+                     0x6666, 0x7777, 0x8888, 0x9999, 0xAAAA]
+            for index, word in enumerate(words):
+                image[target + index * 2:target + index * 2 + 2] = \
+                    word.to_bytes(2, "big")
+            rom_path.write_bytes(image)
+
+            def read(pc, address, data, order):
+                return {"frame": 922, "pc": pc, "address": address,
+                        "data": data, "mask": 0xFFFF, "order": order}
+
+            events = [
+                read(0x02E226, 0xFF9C26, 0x0004, 10),
+                read(0x02E226, 0xFF9C28, 0x9000, 11),
+                read(0x02E220, target + 0x0C, words[6], 12),
+                read(0x02E220, target + 0x0E, words[7], 13),
+                read(0x02E22A, target, words[0], 14),
+                read(0x02E230, target + 2, words[1], 15),
+                read(0x02E25A, target + 8, words[4], 16),
+                read(0x02E25A, target + 10, words[5], 17),
+                read(0x02E264, target + 6, words[3], 18),
+            ]
+            trace = {
+                "schema": "stunrun-ram-read-write-trace-result/v1",
+                "read": {"schema": "stunrun-ram-read-trace-result/v1",
+                         "base": 0xFF9C00, "end": 0xFFDEFF,
+                         "events": events, "event_count": len(events),
+                         "truncated": False},
+                "write": {"schema": "stunrun-ram-write-trace-result/v1",
+                          "base": 0xC00000, "end": 0xFFDEFF, "input": "late_drive",
+                          "capture_start_frame": 920, "capture_end_frame": 930,
+                          "events": [{"frame": 922, "pc": 0x2F7EA,
+                                      "address": 0xC0000C, "data": 0x8000,
+                                      "mask": 0xFFFF, "order": 19}],
+                          "event_count": 1, "truncated": False,
+                          "canonical_log_sha256": "a" * 64},
+            }
+            trace_path = temp / "trace.json"
+            trace_path.write_text(json.dumps(trace), encoding="utf-8")
+            tool = ROOT / "tools" / "analyze-object-pointer-trace"
+
+            good = subprocess.run([str(tool), str(trace_path), str(rom_path), "--json"],
+                                  capture_output=True, text=True)
+            self.assertEqual(good.returncode, 0, good.stderr)
+            document = json.loads(good.stdout)
+            self.assertEqual(document["pointer_load"]["record_count"], 1)
+            self.assertEqual(document["pointer_load"]["records"][0]["record_base"],
+                             0xFF9C00)
+            self.assertEqual(document["pointer_load"]["targets"], [target])
+            self.assertEqual(document["descriptor_reads"]["checked_reads"], 7)
+            self.assertEqual(document["descriptor_reads"]["rom_mismatches"], 0)
+            self.assertEqual(document["descriptor_reads"]["entries"][0]["raw_words_be"],
+                             words)
+            self.assertEqual(document["same_run_fifo_context"]["write_count"], 1)
+
+            # A planted read that disagrees with the ROM must be rejected. This
+            # is the negative control: removing the byte comparison makes this
+            # exact assertion fail against a deliberately broken tool copy.
+            trace["read"]["events"][4]["data"] ^= 1
+            trace_path.write_text(json.dumps(trace), encoding="utf-8")
+            bad = subprocess.run([str(tool), str(trace_path), str(rom_path), "--json"],
+                                 capture_output=True, text=True)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("disagree with ROM bytes", bad.stderr)
+
+            original = tool.read_text(encoding="utf-8")
+            self.assertIn("if observed != expected:", original)
+            broken_tool = temp / "broken-analyzer.py"
+            broken_tool.write_text(original.replace(
+                "if observed != expected:", "if False:", 1), encoding="utf-8")
+            broken = subprocess.run([sys.executable, str(broken_tool),
+                                     str(trace_path), str(rom_path), "--json"],
+                                    capture_output=True, text=True)
+            self.assertEqual(broken.returncode, 0, broken.stderr)
+            self.assertNotEqual(broken.returncode, bad.returncode,
+                                "the negative control did not kill the bad-byte check")
+
+            wrong_size = temp / "wrong-size.bin"
+            wrong_size.write_bytes(bytes(0x100))
+            rejected = subprocess.run([str(tool), str(trace_path), str(wrong_size)],
+                                      capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("must be exactly 786432 bytes", rejected.stderr)
+
     def test_capture_adsp_som_transaction_extracts_somclk_to_gint(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = pathlib.Path(temp)

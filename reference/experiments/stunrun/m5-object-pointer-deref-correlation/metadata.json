@@ -1,0 +1,107 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "m5_object_pointer_deref_correlation",
+  "date": "2026-10-17",
+  "target": "stunrun",
+  "purpose": "Correlate runtime 68010 object-record pointer reads, ROM descriptor field reads, and same-run GSP FIFO writes without assigning object identity.",
+  "rom_manifest": {
+    "path": "roms/stunrun.manifest.json",
+    "sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d"
+  },
+  "rom_image": {
+    "path": "roms/stunrun/stunrun_maincpu.bin",
+    "bytes": 786432,
+    "sha256": "29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c"
+  },
+  "machine_map": {
+    "path": "analysis/driver-mining/stunrun.machine-map.yaml",
+    "sha256": "b9106e5c04d8bd20b0c7bb4eab52553cd1655bd037e62be5f16a5f1bc21db02f"
+  },
+  "mame": {
+    "role": "md12-fixed",
+    "path": "/mnt/build/mame-ref/mame",
+    "version": "0.289 (unknown)",
+    "sha256": "55956f2b26c0d5caeb86f346e6247ded04428eae07465d35470dea77d6bf4045",
+    "local_patch_inventory": {
+      "path": "analysis/mame-local-patches.json",
+      "sha256": "6f4583fb732e765b76dff177927aaab7338c730d34a1fec44bf00bf2c0c9d5ff"
+    }
+  },
+  "harness": {
+    "wrapper": "tools/mame-ram-read-write-trace",
+    "wrapper_sha256": "ea7be7f6fda89ea2ac8f153ef37887cae37b3e39e553174a29c00f3c9f6eb5e4",
+    "write_wrapper": "tools/mame-ram-write-trace",
+    "write_wrapper_sha256": "d1a8138ab8df00b0d74087c1a3262423552f7077226a9e583ddf91c7e084d45b",
+    "lua_tap": "mame/lua/ram-write-trace.lua",
+    "lua_tap_sha256": "1ce80149de6dc2a31fefddcc1058e9b0551752ce9e9701cc2377e319c1051754",
+    "analyzer": "tools/analyze-object-pointer-trace",
+    "analyzer_sha256": "2b44396646b8c410a56e611222efe7465636eff48aced2ca0e9eef76e65617a2"
+  },
+  "run": {
+    "count": 5,
+    "frames": 1000,
+    "capture_start_frame": 920,
+    "capture_end_frame": 930,
+    "tap_frame": 1,
+    "input": "late_drive",
+    "nothrottle": true,
+    "read_window": "0x00047000-0x00FFDEFF",
+    "read_pcs": [
+      "0x02E220",
+      "0x02E226",
+      "0x02E22A",
+      "0x02E230",
+      "0x02E25A",
+      "0x02E264"
+    ],
+    "write_window": "0x00C00000-0x00FFDEFF",
+    "max_write_events": 200000,
+    "max_read_events": 200000,
+    "event_order": true
+  },
+  "observed_each_run": {
+    "write_events": 24474,
+    "read_events": 205,
+    "pointer_longword_reads": 23,
+    "unique_maincpu_rom_targets": 13,
+    "descriptor_reads_matching_rom": 159,
+    "descriptor_rom_mismatches": 0,
+    "same_run_gsp_fifo_writes": 23210,
+    "read_truncated": false,
+    "write_truncated": false,
+    "record_pointer_mapping_identical_across_runs": true
+  },
+  "runs": [
+    {
+      "directory": "run-1",
+      "result_sha256": "14dc30d91456b8609f5b055280da793ca85b7d1a1c4f2ea3cbf802294de9b358",
+      "canonical_log_sha256": "ac305576b1638001271f1f01a0c852284b9e58c7ef18a43e2a83316502921633"
+    },
+    {
+      "directory": "run-2",
+      "result_sha256": "a02243e44146599ec556dbfc989432381492d7b356a5eca0bedca6015a4fc5fb",
+      "canonical_log_sha256": "e7fc612f4ae1175593386f0fda9faeaf769a5f51b23c6db9756b1812fc7f4a1a"
+    },
+    {
+      "directory": "run-3",
+      "result_sha256": "98351989964740e22fbd867731bab628cdabae3c0f0573473e2bb62970f0d375",
+      "canonical_log_sha256": "bec6c32717e5653da6f5fad3c87b8fd178a4cf29ad022599f80f23188394e1d3"
+    },
+    {
+      "directory": "run-4",
+      "result_sha256": "48c634f808ca7895fff83e2da2a9fe20afdbe9702fc4ad6fda3dbdb05cbe65cb",
+      "canonical_log_sha256": "764f0cdfee9b0bb096b7e70e2edb6803d1c929255f8a14c1a1775bf5bf4a23ca"
+    },
+    {
+      "directory": "run-5",
+      "result_sha256": "ec835904828f6d1fbda71cbc52ba9a80705c3b9c8a59e93502b3ad117c0032c2",
+      "canonical_log_sha256": "43a82351b17ae0dc1fb389e4f99ab99c2eee0c8b48d8a9366fef5763ea34ed65"
+    }
+  ],
+  "limits": [
+    "The 20-byte spacing is only a candidate stride inferred from sampled target offsets, not a proven full-table boundary.",
+    "Maincpu ROM descriptor identity/semantics are unknown; do not call entries vehicles without further evidence.",
+    "GSP FIFO writes are shared traffic from many PCs and are not assigned to particular records by this experiment.",
+    "The ADSP object-ROM region mainpcb:user1 is separate and its asset boundaries remain unresolved."
+  ]
+}

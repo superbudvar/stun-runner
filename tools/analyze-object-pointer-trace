@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""Cross-reference same-run 68010 object-record pointers to ROM descriptor bytes.
+
+Reads `stunrun-ram-read-write-trace-result/v1` plus the exact flat MC68010 ROM
+image, pairs the two word reads of `$02E226`'s `MOVEA.L ($26,A2),A0`, and
+checks the descriptor-field reads at `$02E220/$02E22A/$02E230/$02E25A/$02E264`
+against the ROM bytes. It reports raw words and offsets, not vehicle names or
+gameplay semantics. A pointer or field that does not map to this ROM or its
+observed 20-byte-grid entries is rejected rather than assigned a plausible
+meaning.
+
+What this tool gets wrong: it only knows the one object-copy routine and PC
+window listed above. It misses other pointer fields/readers, does not prove that
+all ROM records were found, and cannot tell what an entry depicts. GSP FIFO
+writes are reported as same-run context only; shared FIFO traffic is not
+attributed to any particular object entry by this analysis.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import pathlib
+import sys
+
+MAINCPU_IMAGE_BYTES = 0xC0000
+POINTER_LOAD_PC = 0x02E226
+POINTER_FIELD_OFFSET = 0x26
+ENTRY_BYTES = 0x14
+FIELD_READS = {
+    0x02E220: (0x0C, 0x0E),
+    0x02E22A: (0x00,),
+    0x02E230: (0x02,),
+    0x02E25A: (0x08, 0x0A),
+    0x02E264: (0x06,),
+}
+
+
+def fail(message: str) -> "NoReturn":
+    print(f"analyze-object-pointer-trace: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def u16be(image: bytes, address: int) -> int:
+    return int.from_bytes(image[address:address + 2], "big")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("trace", type=pathlib.Path,
+                        help="same-run mame-ram-read-write-trace result.json")
+    parser.add_argument("maincpu_image", type=pathlib.Path,
+                        help="flat big-endian image from tools/build-maincpu-image")
+    parser.add_argument("--json", action="store_true",
+                        help="emit stunrun-object-pointer-correlation-v1 JSON")
+    args = parser.parse_args()
+
+    try:
+        trace = json.loads(args.trace.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"cannot read trace JSON: {exc}")
+    try:
+        image = args.maincpu_image.read_bytes()
+    except OSError as exc:
+        fail(f"cannot read maincpu image: {exc}")
+    if len(image) != MAINCPU_IMAGE_BYTES:
+        fail(f"maincpu image must be exactly {MAINCPU_IMAGE_BYTES} bytes "
+             f"(0x{MAINCPU_IMAGE_BYTES:x}), got {len(image)}")
+    if trace.get("schema") != "stunrun-ram-read-write-trace-result/v1":
+        fail("trace schema must be stunrun-ram-read-write-trace-result/v1")
+    read_trace = trace.get("read")
+    write_trace = trace.get("write")
+    if not isinstance(read_trace, dict) or not isinstance(write_trace, dict):
+        fail("trace must contain both same-run read and write records")
+    if read_trace.get("truncated") or write_trace.get("truncated"):
+        fail("refusing truncated read/write traces")
+    if read_trace.get("event_count") != len(read_trace.get("events", [])):
+        fail("read event_count does not match its event list")
+    if write_trace.get("event_count") != len(write_trace.get("events", [])):
+        fail("write event_count does not match its event list")
+
+    read_events = sorted(read_trace["events"], key=lambda item: item.get("order", -1))
+    pointer_events = [item for item in read_events
+                       if item.get("pc") == POINTER_LOAD_PC]
+    if not pointer_events or len(pointer_events) % 2:
+        fail("pointer-load reads at $02E226 must form complete high/low word pairs")
+
+    pointer_records = []
+    for index in range(0, len(pointer_events), 2):
+        high, low = pointer_events[index:index + 2]
+        if (high.get("frame") != low.get("frame") or
+                high.get("address", -1) + 2 != low.get("address") or
+                high.get("order", -1) + 1 != low.get("order")):
+            fail(f"unpaired $02E226 longword read at event index {index}")
+        record_field = high["address"]
+        if record_field < POINTER_FIELD_OFFSET:
+            fail(f"invalid pointer-field address 0x{record_field:X}")
+        record_base = record_field - POINTER_FIELD_OFFSET
+        target = ((high["data"] & high["mask"] & 0xFFFF) << 16) | \
+                 (low["data"] & low["mask"] & 0xFFFF)
+        if target + ENTRY_BYTES > len(image):
+            fail(f"pointer 0x{target:06X} at record 0x{record_base:06X} "
+                 "does not address a complete record in the flat maincpu image")
+        pointer_records.append({
+            "frame": high["frame"],
+            "record_base": record_base,
+            "pointer_field_address": record_field,
+            "target": target,
+            "read_order": high.get("order"),
+        })
+
+    targets = sorted({item["target"] for item in pointer_records})
+    target_set = set(targets)
+    observed_by_target: dict[int, set[int]] = {target: set() for target in targets}
+    checked_reads = 0
+    mismatches = []
+    unmatched_reads = []
+
+    for event in read_events:
+        offsets = FIELD_READS.get(event.get("pc"))
+        if offsets is None:
+            continue
+        matches = [(event["address"] - offset, offset) for offset in offsets
+                   if event.get("address", -1) >= offset and
+                   event["address"] - offset in target_set]
+        if len(matches) != 1:
+            unmatched_reads.append({
+                "frame": event.get("frame"), "pc": event.get("pc"),
+                "address": event.get("address"), "data": event.get("data"),
+            })
+            continue
+        target, offset = matches[0]
+        observed = event["data"] & event["mask"] & 0xFFFF
+        expected = u16be(image, event["address"])
+        checked_reads += 1
+        observed_by_target[target].add(offset)
+        if observed != expected:
+            mismatches.append({
+                "frame": event["frame"], "pc": event["pc"],
+                "address": event["address"], "observed": observed,
+                "rom_word": expected, "target": target,
+            })
+
+    if mismatches:
+        fail(f"{len(mismatches)} observed descriptor word(s) disagree with ROM bytes")
+    if unmatched_reads:
+        fail(f"{len(unmatched_reads)} descriptor read(s) do not map to the "
+             "captured pointer targets")
+    if not checked_reads:
+        fail("no descriptor-field reads matched the captured pointer targets")
+
+    entries = []
+    for target in targets:
+        words = [u16be(image, target + offset) for offset in range(0, ENTRY_BYTES, 2)]
+        entries.append({
+            "target": target,
+            "raw_words_be": words,
+            "observed_field_offsets": sorted(observed_by_target[target]),
+            "unobserved_word_offsets": sorted(
+                set(range(0, ENTRY_BYTES, 2)) - observed_by_target[target]),
+        })
+
+    fifo_events = [event for event in write_trace["events"]
+                   if event.get("address") in (0xC0000C, 0xC0000E)]
+    differences = [b - a for a, b in zip(targets, targets[1:])]
+    candidate_stride = math.gcd(*differences) if differences else None
+    result = {
+        "schema": "stunrun-object-pointer-correlation-v1",
+        "trace": {
+            "input": write_trace.get("input"),
+            "frames": [write_trace.get("capture_start_frame"),
+                       write_trace.get("capture_end_frame")],
+            "read_event_count": read_trace["event_count"],
+            "write_event_count": write_trace["event_count"],
+            "canonical_log_sha256": read_trace.get("canonical_log_sha256"),
+        },
+        "rom": {
+            "path": str(args.maincpu_image),
+            "bytes": len(image),
+            "sha256": hashlib.sha256(image).hexdigest(),
+        },
+        "pointer_load": {
+            "pc": POINTER_LOAD_PC,
+            "record_pointer_offset": POINTER_FIELD_OFFSET,
+            "records": pointer_records,
+            "record_count": len(pointer_records),
+            "unique_target_count": len(targets),
+            "targets": targets,
+        },
+        "descriptor_reads": {
+            "field_reader_pcs": {f"0x{pc:06X}": list(offsets)
+                                  for pc, offsets in FIELD_READS.items()},
+            "checked_reads": checked_reads,
+            "rom_mismatches": 0,
+            "entries": entries,
+        },
+        "same_run_fifo_context": {
+            "address_range": [0xC0000C, 0xC0000E],
+            "write_count": len(fifo_events),
+            "writer_pcs": sorted({event["pc"] for event in fifo_events}),
+            "attribution": "not established; FIFO is shared by multiple writers",
+        },
+        "layout_observation": {
+            "candidate_target_spacing_bytes": candidate_stride,
+            "confidence": "inference only; observed pointers do not establish table bounds",
+        },
+        "unknowns": [
+            "descriptor field semantics and vehicle/object identities",
+            "whether the sampled pointer targets exhaust all game data entries",
+            "which specific FIFO writes are caused by each object descriptor",
+            "the separate ADSP user1 object-ROM asset boundaries",
+        ],
+    }
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"{result['pointer_load']['record_count']} runtime records reference "
+              f"{result['pointer_load']['unique_target_count']} maincpu ROM entries; "
+              f"{checked_reads} descriptor reads match ROM bytes; "
+              f"{len(fifo_events)} same-run FIFO writes remain unattributed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
