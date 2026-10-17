@@ -113,6 +113,18 @@ execute. Treat the static caller chain as a candidate, not a runtime-proven
 source of those rendered primitives. Details and trace provenance are in
 `analysis/object-record-renderer-path.md:7-18,58-96`.
 
+**Additional runtime correlation (2026-10-17):** a separate copy routine at
+`$02E226` loads a longword from offset `+$26` in each of 23 observed runtime
+records, and the subsequent reads at `$02E220/$02E22A/$02E230/$02E25A/$02E264`
+match 13 unique targets in the maincpu ROM byte-for-byte across five repeated
+`late_drive` runs. This confirms those sampled record fields are consumed as
+maincpu-ROM descriptor pointers, but does not connect them to the
+`$FFDD86`-to-emitter path, identify any entry as a vehicle, or prove global
+table boundaries. The 23,210 same-run GSP FIFO writes have multiple writer
+PCs and are not attributed to these entries. Full provenance and limitations:
+`analysis/object-pointer-deref-correlation.md` and
+`reference/experiments/stunrun/m5-object-pointer-deref-correlation/metadata.json`.
+
 These are MC68010-visible program-ROM references. The separate `mainpcb:user1`
 ADSP object ROM is read through the ADSP `/MP` and `/SIMBUF` interface; it is
 not a main-CPU ROM overlay or a direct reference from the MC68010 address

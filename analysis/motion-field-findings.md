@@ -39,21 +39,30 @@ Those are implementation placeholders, not oracle facts.
 
 ## Static arithmetic boundary
 
-The regenerated main-CPU listing gives the literal update shape around the
-active writer at `0x03ABDE`:
+The regenerated main-CPU listing gives the literal state transition around the
+active writer at `0x03ABDE` (corrected after comparison with the full branch
+path; see `docs/mc68010-boot-findings.md` §89):
 
 ```text
-if (timer_at_FFDD4E != 0 && FFDD16 < 0x0B00)
-    FFDD16 += 0x40;
-else if (FFDD16 > (local_limit + 0x40))
-    FFDD16 -= 0x20;
-else
-    FFDD16 = FFDD1E + FFDD1A;
-FFDBFE += FFDD16;
+if FFDD4E != 0:
+    FFDD4E--
+    if FFDD4E == 0: FFDD50 = 0; FFDD0A = 0xFF
+    if unsigned(FFDD16) < 0x0B00: FFDD16 += 0x40
+    goto accumulator_update
+else:
+    if unsigned(sign_extend(FFDD16)) > unsigned(sign_extend(local_limit) + 0x40):
+        FFDD16 -= 0x20
+    else:
+        FFDD16 = low_word(sign_extend(FFDD1E) + sign_extend(FFDD1A))
+accumulator_update:
+    FFDBFE += sign_extend(FFDD16)  // wrapping 32-bit add
 ```
 
-The pseudo-code preserves only the observed operations; the local limit and
-timer meaning are not assigned here. Initialization at `0x03B18C` and
+The timer-nonzero path branches around the timer-zero decay/base-sum block even
+when the motion word is already at or above `$0B00`; the old C model had
+incorrectly merged those paths. The pseudo-code preserves the observed
+operations; the local limit and timer meaning are not assigned here.
+Initialization at `0x03B18C` and
 `0x03B29E` clears `0xFFDD16`, while neighboring fields are initialized by
 separate stores. This is enough to replace the native “increment on steering”
 placeholder with a future literal slice once its caller inputs are traced.

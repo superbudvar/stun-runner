@@ -63,7 +63,7 @@ cite.
 | `analysis/gsp-jr-conditions.md` | **S9 `[SPVU001A]`** for every condition predicate and the three JR/JA forms (pp. 12-92/94/96, read off page images); S7 `[MAME]` for `34010dsm.cpp` / `34010ops.hxx` |
 | `tests/test_gsp_jr_conditions.py` | **S9 `[SPVU001A]`** for every expected predicate; S7 for the executor text it perturbs |
 | `tools/check-gsp-executed` | S7 `[MAME]` for the fetch/oplog hooks and the share layout |
-| `BUGS.md` **MD-14** | **S9 `[SPVU001A]`** is the authority on the JR/JA forms; S7 `[MAME]` for the conflicting dsm/executor source |
+| `BUGS.md` **MD-14** (withdrawn) | **S9 `[SPVU001A]`** for JR/JA encodings; S7 `[MAME]` executor/disassembler source was re-read and found consistent with S9 |
 | `tests/test_disasm_gsp.py` | **S9 `[SPVU001A]`** for every expected mnemonic and encoding |
 
 ## Adding a source

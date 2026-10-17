@@ -376,21 +376,24 @@ Full public suite with the new file: **362 tests, OK, 88.7 s.**
 
 ---
 
-## 5. A discrepancy in another tool — reported, not fixed
+## 5. A discrepancy in another tool — fixed
 
-`tools/gsp-program-map:88` folds a trace with
+`tools/gsp-program-map` originally folded a trace with
 
 ```python
 fetched.add(pc & (SHARE_BYTES - 1))     # pc is pc_BITS; this masks with the BYTE size
 ```
 
 Section 2 measures that fold at **0 of 656** records against the correct
-`(pc_bits >> 3) & 0x7ffff`. It should presumably use the trace's own fourth
-column (`pc_byteaddr` = `pc_bits >> 3`) masked to the share, or the shifted form
-above. **I did not edit that file** — this bead's write scope is its own three
-files, and its output is a function/entry table whose `reached` flags and
-`last_fetched_offset` inherit the wrong fold. Consequences for anything that
-read those numbers, all reported rather than fixed:
+`(pc_bits >> 3) & 0x7ffff`. The tool now shifts the TMS34010 bit address by 3
+before masking it into the physical share. A synthetic regression test supplies
+`pc_bits=0xffa00000` (byte offset `0x40000`) and asserts both
+`last_fetched_offset=0x40000` and that the entry is reached; with the old mask,
+the offset was zero and the entry was not reached. The remaining issue-specific
+regression tests pass (`python3 -m unittest discover -s tests -p
+'test_gsp_program_map.py' -v`, 6 tests).
+
+This repairs the two affected outputs:
 
 - `last_fetched_offset` and the `reached` column;
 - `tools/gsp-program-map`'s own docstring, which describes the same linear decode
@@ -410,8 +413,9 @@ read those numbers, all reported rather than fixed:
   §87.5 records the fix and the correct distinction. This is AGENTS.md trap 11 /
   `stun-runner-a9q` seen from the other side.
 
-Whether `0x40000` was ever a meaningful program origin is **`UNKNOWN`**; the
-correct fold and the upload range agree, and I did not run anything further.
+Earlier interpretations derived from the bad fold should be rechecked before
+reuse. This fix alone does not revalidate any capture or establish whether
+`0x40000` was a meaningful program origin; that remains **`UNKNOWN`**.
 
 ---
 

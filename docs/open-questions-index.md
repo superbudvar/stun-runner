@@ -65,14 +65,12 @@ mnemonic and its own expansion were compared as if they were rival claims. This
 would have become a false upstream bug report, which is the specific harm
 `BUGS.md` exists to avoid.
 
-> **Does MD-14 contradict (2)? No — different field.** Correction 2 is about
-> the **condition** field `op[11:8]`: disassembler mnemonic vs executor predicate,
-> and the two agree on all sixteen. `BUGS.md` **MD-14** is about the **form**
-> field `op & 0x00ff`, where the disassembler and the executor select *different
-> instructions* and both disagree with SPVU001A in opposite directions. A reader
-> who finds "no disassembler-vs-executor divergence on JR" and "MD-14: JR
-> divergence" is looking at two axes of the same instruction, not a
-> contradiction. The condition table is sound; the form decode is not.
+> **MD-14 was a false report, now withdrawn.** Correction 2 is about the
+> **condition** field `op[11:8]`: disassembler mnemonic vs executor predicate,
+> and the two agree on all sixteen. The later MD-14 claim was about the **form**
+> field, but it misread the `_0` and `_8` executor helpers: `0x00` is word-relative
+> in `j_xx_0`; `0x80` is absolute in `j_xx_8`. Both agree with the ISA and
+> disassembler. Findings §88 and the MD-14 tombstone preserve the refutation.
 
 **3. MD-09's "non-canonical `movea.l`" claim is retracted.**
 `0x2279 & 0xf1ff == 0x2079` exactly — canonical `movea.l #<long>`, An=1, full
@@ -142,17 +140,12 @@ closed, and it closes on the commit.
 - **Status** — `candidate, unverified`. This **narrows** the question rather than answering it: MAME's handler drops the LED write too, so a MAME-side drop cannot by itself explain a count difference seen on a bus tap upstream of the handler. §77.9's own proposed instrument (`STUNRUN_WATCH_WRITE=0x818002` plus MAME's writer PC) is still the right next step. I did not trace the native side — `grep` for `0x818002` across `native/` and `reproduction/` returns nothing, so where our count of 1 is taken is itself unidentified.
 - **Bead** — none
 
-### F7 — the ADSP program-upload unit: three in-tree reads settle the driver half
+### F7 — the ADSP program-upload unit (resolved)
 
-- **Question** — "**`destination_word_index` and the recorded byte range in that metadata are not currently reconciled, and no claim that a 68010 window byte offset equals an ADSP program address is safe until they are.**" (findings **§82.3**, `:12939-12956`)
-- **Where the answer may already be** — three reads, all made in this pass, that compose:
-  1. `harddriv.cpp:4823` — `install_write_handler(0x800000, 0x807fff, write16s_delegate(…, hd68k_adsp_program_w))`, so the handler receives a **byte** offset.
-  2. `harddriv_m.cpp:622-640` — `hd68k_adsp_program_w` indexes `m_adsp_pgm_memory[offset/2]` and, on `!(offset & 1)`, `COMBINE_DATA` into `oldword >> 16`, i.e. the **high** lane. An even byte offset takes the high lane; an odd one the low lane.
-  3. `analysis/m1-landmarks.md:17` — the ROM's producer at `$02D35C` is `move.l D0,(A2)+`. A `MOVE.L` issues two 16-bit writes at offsets *k* and *k+2*, which are the **same parity** (gloss).
-  - Composed: a 68010 `MOVE.L` to this window can only ever land in high lanes. The captured entry word's non-zero low half (findings §82.3) therefore cannot have come from `$02D35C`, which is the dichotomy §82.3 says it cannot yet choose between.
-- **Status** — `candidate, unverified`. I did **not** establish where the low half *does* come from. That is the remaining half of §82.3 and it is now a much smaller question.
-- **Bead** — none
-- **Note** — `tools/disasm-adsp` consumes the capture and is independent of the window; §82.3 already says its output stands.
+- **Question** — how does the 68010 byte-address range map to ADSP 32-bit program words, and how do both halfwords reach the high/low lanes? (findings **§82.3**)
+- **Measurement/source** — pinned MAME's 16-bit address-space handler computes callback offset by shifting the byte address by one (`/mnt/build/mame-ref/src/emu/emumem_hedp.cpp:119-125`, `m68000.cpp:24`, [S7]); the handler's `offset/2` groups adjacent callback offsets into a 32-bit program word, selecting high then low lanes (`harddriv_m.cpp:615-640`, [S7]). Therefore `program_word=(byte_address-0x800000)/4`. The final destination word `0x1235` writes at `0x8048d4/0x8048d6`, matching the captured inclusive byte range; the entry word at index 4 has nonzero low bits.
+- **Status** — `ANSWER ALREADY EXISTS`; the previous “same parity” argument mixed byte addresses with handler word offsets and is withdrawn as our unit error.
+- **Bead** — `stun-runner-0o9` (closed; findings §82.3 and `analysis/interconnect.md` updated)
 
 ### F10 — §68.5's "the `$052F`-`$0544` scan is still untranscribed" is superseded
 
@@ -286,13 +279,13 @@ closed, and it closes on the commit.
 - **Bead** — none
 - **Gloss** — the "first input-dependent GSP submission" keeps failing to appear because the schedules that would produce it do not reach gameplay; that is one blocker wearing three question-shaped hats.
 
-### F27 — §85.3's unreconciled ADSP nonzero-word count
+### F27 — §85.3's ADSP frame-600 images differ (still open)
 
-- **Question** — "§'Completed baseline slices' records this tool capturing 'a repeatable full ADSP program image at frame 600 (**2,718 nonzero words**)'. Today's fresh capture of the same tool, same frame, same ROM set, reads **4,356**. … **Neither number should be trusted until it is reconciled.**" (findings **§85.3**, `:13281-13293`)
-- **Where the answer may already be** — §85.3's own hypothesis was `analysis/mame-local-patches.md`'s statement that the two binaries are not interchangeable, and that section (`:162-200`) supplies exactly what §85.3 lacked: the two binary hashes and mtimes (oracle `75b09ee4…`, 2026-10-09; stunrun-observe `55956f2b…`, 2026-10-14), and "**The committed captures predate the `mame-ref` rebuild.**" See F28.
-- **Status** — `ANSWER ALREADY EXISTS` (the cause is recorded: different binaries, different dates). **Not** reconciled as a *measurement*: the 2,718 capture's metadata does not appear to name its binary, and §85.3 notes `raw_artifacts_kept_local` means the image is not committed, so the two images cannot be diffed byte-for-byte from the tree. The row the patch file asks for — `reference/checkpoints/title/metadata.json` naming the binary that produced its capture — is recorded as wanted but not done (`analysis/mame-local-patches.md:202-207`).
-- **Bead** — none
-- **Action this points at** — `reference/checkpoints/title/metadata.json` and `fixtures/oracle/frame_600/metadata.json` are the two records that should name a binary. Both currently do not. That is a two-file edit with no ambiguity in it.
+- **Question** — why do two frame-600 ADSP captures differ: 4,356 nonzero words / PC `0x060E` versus 2,718 / PC `0x0014`? (findings **§85.3**)
+- **Measurement** — the 4,356-word image is still locally available (SHA-256 `b8c2d259…`), but its producer binary and effective cfg/NVRAM/input state are absent. Fresh isolated captures on both named binaries produce the same 2,718-word image (SHA-256 `821f3478…`). The older image has 1,638 nonzero words absent from the fresh image; 1,640 word values differ overall.
+- **Status** — `NARROWED, NOT RECONCILED`; binary mismatch is not supported by fresh paired runs, while capture-state mismatch remains a hypothesis.
+- **Bead** — `stun-runner-w55` (reopened; do not discard either image)
+- **Separate follow-up** — incomplete binary identity for older captures remains tracked by `stun-runner-xiw`.
 
 ### F28 — the frame-600 oracle fixture no longer reproduces on either binary, and its metadata misdescribes it
 
@@ -302,10 +295,9 @@ closed, and it closes on the commit.
   2. `fixtures/oracle/frame_600/metadata.json` describes that same frame as **"INSERT 1 COIN title/attract screen"**. "The description is wrong; the pixels are not in question."
   3. Running `tools/mame-gsp-state-snapshot` with the same `--input none` and the same frame targets against **either** binary today produces a **title screen** at frame 600 (`sha256 29f95e8820efecde…`). So the committed frame is not reproducible from the tree as it stands.
   4. The cause is MD-12 itself: "MD-12 is a defect in the *driver's* GSP register write path … A fix there changes GSP I/O behaviour on exactly the hardware the title screen depends on."
-- **Status** — `ANSWER ALREADY EXISTS` — and it is load-bearing for three other rows, none of which mention it:
+- **Status** — `ANSWER ALREADY EXISTS` — and it is load-bearing for two other rows, none of which mention it:
   - **F12.** §50's 99.81%-differing measurement compares our frame-600 output against `fixtures/oracle/frame_600/frame_600_screen.png`. That PNG is self-play and does not reproduce on either binary today, so §50's percentage has no stable reference.
   - **F13.** §80's frame-400 work and §39.6's shear are both frame-600/400 picture questions on the same fixture line.
-  - **F27.** The 2,718-vs-4,356 count gap is the same rebuild.
 - **Bead** — none
 - **The rule this record states, which no section in the findings log currently enforces** — "**Any comparison must state which binary produced each side, or it is meaningless.**" That is a rule about *provenance*, and `EVIDENCE.md` is where it belongs. I have not checked whether `EVIDENCE.md` already carries it; I did not read that file this pass. **UNKNOWN whether the rule is already written down elsewhere.**
 - **Caution** — this does not make §53's conclusion wrong. §53 found the fixture rasterises blank with MAME's own registers; this finds that the *screenshot* next to it shows a different scene than its own metadata claims, and that the scene does not reproduce. Both are reasons the frame-600 parity line is not settled, and they are different faults.
@@ -316,14 +308,13 @@ closed, and it closes on the commit.
 
 ### 1. `ANSWER ALREADY EXISTS` — verified in this pass
 
-Six rows, after draining five into the ledger above. In rough order of value:
+Five rows, after draining five into the ledger above. In rough order of value:
 
 | # | Row | What is already there | Why it matters |
 |---|---|---|---|
-| F28 | the frame-600 fixture | `analysis/mame-local-patches.md:162-200`: the PNG shows self-play, its metadata says title/attract, and it does not reproduce on **either** binary today | Load-bearing for F12, F13 and F27, none of which mention it. It changes what a whole class of frame-600 comparison means. |
+| F28 | the frame-600 fixture | `analysis/mame-local-patches.md:162-200`: the PNG shows self-play, its metadata says title/attract, and it does not reproduce on **either** binary today | Load-bearing for F12 and F13, neither of which mention it. It changes what a whole class of frame-600 comparison means. |
 | F12 | §39.6/§50/§53.3 colour parity | A negative measurement, plus an internal contradiction about what it means, plus F28 removing its reference frame | Cheapest row here to reconcile, and the contradictions are the real content. |
 | F23 | SOM consumer semantics | §57/§59/§60 answer §54.5's sub-questions | Splits one long "not established" list into a closed part (§58.4, listed in section 3) and a genuinely open part. |
-| F27 | §85.3's 2,718-vs-4,356 | The cause, with both binary hashes and mtimes | Reconciled as *cause*, not as measurement — the images are not committed. |
 | F10 | §68.5's `$052F`-`$0544` scan | Findings §71 | Direct transcription work removed from a bead's critical path. |
 | F11 | §69.5's ring caller | Findings §72 | Same. |
 
@@ -356,27 +347,21 @@ Cheapest first. Every one of these is a file read or a single grep.
 5. **F6** — LED write count. The MAME half is settled; the native half is one
    grep for where our count is taken (`0x818002` appears nowhere in `native/` or
    `reproduction/`).
-6. **F7** — ADSP upload unit. Three in-tree reads already settle the driver half;
-   the remainder is "where does the low half come from".
-7. **F14** — §6 item 3. Re-verify the premise (done: `m68kconf.h:135-136` still
+6. **F14** — §6 item 3. Re-verify the premise (done: `m68kconf.h:135-136` still
    off), then compare against `harddriv_state::machine_reset`.
-8. **F17** — §62's non-reproduction. Read the committed capture's `metadata.json`
+7. **F17** — §62's non-reproduction. Read the committed capture's `metadata.json`
    and diff against the failing command.
-9. **F22** — §66.6 header order. The producer disassembly is named in the source;
+8. **F22** — §66.6 header order. The producer disassembly is named in the source;
    the synthetic-record control makes carrying the answer safe.
-10. **F27** — the two-file edit F27's row names:
-    `reference/checkpoints/title/metadata.json` and
-    `fixtures/oracle/frame_600/metadata.json` should each name the binary that
-    produced them.
-11. **F20** — `drive_hold`. Not a knowledge question but a live trap in the
+9. **F20** — `drive_hold`. Not a knowledge question but a live trap in the
     input-mode registry.
-12. **F16** — the 224 ADSP addresses. Per-address work, but each step is the
+10. **F16** — the 224 ADSP addresses. Per-address work, but each step is the
     §85.5 rule and `tools/disasm-adsp:96` names the exact MAME lines.
-13. **F18** — the IRQ5 delivery drop. First step is deciding which counter each
+11. **F18** — the IRQ5 delivery drop. First step is deciding which counter each
     of the two records is reading.
-14. **F19**, **F26** — both blocked behind "a schedule that reaches verified
+12. **F19**, **F26** — both blocked behind "a schedule that reaches verified
     gameplay", which none of the current ones does.
-15. **F13** — §39.6's shear. Re-run §80's checks, and read F28 first: the
+13. **F13** — §39.6's shear. Re-run §80's checks, and read F28 first: the
     reference frame may not be the one §80 used.
 
 ### 3. Genuinely open — no candidate found
@@ -582,11 +567,11 @@ gloss. `—` means the bead states none, which is 30 of 44.
 | `stun-runner-gsvp.4` | First milestone: GSP executes and its VRAM writes match the MAME oracle | open | at a bounded frame the RTL core's VRAM/palette/display registers are compared against MAME; the difference is zero or characterised as bounded |
 | `stun-runner-gsvp.5` | Replay GSP inputs at oracle emulation times | in_progress | at frame 450 each captured event advances at its MAME timestamp on a 48 MHz GSP clock; malformed timing rejected; frame-only captures clearly marked |
 | `stun-runner-nhc` | Palette: separate palette bank from palette contents, and check the 'not a memory share' claim | open | — (no description either) |
-| `stun-runner-o1p` | capture and decode 68010→GSP display list format | open | — **blocked by `stun-runner-s5r`** |
+| `stun-runner-o1p` | capture and decode 68010→GSP display list format | open | — (no active blocker recorded here) |
 | `stun-runner-q9t` | Decode the SOM payload format: which word is which vertex | open | — |
 | `stun-runner-rg9` | Port the MC68010 `$25E8` text-draw routine end to end | in_progress | — |
-| `stun-runner-s5r` | native: MC68010 stalls waiting on absent co-processors — find which handshake never completes | in_progress | — **blocks `o1p` and `4vf`; the only `in_progress` blocker on the board** |
-| `stun-runner-w55` | Reconcile the ADSP frame-600 `nonzero_words`: 4,356 today vs 2,718 in STATUS | open | — (notes: record which binary produced which figure, or retire one number) |
+| `stun-runner-s5r` | [superseded] MC68010 post-GSP wait investigation | closed | The `$FFDB48` wait is a RAM semaphore; INTOUT cadence follow-up is `stun-runner-9m4`. Findings §51. |
+| `stun-runner-w55` | Reconcile the ADSP frame-600 `nonzero_words`: 4,356 vs 2,718 | open | Fresh isolated captures agree at 2,718, but the 4,356-word image exists; producer state unknown. |
 | `stun-runner-yuv` | Add an ADSP executed-PC trace hook to the observer MAME build | open | — (gating step for `8y8`'s ADSP half) |
 
 ## P2 — 16 beads
@@ -594,7 +579,7 @@ gloss. `—` means the bead states none, which is 30 of 44.
 | id | title | status | acceptance |
 |---|---|---|---|
 | `stun-runner-47h` | Establish the GSP share fold period: what the board does above 512 KiB | open | — |
-| `stun-runner-4vf` | native: integrate GSP/TMS34010 video output | open | — **blocked by `stun-runner-s5r`** |
+| `stun-runner-4vf` | native: integrate GSP/TMS34010 video output | open | — (no active blocker recorded here) |
 | `stun-runner-63p` | Adopt structured evidence bundles and preflight | open | — |
 | `stun-runner-6tf` | Complete the TMS34010 JR condition table from the uploaded GSP program *(retitled: the old title cited §85.1's `7,411`, which §87 qualifies to a one-word-in-eight subsample)* | open | — |
 | `stun-runner-8ix` | Decide the fate of three superseded agent branches | open | — (recommendation recorded: do not merge; one asset at risk, see row) |
@@ -607,7 +592,7 @@ gloss. `—` means the bead states none, which is 30 of 44.
 | `stun-runner-t9y` | Close remaining partial-capture gaps in MAME wrappers | open | all six wrappers refuse a silently truncated capture (missing DONE marker / fewer targets / wrong frames → non-zero with a diagnosis naming the shortfall), each with a test proven to fail when the check is removed, plus a live clean re-run; **no recorded oracle value changes** |
 | `stun-runner-wch` | Make the disassembly sweep a repeatable check, not a `/tmp` number | open | — |
 | `stun-runner-xiw` | Label every MAME measurement as oracle or observer build | open | — |
-| `stun-runner-xop` | Inventory static data and unused regions in STUN Runner ROMs | in_progress | — |
+| `stun-runner-xop` | ROM static-data inventory (documented; GSP writer follow-up remains) | in_progress | Inventory documented; parent remains open because child `stun-runner-xop.1` is open. |
 | `stun-runner-xop.1` | Trace and convert MC68010 GSP VRAM writers | open | a reproducible trace identifies writer PCs, and one confirmed writer routine has a C slice with an observable test |
 
 ## P3 — 7 beads
@@ -690,12 +675,12 @@ rather than a shrug:
 And for completeness, the bead this pass moved out of "no candidate":
 `stun-runner-xiw` (see T21 and T5).
 
-**Nine outstanding beads are not assessed here**, and the section header's
-"every open bead" should be read as "every open bead I looked at". Eight are
-`in_progress` — `1fv`, `aao`, `bzq`, `gsvp`, `gsvp.5`, `rg9`, `s5r`, `xop` — and
-`in_progress` means another lane owns them, so a premise verdict from this pass
-would be a guess about someone else's work. The ninth is
-**`stun-runner-4vf`** (P2, open, blocked by `s5r`): its title is duplicated by the
+**Eight outstanding beads were not assessed in the original pass**, and the section header's
+"every open bead" should be read as "every open bead I looked at". Seven are
+`in_progress` — `1fv`, `aao`, `bzq`, `gsvp`, `gsvp.5`, `rg9`, `xop` — and
+`in_progress` was tracker status at that assessment, not proof that an agent is
+currently active; confirm ownership before treating one as in flight. The eighth is
+**`stun-runner-4vf`** (P2, open): its title is duplicated by the
 closed `stun-runner-1wz` (T4), which is the only thing worth saying about it
 before anyone spends it, and I did not read `1wz`'s closure to check.
 
@@ -775,7 +760,8 @@ entry and no withdrawal note** in `BUGS.md` — the MAME-driver section runs MD-
 "Lua cannot read the share at all", our stride error, not a MAME defect). But
 `docs/mame-machine-reference.md:126` still tells the reader that "`BUGS.md`
 MD-04/MD-05 … record the consequence", `:1015` still lists MD-05 as a `BUGS.md`
-entry, and bead **`stun-runner-s5r` cites MD-05** as if it were live. This is
+entry. The now-closed, superseded bead `stun-runner-s5r` also retains an old
+MD-05 reference in its historical description; it is not active work. This is
 MD-13's shape one ID earlier: a retracted claim that keeps being cited because
 nothing says it is dead. **A tombstone belongs in `BUGS.md` next to MD-10/MD-11.**
 

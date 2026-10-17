@@ -16,10 +16,10 @@ separately, because they have different answers and different kinds of evidence:
 - **(b) what each code means** — sourced to SPVU001A (S9), which was read for
   this work.
 
-It also reports the two places where **MAME's disassembler and MAME's executor
-disagree**, which is not the same as where they disagree about *conditions*: on
-the conditions they agree completely, and the divergence is one level down, in
-the *form* field of the same `switch`.
+It also records the later form-decoding audit: MAME's disassembler and executor
+agree on all three JR/JA forms. The apparent form divergence was our own
+misreading of the form-specific executor macros; findings §88 records the
+refutation.
 
 Everything is held by `tests/test_gsp_jr_conditions.py`, which needs neither a
 ROM set nor a capture nor the manual online.
@@ -150,8 +150,8 @@ is where §85.1's "**all 18 JR condition variants appear**" lands:
 | | | `JRNC` | 116 | `JRNE` | 170 | | |
 | | | `JRNN` | 63 | | | | |
 
-1,258 total. `JA` and `JAHI` are the `JAcc` form — the one MAME's executor does
-not implement, see below.
+1,258 total. `JA` and `JAHI` are the `JAcc` absolute form, implemented by the
+`j_xx_8` executor arm when the low nibble is zero.
 
 Totals: 1,258 whole share, **294 inside the program extent**. Inside the extent
 the count is **17** distinct names and **15** of the 16 condition codes —
@@ -206,9 +206,9 @@ All three forms, read off the page images:
 
 | form | SPVU001A | printed page | MAME disassembler | MAME executor |
 |---|---|---|---|---|
-| `JAcc Address` | `1 1 0 0  code  1 0 0 0 0 0 0 0`, 3 words, `code` at `op[11:8]` | `12-92` | `(op & 0x00ff) == 0x80` → `JA` + `print_long_parm` | see "the JAcc gap" below |
-| `JRcc Address`, ±127 words | `1 1 0 0  code  offset(8 bits)`, 1 word | `12-94` | default arm → `print_relative_8bit` | `j_<cc>_8` / `j_<cc>_x` |
-| `JRcc Address`, ±32K words | `1 1 0 0  code  0 0 0 0 0 0 0 0` + a 16-bit offset word, 2 words | `12-96` | `(op & 0x00ff) == 0x00` → `print_relative` | `j_<cc>_0` |
+| `JAcc Address` | `1 1 0 0  code  1 0 0 0 0 0 0 0`, 3 words, `code` at `op[11:8]` | `12-92` | `(op & 0x00ff) == 0x80` → `JA` + `print_long_parm` | `j_<cc>_8`: low nibble zero selects the 32-bit absolute arm |
+| `JRcc Address`, ±127 words | `1 1 0 0  code  offset(8 bits)`, 1 word | `12-94` | default arm → `print_relative_8bit` | `j_<cc>_0`/`_8` with nonzero low nibble, or `j_<cc>_x` |
+| `JRcc Address`, ±32K words | `1 1 0 0  code  0 0 0 0 0 0 0 0` + a 16-bit offset word, 2 words | `12-96` | `(op & 0x00ff) == 0x00` → `print_relative` | `j_<cc>_0`: low nibble zero selects the signed 16-bit relative arm |
 
 SPVU001A p. 12-94 also settles a detail the disassembler's code could be read
 either way on: "the assembler calculates the offset as `(Address - PC')/16` and
@@ -274,95 +274,45 @@ hardware is claimed here.
 
 ---
 
-## Do MAME's disassembler and its executor disagree?
+## Do MAME's disassembler and executor agree?
 
-**On the conditions: no. Not one of the sixteen.** Both were read out of
-`/mnt/build/mame-ref/src/devices/cpu/tms34010/` and compared:
+**On the conditions: yes, all sixteen.** `34010dsm.cpp:132-153` maps the
+condition field `op & 0x0f00`; `34010tbl.hxx:591-635` maps the condition rows
+and form-dispatch entries; and `34010ops.hxx:1643-1834` supplies the same
+predicate for all three forms of each condition. `tests/test_gsp_jr_conditions.py`
+checks this independently against the SPVU001A predicate and example columns.
 
-- `34010dsm.cpp:132-153`, `print_condition_code`, switches on `op & 0x0f00` and
-  prints sixteen entries, `$000` blank, in ISA order.
-- `34010tbl.hxx:591-635`, rows `0xc000`..`0xcf00`, calls `j_<CC>_0` at column 0,
-  `j_<CC>_8` at column 8 and `j_<CC>_x` at the other fourteen — so the row
-  carries the condition and the column carries the form.
-- `34010ops.hxx:1643-1834`, forty-eight functions `j_<CC>_{0,8,x}`, each a
-  one-line `j_xx_<form>(<predicate>)`. For each of the sixteen conditions the
-  three forms carry **the same predicate text**.
+**On the forms: yes, all three.** The earlier conclusion that `j_xx_8`'s
+absolute arm was unreachable was a misread of the opcode-table index. The table
+is indexed by `op >> 4`; its handler specialization is selected by `op[7:4]`,
+not by `DSTREG(op)`. The latter is `op[3:0]`.
 
-That is a real check rather than a copy: the disassembler's name, the opcode
-table's row binding, and the executor's predicate are three separate artefacts,
-and `tests/test_gsp_jr_conditions.py` fails if any of them is perturbed.
+- Form `0x00` selects `j_xx_0`; low nibble zero takes its signed 16-bit
+  relative extension-word branch (`m_pc += (PARAM_WORD_NO_INC()<<4)+0x10`),
+  matching SPVU001A p. 12-96 and `print_relative`.
+- Form `0x80` selects `j_xx_8`; low nibble zero takes its 32-bit absolute
+  branch (`m_pc = PARAM_LONG_NO_INC()`), matching SPVU001A p. 12-92 and
+  `print_long_parm`/`JA`.
+- Other forms take the signed 8-bit relative branch, matching SPVU001A
+  p. 12-94 and `print_relative_8bit`.
 
-**On the form field: yes, there is one divergence, and it is in the executor.**
+The separate bodies matter: `j_xx_0`'s zero-register arm is word-relative,
+while `j_xx_8`'s zero-register arm is absolute. The earlier report treated both
+as the same arm and incorrectly asserted the `_8` absolute case was dead. This
+was our source-reading error, not a MAME/ISA divergence; MD-14 is withdrawn in
+`BUGS.md`.
 
-`j_xx_8`'s absolute arm is unreachable. The macro
-(`34010ops.hxx:1577-1603`), abridged only in the cycle counts:
+The frame-404 image contains 161 `0x00` pattern matches and 5 `0x80` matches,
+which overcount because data may look like opcodes. A bounded power-on fetch
+trace records two distinct words of each form. `tools/check-gsp-executed`
+verifies the opcode at all 656 distinct fetched words against the same-build
+image. This proves the forms were fetched, not that they were mis-executed;
+their executor bodies match the ISA. Findings §88.3-§88.5 records the capture
+hashes and limits.
 
-```c
-#define j_xx_8(TAKE)                                            \
-{                                                               \
-    if (DSTREG(op))                                             \
-    {                                                           \
-        if (TAKE)                                               \
-        {                                                       \
-            m_pc += (PARAM_REL8(op) << 4);                      \
-            COUNT_CYCLES(2);                                    \
-        }                                                       \
-        else                                                    \
-            COUNT_CYCLES(1);                                    \
-    }                                                           \
-    else                                                        \
-    {                                                           \
-        if (TAKE)                                               \
-        {                                                       \
-            m_pc = PARAM_LONG_NO_INC();                         \
-            CORRECT_ODD_PC("J_XX_8");                           \
-            COUNT_CYCLES(3);                                    \
-        }                                                       \
-        else                                                    \
-        {                                                       \
-            SKIP_LONG();                                        \
-            COUNT_CYCLES(4);                                    \
-        }                                                       \
-    }                                                           \
-}
-```
-
-`DSTREG(O) = ((O) & 0x0f)` (`tms34010.cpp:163`), and `s_opcode_table` is indexed
-`[op >> 4]` (`tms34010.cpp:1201`, `:1206`), so the *column* is `op & 0x0f`. Every
-opcode dispatched to `j_xx_8` therefore has `op & 0x0f == 8`, which makes
-`DSTREG(op)` **always true** in that function. The `else` arm — `m_pc =
-PARAM_LONG_NO_INC()` and `SKIP_LONG()`, the only code in MAME that implements a
-32-bit absolute jump target — can never run.
-
-The `JAcc` encoding is exactly `op & 0x00ff == 0x80` (SPVU001A p. 12-92, read
-from the page image above), so **`JAcc` is executed by MAME as a ±127 relative
-branch with displacement `(int8_t)0x80 == -128`**: `m_pc += (-128 << 4)`, i.e.
-128 words backwards, instead of to the 32-bit address in the two extension
-words. The disassembler prints the same opcode as `JA FFF48FC0h`.
-
-How this survived: `JAcc` costs three words where `JRcc` costs one, and `JUMP Rs`
-is the register-indirect long jump, so an assembler emits `JAcc` only when the
-target is known at assembly time and out of ±127 words — rare.
-
-**What this does and does not establish.** It is a reading of the pinned source,
-not a measurement: no run was made, and per findings §85.5 a source reading
-settles what an encoding *computes*, never whether an address was ever *fetched*.
-The dense sweep of the frame-404 image contains **five** `JAcc` encodings
-(`$c080` ×3, `$c380` ×2), of which **three** — `JA FFF48FC0h` at PC `$344D60`,
-`JAHI FFF40000h` at `$34A730` and `$34A7C0` — lie inside the documented program
-extent. **Whether any of them was ever fetched is `UNKNOWN`.** No `BUGS.md`
-entry has been written: this lane does not own that file, and a MAME-driver
-entry gets reported upstream, where a false one costs more than silence.
-
-Two adjacent things were checked and are **not** divergences:
-
-- the two-word relative form. `op & 0x0f == 0` → `j_xx_0`, whose `DSTREG(op)` is
-  always false, so it always takes the `else` arm —
-  `m_pc += (PARAM_WORD_NO_INC()<<4)+0x10` when taken, `SKIP_WORD()` when not.
-  That reads the extension word's displacement, matching SPVU001A p. 12-96 and
-  matching the disassembler's `case 0x00`.
-- the one-word form's displacement width. SPVU001A p. 12-94 says 8 bits; MAME
-  uses `(int8_t)op`. Agreed.
+Whether the disassembler decodes odd condition codes at this site remains
+unverified, but it is a separate decoder-coverage question, not evidence for
+MD-14.
 
 ---
 
@@ -498,12 +448,13 @@ decode stride" above. **It is a workaround for a bug in the tool, not a
 correction to the data.**
 ---
 
-## Independent re-measurement, 2026-10-17 (parent session)
+## Independent re-evaluation, 2026-10-17 (parent session)
 
-Every claim above was re-derived from source and from a fresh capture rather
-than accepted. Results: **the condition table is confirmed; two of the numeric
-claims did not reproduce and are corrected here; and the defect is larger than
-this document states.**
+The condition table, source forms, and pattern counts were re-read against the
+pinned MAME tree, SPVU001A and a fresh frame-404 image. The condition mapping and
+the JR/JA executor are correct. The prior form-divergence report and MD-14 were
+our source-reading error: `j_xx_0` and `j_xx_8` have different zero-nibble
+semantics, which match their respective ISA forms.
 
 ### The opcode set — `op & 0xf000 == 0xc000`, all 16 condition codes
 
@@ -548,28 +499,29 @@ offsets needs the address-to-offset fold, which is **unresolved** and is
 spans `0x285c4`..`0x360bc`; asserting which of the 5 sit "inside" needs the fold,
 so the claim stays **UNKNOWN** rather than being carried forward.
 
-### The defect is larger than "the `JAcc` gap"
-
-This document frames the divergence as `JAcc` (the `op & 0xff == 0x80` form) not
-being implemented. That is the *rarer* half. Reading both files together:
+### The executor implements the two special forms
 
 | `op & 0x00ff` | ISA (SPVU001A) | MAME disassembler | MAME executor |
 |---|---|---|---|
-| `0x00` | ±32K relative | `print_relative` | **absolute — wrong** |
-| `0x80` | absolute | `print_long_parm` / `JA` | **±127 relative — wrong** |
-| other | ±127 relative | `print_relative_8bit` | relative — agrees |
+| `0x00` | ±32K relative | `print_relative` | `j_xx_0`: signed word-relative extension |
+| `0x80` | absolute `JAcc` | `print_long_parm` / `JA` | `j_xx_8`: 32-bit absolute target |
+| other | ±127 relative | `print_relative_8bit` | signed 8-bit relative |
 
-The executor tests `DSTREG(op)` = `op & 0x0f`, so it takes the absolute arm
-**only when the low nibble is zero** — which the ISA assigns to the *relative*
-form. The two special cases are **swapped with respect to each other and to the
-ISA**, and MAME's own disassembler has it right.
+The table lookup uses `op >> 4`, so bits 7:4 choose `_0`, `_8` or `_x`.
+`DSTREG(op)` is bits 3:0, not the table column. When that low nibble is zero,
+`j_xx_0` reads the 16-bit relative displacement, while `j_xx_8` reads the
+32-bit absolute target. For nonzero low nibbles each uses the 8-bit relative
+form. This is why the superficially similar helpers do not treat their zero
+branches alike.
 
-Pattern matches over the frame-404 image: **`0x00` → 161**, `0x80` → 5, other →
-1,340. So the more numerous divergent form is the one this document does not
-discuss. Filed as `BUGS.md` **MD-14**.
+The raw frame-404 pattern counts are **161** `0x00`, **5** `0x80`, and **1,340**
+other family words; they overcount because data also matches the pattern. The
+bounded input-free W1 fetch trace contains two distinct fetched words of each
+special form (share offsets `0x68328`, `0x694aa`, `0x694e6`, `0x694f8`).
+`tools/check-gsp-executed` verifies the opcode at all 656 distinct fetched words
+against the same-build image. The decoder names examples `JR`/`JRHI` for `0x00`
+and `JAHI` for `0x80`; reading the actual form handlers shows the expected
+relative16/absolute32 behavior. The fetches do not indicate a defect.
 
-Also recorded there, because it is easy to misread as the bug: the `_0`/`_8`/`_x`
-split is **not** a missing implementation. `34010tbl.hxx` binds `j_UC_0` at
-column 0, `j_UC_8` at column 8 and `j_UC_x` at the other 14, so the dispatch has
-already fixed `op & 0x0f`; one arm of each macro is dead by construction. The
-defect is the `DSTREG` test, not the specialisation.
+The question about odd condition-code disassembly remains separate and
+unverified; it is not a reason to report MD-14. `BUGS.md` MD-14 is withdrawn.

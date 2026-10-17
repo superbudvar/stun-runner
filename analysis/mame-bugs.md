@@ -27,7 +27,7 @@ more credibility than the finding is worth.
 | MD-11 | *withdrawn 2026-10-13 — misuse of a documented API, not a defect* | — | — | no |
 | MD-12 | GSP register writes run off the end of `m_IOregs` | driver defect (memory safety) | indexing confirmed; **inert for this game** (§86.2) | **no — needs a sanitiser run first** |
 | MD-13 | *withdrawn 2026-10-17 — the part has no repeat instructions; our error* | — | — | no |
-| MD-14 | TMS34010 JR/JA: executor and MAME's own disassembler select different forms | driver defect (ISA divergence) | **disagreement confirmed by source**; impact unbounded | **yes — strongest candidate now**, after the fetched question |
+| MD-14 | *withdrawn 2026-10-17 — form-specific executor helpers were misread* | — | — | no |
 
 ## What each needs before it can be sent
 
@@ -93,8 +93,8 @@ while the backing store is `uint16_t m_IOregs[64]` and `IOREG(reg)` is
 > The overflow is real in the unfixed array; it does not occur on this game's
 > paths. **The sanitiser run below is therefore no longer on the critical path
 > for S.T.U.N. Runner** — it would demonstrate a latent defect in the array, not
-> anything that affects us. Prioritise **MD-14** instead, which is a live ISA
-> divergence with 161 candidate sites on the frame-404 image.
+> anything that affects us. MD-14 was subsequently withdrawn as our reading
+> error; see its tombstone in `BUGS.md` and the refutation in findings §88.
 
 The array's declared extent is 64 entries while `internal_regs_map` exposes
 `0x200` bytes of offsets, so any program that did write above `0x40` would

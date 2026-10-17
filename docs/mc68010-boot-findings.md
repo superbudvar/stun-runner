@@ -4914,9 +4914,9 @@ provides the additional space for arithmetic spills and the selector byte.
 represent in game terms) is unknown. The selector byte (buffer[0x1B] = 0x20
 in observed traces) is confirmed from $02F470's `addi.l #$2000,D0`.
 
-### Speed-update routine at $03ABDE (2026-10-13)
+### Motion-field update block at $03AB7A-$03ABEC (2026-10-13; corrected 2026-10-17)
 
-**ROM address range**: $03AB7A–$03ABDE (the update block; parent function starts at $039B82)
+**ROM address range**: $03AB7A–$03ABEC (the update/accumulate block; parent function starts at $039B82)
 
 **Source chip**: STUN Runner maincpu program ROM, sha256 29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c
 
@@ -4928,8 +4928,8 @@ in observed traces) is confirmed from $02F470's `addi.l #$2000,D0`.
 03AB7A: tst.w   $ffdd4e.l      ; timer != 0?
 03AB80: beq     $3abac          ; no: branch to timer==0 path
 03AB82: subq.w  #1, $ffdd4e.l  ; decrement timer (side effect)
-03AB88: bne     $3ab98          ; timer still nonzero after decrement?
-03AB8A: clr.w   $ffdd50.l       ; yes: clear secondary timer
+  03AB88: bne     $3ab98          ; still nonzero: skip expiry writes
+  03AB8A: clr.w   $ffdd50.l       ; decrement reached zero: clear secondary timer
 03AB90: move.b  #$ff, $ffdd0a.l
 03AB98: cmpi.w  #$b00, $ffdd16.l ; speed >= 0x0B00?
 03ABA0: bcc     $3abaa          ; yes: skip ramp-up
@@ -4968,22 +4968,39 @@ The parent function at $039B82 (`link A6, #-$30`) sets up the stack frame.
 The speed-update block uses:
 - `(-$18,A6)`: local_limit, set to `0x07E0` at $039C16 before entering the update path
 - `$FFDD4E`: timer field (checked at $03AB7A)
-- `$FFDD16`: current speed value (read at $03ABAC, written at $03ABDE)
+- `$FFDD16`: current motion word (read at $03ABAC, written at $03ABDE)
 - `$FFDD1E`: source_a (read at $03ABCC)
 - `$FFDD1A`: source_b (read at $03ABD4)
 
-#### Speed update logic
+#### Branch behavior — corrected 2026-10-17
 
-```c
-if (timer != 0 && speed < 0x0B00)
-    speed += 0x40;
-else if (speed > (local_limit + 0x40))
-    speed -= 0x20;
-else
-    speed = source_a + source_b;
+```text
+if entry_timer != 0:
+    timer--
+    if timer == 0:
+        FFDD50 = 0
+        FFDD0A = 0xff
+    if unsigned(FFDD16) < 0x0b00:
+        FFDD16 += 0x40
+    goto accumulator_update
+else:
+    D3 = sign_extend_32(FFDD16)
+    D0 = sign_extend_32(local_limit) + 0x40
+    if unsigned(D3) > unsigned(D0):
+        FFDD16 -= 0x20
+    else:
+        FFDD16 = low_word(sign_extend_32(FFDD1E) + sign_extend_32(FFDD1A))
+
+accumulator_update:
+    FFDBFE += sign_extend_32(FFDD16)  // 32-bit wrap
 ```
 
-The timer decrement at $03AB82 is a side effect of the timer-check path, not part of the value computation itself.
+The previous pseudo-code incorrectly merged the timer-enabled and timer-zero
+paths. When the entry timer is nonzero, `BCC` at `$03ABA0` either ramps or skips
+the ramp, then `$03ABAA` branches directly to `$03ABE4`; decay and base-sum code
+are unreachable on that pass. Only an entry timer of zero reaches `$03ABAC`.
+The timer-expiry side effects at `$03AB8A/$03AB90` are also part of the
+stateful routine.
 
 #### Three callers
 
@@ -4997,13 +5014,18 @@ The function at $039B82 handles all three paths; the local_limit varies by calle
 
 #### C implementation
 
-`native/mc68010_physics.c`: `stunrun_mc68010_speed_update()` — mechanism-level, no gameplay semantics assigned to parameters.
+`reproduction/maincpu/motion_update.c`: `stunrun_motion_update_step()` is the
+canonical stateful transcription. The older native value-only adapters call it
+and return only the motion-word/accumulator outputs; their wrapper does not
+model the caller-specific pre-computation.
 
 #### Confirmed vs inferred
 
-**Confirmed**: Full disassembly transcription, branch order, arithmetic operations, three-way branch logic.
+**Confirmed**: Branch separation, timer decrement and expiry writes, word-width
+effects, `EXT.L`, unsigned `BCC`/`BLS` conditions, and accumulator write.
 
-**Inferred**: The semantic meaning of timer, speed, local_limit, source_a, and source_b is not assigned; the function is treated as a mechanism with observable inputs and outputs only.
+**Inferred/UNKNOWN**: Timer, local_limit, source words, and `$FFDD16` gameplay
+identity are unassigned; the function is a mechanism-level model.
 
 ## 16. MC68010 speed routine at $039B82 (2026-10-13)
 
@@ -5036,17 +5058,20 @@ Key instructions:
 
 At `$039C16`: `move.w #$7e0, (-$18,A6)` — sets local_limit = **0x07E0** in the stack frame. This value is later used by the speed update block at $03ABB4.
 
-### 16.4 Speed update block (embedded, not a JSR)
+### 16.4 Motion update block (embedded, not a JSR; corrected 2026-10-17)
 
-The block at `$03AB7A–$03ABDE` is **inline code within $039B82**, not a separate JSR. It is reached by fall-through from the pre-computation phase. The three-branch logic:
+The block at `$03AB7A–$03ABEC` is **inline code within $039B82**, not a separate JSR. The timer-nonzero and timer-zero paths only meet at the accumulator update:
 
 ```
-timer != 0 && speed < 0x0B00 → speed += 0x40  (ramp up)
-speed > (local_limit + 0x40)  → speed -= 0x20  (decay)  
-otherwise                      → speed = source_a + source_b
+timer != 0: decrement; expiry writes; optionally add 0x40; branch to accumulator
+timer == 0: unsigned compare after EXT.L; subtract 0x20 or store source_a + source_b
+always: add sign-extended motion word to the 32-bit accumulator
 ```
 
-**Confirms** the existing `stunrun_mc68010_speed_update()` correctly models this block.
+The previous confirmation was wrong: the native and reproduction C versions
+decayed `$0B00` to `$0AE0` when the timer was nonzero, but the ROM preserves
+`$0B00` and skips the timer-zero branch. The regression assertion derived from
+the ROM listing now covers that discriminator; see findings §89.
 
 ### 16.5 Accumulator write
 
@@ -5631,12 +5656,13 @@ own events, which is exactly the check we had to invent. A one-line note in
 would be a defensible small contribution — but that is a suggestion, not a
 finding, and it is not worth a PR before someone wants it.
 
-## 29. Scripted MAME input is nondeterministic, so every `--input` artifact is one arm of a coin flip
+## 29. Scripted MAME input alternated because the wrapper reused MAME configuration
 
-Found 2026-10-13 while trying to close `stun-runner-rg9`. This is not an
-assembly finding and it is not yet a MAME finding either: it is a harness
-reproducibility failure, and it is the reason §21's oracle could not be
-re-derived. Tracked as `stun-runner-0p0`, which now blocks `stun-runner-rg9`.
+Found 2026-10-13 while trying to close `stun-runner-rg9`. This was not an
+assembly or MAME finding: it was a harness reproducibility failure caused by a
+shared MAME configuration directory. The root-cause correction and later
+frame-clock check are tracked in `stun-runner-0p0`, which still blocks
+`stun-runner-rg9` pending artifact reconciliation.
 
 ### 29.1 The symptom
 
@@ -5726,13 +5752,16 @@ mode and 214 under the service schedule.
 ### 29.3 What this invalidates
 
 `reference/experiments/stunrun/service-f2-text-host-writes/` records 1040 events
-at frames 214-216/334-336 — arm A. `service-f2-3600-stages/screens/frame-000300.png`
-shows the self-test screen — arm A. I could not reproduce either on demand, and
-re-running the committed command verbatim returned `"events":0, "event_count":0`
-on a run that landed in arm B. §21's "two selectors resolved from live traffic",
-and the `stun-runner-rg9` bead's worked examples, currently rest on one arm of a
-coin flip. Every other artifact whose command line carries `--input` is in the
-same position until this is resolved.
+at frames 214-216/334-336. After configuration isolation, five fresh
+`service_f2` captures each produced 1040 identical events. The event payloads
+match that committed trace exactly when excluding the `frame` field; the
+current capture labels the corresponding groups 490-492/610-612. The current
+capture and provenance are preserved at
+`reference/experiments/stunrun/service-f2-text-host-writes-frameclock-20261017/`.
+The event data are reproduced, but the 275/276-frame label displacement is
+unexplained; do not combine the timelines. The separate
+`service-f2-3600-stages/screens/frame-000300.png` has not been re-derived in
+this pass.
 
 `--start-frame` is not the discriminator: `--start-frame 5` also produced 1040
 on some runs and 480 on others, and the events sit at frames well above 60.
@@ -5741,33 +5770,60 @@ Decoding the two arms changes what is at stake, and corrects the first draft of
 this section: see 29.2a. Arm B is not "service mode failed to engage" — it draws
 only the first of five text blocks and silently omits the other four.
 
-### 29.4 The suspect, and why it is not yet a conclusion
+### 29.4 The original frame-counter diagnosis was wrong; the actual cause was shared configuration
 
-`mame/lua/ram-write-trace.lua` does this, in `emu.register_frame_done`:
+The first diagnosis blamed the Lua frame counter and its strict equality test.
+Changing `==` to `<=` was independently correct because it prevents silently
+dropping a late event, but it did **not** stop the alternation. Five identical
+runs after that edit still produced `0 / 45850 / 0 / 45850 / 0` events; deleting
+the shared config directory before each run produced `0 / 0 / 0`.
 
-```lua
-frame = frame + 1
-while next_event <= #input_events and input_events[next_event].frame == frame do
-    apply_event(input_events[next_event])
-    next_event = next_event + 1
-end
-```
+The actual cause was `tools/mame-ram-write-trace` reusing
+`/tmp/stunrun-mame-cfg`. MAME persisted the previous run's DIP/input-port state
+in `stunrun.cfg`; the next run loaded it and changed machine execution paths.
+The tool now goes through `mame_launch()`, which creates fresh per-run cfg,
+NVRAM, and state directories. Five same-parameter `service_f2` runs then
+produced 1040 events apiece. This refutes the original root-cause claim; the
+observed alternation came from configuration leakage, not a random input race.
 
-Two properties are suspicious. `register_frame_done` fires from the video frame
-update, so the counter tracks *rendered* frames unless the build guarantees one
-callback per emulated frame. And input is applied *after* the frame has already
-been emulated, so "press at frame 60" means "frame 60 has already run without
-it". The `==` test is a third, sharper problem: if the counter ever steps past
-an event's frame, that event is not applied late, it is **discarded silently and
-permanently** — which matches "sometimes the Service Mode press does nothing".
+The counter still needed a machine-side check. MAME's Lua API exposes
+`screen_device::frame_number()` as `screen:frame_number()` (`luaengine.cpp:2050`,
+[S7]); `video_manager::frame_update()` runs the frame hook after finishing the
+screen updates (`video.cpp:216-230`), and the screen increments its frame number
+at `vblank_end` (`screen.cpp:1184-1197`, [S7]). A bounded probe measured startup
+screen frame 0, then callback/screen pairs `(1,0), (2,1), …, (10,9)`. The trace
+script now asserts that the screen frame advances by one per callback, relative
+to the first callback; a mismatch raises a Lua error and invalidates the
+capture. Five fresh 900-frame `service_f2` runs passed that assertion and had
+identical event streams. The callback for input event N occurs with screen
+frame N-1 completed, before the next screen frame N executes.
 
-I could not separate these. `machine.frame_number` reads `nil` on MAME
-0.289's Lua API, and neither `machine.video.frame_number` nor an
-`emu.frame()` equivalent is reachable from this script, so the two counters
-cannot be compared from inside the tap. Establishing which of the three it is
-needs either a machine-side frame source or a wrapper that passes a frame
-assertion through. **Do not record any of the three as the cause until that
-measurement exists** — the alternation is too regular to guess at.
+The old claim that the Lua API had no machine-side frame source was our mistake:
+`machine.frame_number` is absent, but the screen object has the needed counter.
+The equality guard remains `<=`; frame scheduling is asserted against the
+screen clock, not inferred from callback count alone.
+
+### 29.4a Remaining frame-label discrepancy
+
+The current, isolated capture has the same 1040 event payloads as the older
+service-F2 artifact, but the recorded event-frame groups are displaced by 275 or
+276. Five current runs agree exactly with each other, so this is not a
+run-to-run race in the current configuration. The exact cause of the old/new
+label displacement is **UNKNOWN**; do not use the old and new frame numbers as
+one timeline. The service-F2 trace payload is re-derived.
+
+The separate 3600-frame screen series was also re-captured: five identical
+`service` schedule runs on each named MAME binary (`md12-fixed` and
+`stock-behaviour`) produced the same 13 screen hashes, and the two binaries
+produced byte-identical screen sets. Compared with the older
+`service-f2-3600-stages` bundle, only frame 2400 matches; 12 of 13 screens
+differ, including frame 300. The old bundle names the stock binary but does not
+preserve the effective cfg/NVRAM state. The binary alone is not the
+differentiator in the fresh captures; the old capture's state remains UNKNOWN.
+The new raw bundle is
+`reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/`.
+Other historical `--input` experiments still need their own provenance/impact
+checks before any global reproducibility claim.
 
 ### 29.5 A separate, smaller defect found while measuring this
 
@@ -5776,8 +5832,9 @@ measurement exists** — the alternation is too regular to guess at.
 byte-identical 3000-event streams and three *different* log hashes. Whatever
 that hash covers, it covers the output path. Any evidence comparing
 `canonical_log_sha256` across output directories is comparing the path, not the
-run. Either fix it or state in `EVIDENCE.md` that it is only comparable within
-one output directory.
+run. `EVIDENCE.md` now explicitly says the hash is comparable only within one
+output directory; use the event artifact hash for cross-directory
+determinism.
 
 ### 29.6 Method note
 
@@ -12970,26 +13027,40 @@ read — the highest field the decoder touches is `BIT(op,16,8)`.
 Big-endian container, little-endian field layout. Read the driver's split
 before concluding either.
 
-### 82.3 Still open, and not reconciled
+### 82.3 Refutation: the handler offset is a 16-bit-word index, not a byte offset
 
-`hd68k_adsp_program_w(offset)` indexes `m_adsp_pgm_memory[offset/2]`, i.e. an
-even offset takes the **high** lane. A 68010 `MOVE.L` issues its two 16-bit
-writes at offsets *k* and *k+2*, which are the same parity — so both would take
-the high lane of two consecutive dwords and the low halves would never be
-written, which contradicts the captured entry word `0x001C780F` having a
-non-zero low half.
+The apparent contradiction was mine. I read a `MOVE.L`'s two bus addresses
+(`k` and `k+2` bytes) as if the MAME handler received those byte offsets. It
+does not. In the pinned MAME address-space implementation, a 16-bit delegate
+with address shift zero receives
+`((address - handler_base) & mask) >> (Width + AddrShift)`; for this 68010
+program space, `Width=1`, `AddrShift=0`, so callback `offset` advances by one
+per 16-bit transfer (`emumem_hedp.cpp:119-125`, `m68000.cpp:24`, [S7]).
 
-Either the window-byte-offset ↔ word-index arithmetic in
-`reference/experiments/stunrun/adsp-program-upload.metadata.json` needs a
-factor-of-two re-derivation, or the upload is two masked `MOVE.W`s at offsets
-`2N`/`2N+1`. **`destination_word_index` and the recorded byte range in that
-metadata are not currently reconciled, and no claim that a 68010 window byte
-offset equals an ADSP program address is safe until they are.**
+Therefore a `MOVE.L` at byte address `A` produces handler offsets `n` and
+`n+1`, where `n=(A-0x800000)/2`. The driver's `offset/2` selects the ADSP
+32-bit program word; even `offset` updates its high halfword and odd `offset`
+its low halfword (`harddriv_m.cpp:615-640`, [S7]). The conversion from the
+68010 byte address to ADSP program-word index is consequently
 
-`tools/disasm-adsp` consumes the capture and does not depend on the window, so
-its output stands regardless — but this is the kind of unresolved unit that
-produced the 8x share error retracted in §34, and it wants a follow-up before
-anyone builds on the upload metadata.
+```text
+ADSP_program_word = (68010_byte_address - 0x800000) / 4
+```
+
+The observed upper endpoint checks the units: the last destination word is
+`4150 + 512 - 1 = 4661 = 0x1235`; its two 68010 halfword writes are at
+`0x8048d4` and `0x8048d6`. That agrees with the recorded inclusive address
+range `0x800000–0x8048d6`, rather than indicating a missing low lane. The
+captured ADSP word at index 4 is `0x001C780F`, consistent with both halves
+being populated. The upload metadata's destination indices and byte range are
+now reconciled; the earlier “same parity” argument is withdrawn as a unit
+error in my reading.
+
+This correction is about MAME's callback units [S7] joined to the observed
+68010 upload (`reference/experiments/stunrun/adsp-program-upload.metadata.json`
+[ROM]). It does not claim that byte addresses can be substituted directly for
+ADSP program addresses: the conversion includes division by four. The
+disassembler's existing capture format is unchanged.
 
 ## 83. Refutation: there are no repeat instructions on the TMS34010 (MD-13 withdrawn)
 
@@ -13329,19 +13400,36 @@ executor is the oracle: it is the code that produced every behaviour in
 *computes*. It cannot settle whether an address was ever *fetched*. That is
 still `stun-runner-yuv`, and it is why 224 addresses are still unclassified.
 
-### 85.3 An unexplained discrepancy, recorded not reconciled
+### 85.3 Two distinct ADSP frame-600 images; capture condition still unknown
 
-§"Completed baseline slices" records this tool capturing "a repeatable full ADSP
-program image at frame 600 (**2,718 nonzero words**)". Today's fresh capture of
-the same tool, same frame, same ROM set, reads **4,356**. The image is otherwise
-consistent — 32,768 bytes, origin `0x0`, entry `0x0004`.
+The earlier 4,356-word / PC `$060E` image is still available locally at
+`/tmp/opencode/stunrun-frame600-adsp-program/adsp2100.bin`, SHA-256
+`b8c2d2594d609a110a26a47aa2cad11f8db3783643a5e3fb49b1897660051c02`, timestamp
+2026-10-10 08:31. Its `image.json` records frame 600 and PC `$060E`; it does not
+record the MAME binary, cfg/NVRAM state, or effective input/DIP state. The image
+is not evidence that the 4,356 count is wrong.
 
-Most likely this is §81's non-interchangeable MAME binaries: the recorded figure
-predates the Oct 14 rebuild of `mame-ref`, and `analysis/mame-local-patches.md`
-says explicitly that the two binaries are not interchangeable. That is a
-hypothesis, not a measurement. **Neither number should be trusted until it is
-reconciled**, and `raw_artifacts_kept_local` means the image itself is not
-committed to compare.
+Fresh frame-600 captures with `tools/mame-adsp-program-dump`, isolated per-run
+MAME cfg/NVRAM/state directories, and the same `roms/` were run against both
+currently named binaries:
+
+| binary | executable SHA-256 | nonzero words | capture PC | image SHA-256 |
+|---|---|---:|---|---|
+| `stock-behaviour` (`/mnt/build/mame-oracle/mame`) | `75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06` | 2,718 | `0x0014` | `821f3478ef4de4deb67c2b492fc726aaa73351d240b037e46b9f0d23014cecc4` |
+| `md12-fixed` (`/mnt/build/mame-ref/mame`) | `55956f2b26c0d5caeb86f346e6247ded04428eae07465d35470dea77d6bf4045` | 2,718 | `0x0014` | `821f3478ef4de4deb67c2b492fc726aaa73351d240b037e46b9f0d23014cecc4` |
+
+The two fresh 32,768-byte images are byte-identical. The 4,356-word image is a
+different artifact: 1,638 words are nonzero only in that image, and 1,640 word
+values differ overall. Thus both counts are supported by existing captures,
+but they do not describe identical ADSP program-RAM contents. The fresh
+captures establish 2,718 words on both named binaries under isolated default
+state; they do **not** explain the older 4,356-word / `$060E` capture. A
+different effective startup state (for example persisted DIP/config state) is
+a hypothesis, not established. The binary/capture-condition discrepancy
+remains open; do not attribute it to the MAME rebuild or discard either image
+until its state is reconstructed or the two paths are deliberately reproduced.
+All program binaries remain local; hashes and the available capture metadata
+are recorded here.
 
 ## 86. MD-12 does not fire on the paths we run — and the frozen oracle cannot answer its own triage
 
@@ -13549,101 +13637,137 @@ suite attempt was stopped after 37 minutes in a test that spawned one decoder
 subprocess for every stepped-over word. After replacing that with a batch decode,
 `./test` completed **400 tests in 88.250 s, OK**.
 
-## 88. The GSP's JR/JA form field: MAME's executor and MAME's own disassembler disagree, and both differ from the ISA
+## 88. Refutation: the JR/JA executor was misread; MAME's forms agree with the ISA
 
-### 88.1 What the JR pass found, and what was actually bigger
+### 88.1 The faulty interpretation
 
-The JR-condition transcription (`analysis/gsp-jr-conditions.md`, bead
-`stun-runner-6tf`) reported one divergence, and routed it here instead of filing
-it: `j_xx_8`'s absolute arm is unreachable, so `op & 0x00ff == 0x80` executes as
-a ±127 relative where the disassembler prints a 32-bit `JA`. Filed as `BUGS.md`
-**MD-14**.
+The JR-condition analysis (`analysis/gsp-jr-conditions.md`) and MD-14 treated
+`DSTREG(op) == 0` as an absolute branch for both special forms. That conflated
+two different executor helpers. It made `0x00` look absolute and `0x80` look
+short-relative, then incorrectly inferred that the `_0`/`_8` dispatch arms were
+dead. The macro bodies and opcode-table index disprove that reading.
 
-Re-derived from source before filing, and the report understated it. There are
-**two** divergent cases, not one, and they are swapped with respect to each
-other and to the ISA:
+### 88.2 Read each form-specific executor body
 
 | `op & 0x00ff` | ISA (SPVU001A) | MAME disassembler | MAME executor |
 |---|---|---|---|
-| `0x00` | ±32K **relative**, 2 words | `print_relative` | **absolute** |
-| `0x80` | **absolute**, 3 words (`JAcc`) | `print_long_parm`, prints `JA` | **±127 relative** |
-| other | ±127 relative, 1 word | `print_relative_8bit` | relative — agrees |
+| `0x00` | ±32K relative, 2 words | `print_relative` | `j_xx_0`: signed word-relative `m_pc += (PARAM_WORD_NO_INC()<<4)+0x10` |
+| `0x80` | absolute `JAcc`, 3 words | `print_long_parm` / `JA` | `j_xx_8`: `m_pc = PARAM_LONG_NO_INC()` |
+| other | ±127 relative, 1 word | `print_relative_8bit` | short relative via `(int8_t)op` |
 
-`34010ops.hxx:1577-1603` branches on `if (DSTREG(op))` — relative — `else`
-absolute, and `DSTREG(O) = ((O) & 0x0f)` (`tms34010.cpp:163`). The executor
-therefore keys the *form* on the **low nibble**, taking the absolute arm only
-when `op & 0x0f == 0`. The ISA assigns that encoding to the relative form.
-`34010dsm.cpp:1473-1485` switches on `op & 0x00ff` and gets it right.
+The dispatch table is indexed by `op >> 4` (`tms34010.cpp:1201,1206`), so the
+`_0`/`_8`/`_x` handler is selected by the form's upper nibble (`op[7:4]`).
+`DSTREG(op) = op & 0x0f` (`tms34010.cpp:163`) is the form's low nibble. For
+`0x00`, `j_xx_0` sees zero and takes its 16-bit relative extension-word arm.
+For `0x80`, `j_xx_8` sees zero and takes its 32-bit absolute arm. Nonzero low
+nibbles take the 8-bit relative arm. MAME's executor and disassembler therefore
+agree with SPVU001A pp. 12-92/12-94/12-96 [S7][S9].
 
-**MAME's own disassembler is the authority here**, and that is what makes this
-reportable rather than a judgement call.
-
-### 88.2 The `_0`/`_8`/`_x` split is not the bug
-
-Worth stating, because the hand-back named it and a reviewer would otherwise
-report it upstream as a missing implementation.
-
-`34010tbl.hxx` binds `j_UC_0` at column 0, `j_UC_8` at column 8, and `j_UC_x` at
-the other fourteen. The dispatch (`s_opcode_table[op >> 4]`, one column per
-`op & 0x0f`) has **already pinned the nibble** before the macro runs. Each of
-the three macros is the same generic body, and whichever constant condition its
-column implies makes one arm dead. `j_xx_8`'s absolute arm is unreachable
-*exactly as* `j_xx_x`'s is at column 1. That is a compile-time specialisation.
+This is our own source-reading mistake, not a MAME or ROM bug. The two fetched
+forms below are real instructions on the measured path, but neither is
+mis-executed. `BUGS.md` MD-14 is withdrawn; do not report it upstream. The
+separate question of odd condition-code disassembly remains a decoder-coverage
+question, not evidence for an executor defect.
 The defect is the `DSTREG` test.
 
-### 88.3 Getting the opcode mask wrong, twice, for a third time
+### 88.3 Candidate counts and fetch evidence
 
-Counting this needs the jump opcode set, and the obvious sources for it are both
-misleading:
+The frame-404 share image contains 161 words matching the `0x00` form pattern,
+5 matching `0x80`, and 1,340 matching other branch forms. These are raw pattern
+counts and include data. `tools/disasm-gsp` names 1,258 of 1,506 total matches;
+those answer different questions and must not be conflated.
 
-- `34010dsm.cpp:1451-1458` lists `case 0xc000, 0xc200, … 0xce00` — **eight even
-  condition codes only**. Taken as the family, it undercounts by more than a
-  third. Measured on the frame-404 image: 892 even-code words vs 1,506 total.
-- The executor table is the authority: every row from `// 0xc000` to `// 0xcf0`
-  dispatches to a `j_*` handler. So `op & 0xf000 == 0xc000`, **all sixteen
-  condition codes**.
+### 88.4 The fetched candidates were correctly executed
 
-Whether MAME's *disassembler* decodes the odd-code jumps elsewhere at this site
-was not established. **UNKNOWN**, and worth settling before an upstream report.
+The bounded input-free `STUNRUN-FETCH` trace records actual fetches of two
+distinct `0x00`-form words and two distinct `0x80`-form words. The frame-404
+upload-boundary image contains 161 `0x00`-form and 5 `0x80`-form opcode-pattern
+candidates. Against the 5,000,000-record W1 trace, folded with
+`(pc_bits >> 3) & 0x7ffff`, the intersections are:
 
-### 88.4 Counts, and the denominator trap — for the third time
-
-| quantity | `tools/disasm-gsp` | opcode pattern over the image |
+| form | distinct fetched candidate words | representative opcode(s) |
 |---|---|---|
-| JR/JA words, whole share | 1,258 (decoded) | 1,506 (matches the pattern) |
-| distinct JA/JR names | 18 | 18 |
-| `op & 0xff == 0x80` occurrences | 5 | 5 |
-| `op & 0xff == 0x00` occurrences | not counted | **161** |
+| `0x00` | 2: share offsets `0x68328`, `0x694aa` | `0xc000`, `0xc300` |
+| `0x80` | 2: share offsets `0x694e6`, `0x694f8` | `0xc380` |
 
-Names and the `0x80` count reproduce exactly. The totals do not, and **both are
-right**: 1,506 is every word *matching the pattern*, 1,258 is what the decoder
-*named*, and data looks like jumps. This is §85.1's cell-versus-word views again,
-and it is now the third time in this file that a count has been compared across
-two different denominators. **A count is meaningless without its denominator.**
+These are fetched words, not a linear-decode inference. `tools/check-gsp-executed`
+compared the same-build frame-404 image against all 5,000,000 trace records:
+656 distinct fetched words, **656 opcode matches, zero mismatches**,
+`address_fold.verified=true`. The decoder names examples `JR`, `JRHI`, and
+`JAHI`; reading their dispatched executor bodies shows the correct relative16,
+relative16, and absolute32 behavior. The trace confirms these forms run; it
+does not show an executor defect.
 
-The transcriptions' "3 of the 5 inside the documented extent" is **UNKNOWN**,
-not verified. The extent is stated in GSP addresses (`$340000`–`$35DC00`);
-converting those to share word offsets requires the address-to-offset fold, which
-is unresolved and is `stun-runner-47h`. Measured directly, the JR/JA-bearing
-region spans word offsets `0x285c4`..`0x360bc`. Without the fold, "inside" is not
-a decidable predicate, so the claim is carried as unknown rather than repeated.
+### 88.5 Provenance and scope of the measurement
 
-### 88.5 What decides impact, and it is not yet known
+The image is `gsp_vram-upload-last/gsp_vram.bin`, 524,288 bytes, SHA-256
+`47e41d1b9d54055d965074ac2b6e9e0b844f024006e2555f6b8a17543d4a2715`, from the
+frame-404 pre-release boundary captured with `md12-fixed` (MAME SHA-256
+`55956f2b…`). W1 is the input-free, power-on `STUNRUN-FETCH` capture, first
+5,000,000 records of a 600-frame run, SHA-256
+`3b479a539e6976d74b471b9a36aaaf5344048a77a8be14166b3e29c0134cfe7c`; the hook
+marked it truncated at its configured limit. The trace is bounded, and the
+image comes from a separate deterministic same-build capture, not the same
+process. The opcode cross-check validates all 656 distinct fetched addresses
+against that image. The complete raw W1 trace remains in the session's local
+`/tmp/opencode/gspx/w1.txt`; the capture-promotion bead `stun-runner-0y0` remains
+open, so this measurement does not establish execution across every possible
+input, future run, or unobserved branch.
 
-**UNKNOWN: whether any of those 166 words was ever FETCHED.** That single fact
-separates "a defect in MAME" from "a defect in every measurement we have taken
-through this GSP."
+The address-fold check confirms trace/image pairing, not semantic execution
+parity. This refutes the previous “UNKNOWN whether any were fetched” only as a
+premise for MD-14: the candidates were fetched, but source shows their forms
+are implemented correctly. The disassembler stride issue (`stun-runner-a9q`)
+is separate.
 
-If one was, MAME branched where the hardware did not, and the signature would be
-a program that appears to run and quietly does the wrong thing — which reads as
-a defect in *our* port, and would send the next person to re-check a
-transcription that is probably fine. The 161-candidate form is the dangerous
-one: an absolute jump to a 32-bit literal where hardware branches relatively
-produces plausible-looking execution.
+## 89. Our motion-update C slice incorrectly fell through from the timer path
 
-`tools/check-gsp-executed` (bead `stun-runner-8y8`) is the thing that answers
-it. Do not assume the answer either way, and do not treat the fix to the decode
-stride (`stun-runner-a9q`) as settling it — different question.
+### 89.1 The discrepancy
+
+Both the older native adapter (`native/mc68010_physics.c`) and the reproduction
+slice (`reproduction/maincpu/motion_update.c`) originally expressed the update
+as one combined `if/else if/else`: when the timer was nonzero but the motion word
+was already `$0B00`, C fell through to the timer-zero decay and returned
+`$0AE0`. The ROM's timer-enabled control path never enters that decay branch.
+The original unit tests repeated the same mistaken branch merge, so both C
+implementations and tests agreed with each other while disagreeing with the ROM.
+
+### 89.2 The instruction boundary
+
+The rev-6 maincpu image SHA-256 is
+`29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c`.
+`tools/mame-listings roms /tmp/opencode/vehicle-listings
+/mnt/build/mame-ref/mame` reproduces the listing with MAME binary SHA-256
+`55956f2b26c0d5caeb86f346e6247ded04428eae07465d35470dea77d6bf4045`.
+At `$03AB7A–$03ABAA`, the ROM:
+
+1. tests `$FFDD4E`; zero branches to `$03ABAC`, the timer-zero path;
+2. otherwise decrements it, clearing `$FFDD50` and writing `$FF` to `$FFDD0A`
+   only when that decrement reaches zero;
+3. compares the unsigned word `$FFDD16` with `$0B00`; `BCC` skips the ramp
+   when it is at least `$0B00`;
+4. both the ramp and skip-ramp arms branch to `$03ABE4`, the accumulator update.
+
+Only timer zero reaches `$03ABAC–$03ABDE`, where `EXT.L` sign-extends the
+motion word and caller limit, `CMP.L`/`BLS` compares those longwords unsigned,
+then either subtracts `$20` from the word or stores the low word of the
+sign-extended source sum. `$03ABE4–$03ABEC` sign-extends the resulting word and
+adds it to `$FFDBFE` as a wrapping longword.
+
+### 89.3 Correction and tests
+
+The canonical `stunrun_motion_update_step()` now models the entire stateful
+block, including timer, secondary-timer, expiry-flag, motion-word, and
+accumulator effects. The legacy native value-only adapters call that same
+implementation instead of keeping a second copy. Regression vectors distinguish
+the timer path from timer-zero decay, check expiry side effects, test the exact
+limit, and check sign-extension/word-wrap behavior.
+
+This is a refutation of our model, not a surprising ROM behavior: we had
+collapsed two separate control-flow paths. The caller-specific precomputation
+at `$039D22–$03AB6F` and the gameplay meaning of `$FFDD16` remain outside this
+slice and are still unknown.
+
 ## 90. Refutation: ADSP SOM fields were not semantically opaque, and word 2 is not width
 
 The earlier investigation stopped at transport and called the task complete.

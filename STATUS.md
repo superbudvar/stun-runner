@@ -389,20 +389,14 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
 
 ## Current blockers
 
-- **MD-14: MAME's TMS34010 executor and MAME's own disassembler disagree on the
-  GSP's JR/JA form field — check this before blaming our port.** For `op & 0x00ff`
-  the ISA assigns `0x00` to the ±32K *relative* form and `0x80` to the 32-bit
-  *absolute* (`JAcc`) form. MAME's disassembler agrees with the ISA; the executor
-  branches on `DSTREG(op) = op & 0x0f` and takes the absolute arm only when the
-  low nibble is zero, so the two special cases are **swapped**. On the frame-404
-  pristine program image that is 161 pattern matches of the `0x00` form and 5 of
-  the `0x80` form. **UNKNOWN whether any was ever fetched** (`stun-runner-m5t`) —
-  that single fact separates "a defect in MAME" from "a defect in every
-  measurement taken through this GSP", and the signature of the 161-candidate form
-  (an absolute jump to a 32-bit literal where hardware branches relatively) is a
-  program that runs plausibly and does the wrong thing. `BUGS.md` MD-14,
-  findings §88, `analysis/gsp-jr-conditions.md`. Note this is the **form** field
-  and does not contradict the verified **condition** table.
+- **MD-14 (JR/JA executor form mismatch) is withdrawn.** Re-reading the form
+  helpers showed the earlier report conflated `j_xx_0` and `j_xx_8`: the former
+  uses the word-relative extension when its low nibble is zero; the latter uses
+  the long absolute target. Both match the ISA and MAME disassembler. The
+  bounded fetch trace did find two fetched words of each form, but neither is
+  mis-executed. Findings §88 and `BUGS.md` MD-14 retain the refutation; do not
+  treat this as a blocker or report it upstream. The separate odd condition-code
+  decoder coverage question remains unverified and is not the same claim.
 - **`tools/disasm-gsp` still has `WORD_STRIDE = 16`, wrong for the dense 512 KiB
   share** (`stun-runner-a9q`, P1). §84 fixed the share *size* and missed the
   *stride*, so the tool reads one word in eight while every test stayed green —
@@ -512,8 +506,16 @@ in `analysis/track-storage.md`.
   controls, and observes a repeatable PC advance to `0x0E2C` at frame 142.
   Evidence: `reference/experiments/stunrun/m2-adsp-replacement-image.metadata.json`.
 - M3 investigation: `tools/mame-adsp-program-dump` captures a repeatable full
-  ADSP program image at frame 600 (2,718 nonzero words); the same local image
-  runs through the M2 loader and reaches PC `0x275D` at frame 142. Frame 136 is
+  ADSP program image at frame 600 (2,718 nonzero words). Fresh captures on both
+  `md12-fixed` and `stock-behaviour` are byte-identical (image sha256
+  `821f3478ef4de4deb67c2b492fc726aaa73351d240b037e46b9f0d23014cecc4`).
+  A separate local 4,356-word / PC `0x060E` image exists (sha256
+  `b8c2d2594d609a110a26a47aa2cad11f8db3783643a5e3fb49b1897660051c02`), but
+  its MAME binary and effective startup state were not recorded. The differing
+  capture condition remains unresolved; neither image is retired (findings
+  §85.3, bead `stun-runner-w55`).
+  The 2,718-word image runs through the M2 loader and reaches PC `0x275D` at
+  frame 142. Frame 136 is
   retained as an all-zero negative boundary. This is reference-image transport,
   not yet reconstructed ADSP behavior. An immediate frame-1 installation also
   reaches PC `0x27A2` at frame 142, so the next replacement task is isolating

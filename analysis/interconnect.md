@@ -138,15 +138,20 @@ producer-side ADSP meaning of each block remains unresolved. See
   and a `0xFF` terminator. This matches the 5,456 observed halfword writes
   from `0x02D35C` and the populated ADSP image. The record table is preserved
   in `reference/experiments/stunrun/adsp-program-upload.metadata.json`.
+- RESOLVED UNIT CONVERSION: the `write16s_delegate` callback offset is in
+  16-bit words, not byte addresses. `MOVE.L`'s two writes advance callback
+  offsets by one (high then low lane); `hd68k_adsp_program_w` groups them with
+  `offset/2`. Thus `ADSP program word = (68010 byte address - 0x800000)/4`.
+  The final destination word `0x1235` is written at byte addresses
+  `0x8048d4/0x8048d6`, matching the captured range. The previous unresolved
+  “same parity” concern was a unit error; see findings §82.3.
 - MAME-CONFIRMED: the target has no separate ADSP program-code ROM region.
   The ADSP program map is RAM at `0x0000–0x1fff`, with `0x2000–0x3fff`
   marked `nopr`/ROM? by the driver. The separate 0x60000-byte `user1` region
   is explicitly labeled ADSP object ROM and is accessed through the special
   `SIMBUF/MP` path, not identified as executable program storage.
 - NARROWED UNKNOWN: the title path populates ADSP program RAM through the
-  observed `0x02D35C` loop, but the source table/buffer semantics and exact
-  instruction-level normalization of the paired `MOVE.L` halfword taps remain
-  open.
+  observed `0x02D35C` loop, but source table/buffer semantics remain open.
 - NARROWED UNKNOWN: beyond the single `0x02C20C` initialization write, no
   68010 data-window traffic is observed in the bounded title path. Internal
   ADSP data-space traffic and post-gameplay main-CPU accesses remain open.

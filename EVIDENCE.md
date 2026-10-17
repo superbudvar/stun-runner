@@ -280,6 +280,13 @@ Do not create exhaustive full-game canonical traces before the trace pipeline ha
 
 ## Evidence quality rule
 
+`canonical_log_sha256` in MAME tool results is path-scoped when the canonicalized
+log retains an output-path field. Compare it only between runs using the same
+output directory; it is not a path-independent run identity. For example,
+`tools/mame-ram-write-trace` produced byte-identical event streams but different
+canonical-log hashes across output directories (findings §29). Compare the
+event artifact/hash for cross-directory determinism instead.
+
 A semantic claim is stronger when it can be traced to one or more of:
 
 - a static listing
