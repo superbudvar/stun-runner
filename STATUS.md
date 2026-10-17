@@ -94,6 +94,16 @@ all alternate workers, object identities or native gameplay parity. It also
 refutes the old prefix codec's word-2-as-DX interpretation; the codec fix and
 live-prefix regression are now in place (`stun-runner-3vb` closed).
 
+**ADSP `$04B2` C slice (2026-10-17).** `reproduction/adsp/som_producer.c` now
+transcribes the captured two-pass tuple transform: it resolves three `SIMCLK`
+addresses through the `/MP=1` object-ROM word window, reproduces all 54
+pass-1/pass-2 ring writes, and composes the derived rings with the existing SOM
+scan/walk to match all nine 16-word records. The source DM tuple window is still
+supplied from the capture; caller-side production, alternate branches, clamp,
+SOM/GINT orchestration, and native-shell wiring remain open. This is not an
+integrated ADSP/gameplay replacement. See findings §92 and
+`reproduction/adsp/README.md`.
+
 Distinct from M5. The GSP has no ROM: `mainpcb:user1` is the ADSP object ROM,
 and the 68010 programs the GSP through VRAM. Until a GSP executes, the display
 list is never rasterised and the 68010 spins at `$022766` waiting on a queue
