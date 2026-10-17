@@ -337,12 +337,13 @@ _TBL_ROW = re.compile(r"//\s*0x(c[0-9a-f]{3})\s*\n((?:\s*&tms34010_device::[^\n]
 
 
 def executor_rows(source: str = None) -> dict[int, list[str]]:
-    """opcode >> 8 (0xc000..0xcf00) -> the sixteen handler names, columns 0..15.
+    """Opcode high byte to handler names; columns encode bits 7:4 of the opcode.
 
     `s_opcode_table` is `[65536 >> 4]` and is indexed `s_opcode_table[op >> 4]`
-    (tms34010.cpp), so a row is one opcode high byte and a column is one low
-    nibble. The JR family therefore binds a *condition* to the row, and the
-    *form* to the column.
+    (tms34010.cpp). Each 16-entry row covers one opcode high byte, and its
+    columns select the form nibble `op[7:4]`; `DSTREG(op)` separately reads
+    `op[3:0]`. The JR family therefore binds a *condition* to the row and the
+    *form specialization* to the column.
     """
     text = TBL.read_text(encoding="utf-8") if source is None else source
     table = text.split("s_opcode_table", 1)[1]
@@ -371,6 +372,34 @@ def dstreg_definition(source: str = None) -> str:
     if not found:
         raise AssertionError("no DSTREG macro found in tms34010.cpp")
     return found[0].strip()
+
+
+def check_form_implementations(source: str = None) -> list[str]:
+    """Check the executor bodies for the three ISA branch-form widths."""
+    text = OPS.read_text(encoding="utf-8") if source is None else source
+    expected = {
+        "0": ("if (DSTREG(op))", "PARAM_REL8(op)",
+              "m_pc += (PARAM_WORD_NO_INC()<<4)+0x10;", "SKIP_WORD();"),
+        "8": ("if (DSTREG(op))", "PARAM_REL8(op)",
+              "m_pc = PARAM_LONG_NO_INC();", "SKIP_LONG();"),
+        "x": ("m_pc += (PARAM_REL8(op) << 4);",),
+    }
+    problems = []
+    for form, fragments in expected.items():
+        marker = f"#define j_xx_{form}(TAKE)"
+        start = text.find(marker)
+        if start < 0:
+            problems.append(f"form {form}: macro missing")
+            continue
+        end = text.find("\n}", start)
+        if end < 0:
+            problems.append(f"form {form}: macro closing brace missing")
+            continue
+        body = text[start:end]
+        for fragment in fragments:
+            if fragment not in body:
+                problems.append(f"form {form}: expected {fragment!r}")
+    return problems
 
 
 # --------------------------------------------------------------------------
@@ -419,9 +448,9 @@ def check_condition_table(table: dict[int, str],
 def check_row_binding(table: dict[int, str], rows: dict[int, list[str]]) -> list[str]:
     """Row 0xcN00 must call the handler for condition code 0xN00, in every column.
 
-    The row *is* the condition and the column *is* the form, because the
-    dispatcher indexes `s_opcode_table[op >> 4]` -- one row per opcode high
-    byte, one column per low nibble. Getting this binding wrong is the failure
+    The row *is* the condition and the column *is* the form specialization,
+    because `s_opcode_table[op >> 4]` groups by opcode high byte and bits 7:4
+    select the column. Getting this binding wrong is the failure
     this check exists for: the disassembler would print one condition while the
     executor branched on another.
     """
@@ -562,12 +591,33 @@ class ExecutorConditionTableTests(unittest.TestCase):
         for code in range(0xc000, 0xd000, 0x100):
             self.assertNotIn("illop", rows[code])
 
-    def test_the_dispatch_column_is_the_low_nibble(self):
-        # Everything about which *form* runs rests on this: if the table were
-        # indexed by more than the low nibble, the row would not be the whole
-        # story and `j_<CC>_8` would not be reachable only at op & 0x0f == 8.
+    def test_the_dispatch_column_matches_the_form_selector(self):
+        # `op >> 4` makes bits 7:4 the table column. The low nibble is a
+        # separate field consumed by DSTREG inside the selected form helper.
         self.assertEqual(dispatcher_index(), "op >> 4")
         self.assertEqual(dstreg_definition(), "((O) & 0x0f)")
+        row = executor_rows()[0xc000]
+        self.assertEqual(row[0], "j_UC_0")
+        self.assertEqual(row[8], "j_UC_8")
+        self.assertTrue(all(row[index] == "j_UC_x"
+                            for index in set(range(16)) - {0, 8}))
+
+    def test_form_macros_use_the_isa_displacement_widths(self):
+        self.assertEqual(check_form_implementations(), [])
+
+    def test_form_macro_mutation_is_detected(self):
+        source = OPS.read_text(encoding="utf-8")
+        start = source.index("#define j_xx_0(TAKE)")
+        end = source.index("\n}", start)
+        macro = source[start:end]
+        wrong_macro = macro.replace(
+            "m_pc += (PARAM_WORD_NO_INC()<<4)+0x10;",
+            "m_pc = PARAM_LONG_NO_INC();", 1)
+        wrong = source[:start] + wrong_macro + source[end:]
+        self.assertNotEqual(wrong, source)
+        problems = check_form_implementations(wrong)
+        self.assertTrue(any(problem.startswith("form 0:") for problem in problems),
+                        problems)
 
 
 @NEED_SOURCE
