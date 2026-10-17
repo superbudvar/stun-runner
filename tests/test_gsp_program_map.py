@@ -128,6 +128,19 @@ class GspProgramMapTests(unittest.TestCase):
                     f"{function['vram']:#x}, outside the {SHARE_BYTES}-byte "
                     f"physical share")
 
+    def test_fetch_trace_pc_bits_are_shifted_before_share_fold(self):
+        """A bit address in the mirrored window must identify its physical byte."""
+        trace = self.path("fetch-fold.txt")
+        # 0xffa00000 is a bit address for physical byte offset 0x40000.
+        pathlib.Path(trace).write_text(
+            "# index time pc_bits pc_byteaddr opcode\n"
+            "0 1000 ffa00000 1ff40000 0000\n")
+        proc = run(str(self.share), "--fetch-trace", trace, "--json")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        document = json.loads(proc.stdout)
+        self.assertEqual(document["last_fetched_offset"], 0x40000)
+        self.assertTrue(document["functions"][0]["reached"])
+
     def test_refuses_a_file_that_is_not_a_fetch_trace(self):
         """A trace reader that accepts the wrong file reports an empty executed
         set, which reads as "the GSP never ran" rather than "bad input"."""

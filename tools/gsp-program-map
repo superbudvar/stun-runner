@@ -85,7 +85,9 @@ def read_trace(path: pathlib.Path) -> set[int]:
             except ValueError:
                 continue
             rows += 1
-            fetched.add(pc & (SHARE_BYTES - 1))
+            # Trace PCs are TMS34010 bit addresses; convert to byte offset
+            # before folding into the physical 512 KiB share.
+            fetched.add((pc >> 3) & (SHARE_BYTES - 1))
     if rows == 0:
         raise SystemExit(
             f"{path} contains no fetch records.\n"
