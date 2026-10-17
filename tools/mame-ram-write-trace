@@ -85,6 +85,18 @@ def main() -> int:
     log = args.output / "mame.log"
     state_stage = None
     state_directory = "/tmp/stunrun-state-dir"
+    # Per-run cfg AND nvram directories (stun-runner-0p0 / stun-runner-bp1).
+    # This tool was the LAST wrapper still hardcoding /tmp/stunrun-mame-cfg, so
+    # every run read the previous run's stunrun.cfg and inherited its input-port
+    # state -- measured as a PERFECT ALTERNATION: five identical `--input
+    # service_f2` invocations gave 0 / 45850 / 0 / 45850 / 0 events. Deleting the
+    # shared directory before each run gave 0 / 0 / 0. AGENTS.md trap 10 records
+    # this hazard being fixed for tools/mame-memory-snapshot; this tool was
+    # missed. -nonvram_save stops MAME WRITING nvram but not LOADING it, so it
+    # needs -nvram_directory too.
+    cfg_directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-trace-cfg-"))
+    nvram_directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-trace-nvram-"))
+
     if args.load_state:
         state_stage = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-state-trace-"))
         slot_directory = state_stage / "stunrun"
@@ -94,7 +106,9 @@ def main() -> int:
     command = [
         args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
         "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save", "-seconds_to_run",
+        "-cfg_directory", str(cfg_directory),
+        "-nvram_directory", str(nvram_directory), "-nonvram_save",
+        "-seconds_to_run",
         str(86400 if args.load_state else max(2, (args.frames + 59) // 60 + 1)),
         "-state_directory", state_directory, "-statename", "%g",
         "-autoboot_script",
@@ -106,9 +120,7 @@ def main() -> int:
         command.insert(command.index("-seconds_to_run"), "-state")
         command.insert(command.index("-seconds_to_run"), "1")
     if playback is not None:
-        for flag in ("-noreadconfig", "-nowriteconfig",
-                     "-cfg_directory", "/tmp/stunrun-mame-cfg",
-                     "-nonvram_save"):
+        for flag in ("-noreadconfig", "-nowriteconfig", "-nonvram_save"):
             command.remove(flag)
         command += ["-input_directory", str(playback.parent),
                     "-playback", playback.name]

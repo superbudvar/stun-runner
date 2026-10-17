@@ -188,7 +188,13 @@ end
 emu.register_frame_done(function()
     frame = frame + 1
     if frame == tap_frame then install_tap() end
-    while next_event <= #input_events and input_events[next_event].frame == frame do
+    -- `<=`, not `==` (stun-runner-0p0). `frame` is a CALLBACK counter, not the
+    -- machine's frame number, so if the counter ever steps past an event's
+    -- target frame a strict `==` drops that event FOREVER -- the loop can never
+    -- reach it again, and the run silently diverges from the schedule. `<=`
+    -- applies a late event instead of losing it. Reproduced 2026-10-13: six
+    -- identical `--input service_f2` invocations alternated 1040/480 events.
+    while next_event <= #input_events and input_events[next_event].frame <= frame do
         apply_event(input_events[next_event])
         next_event = next_event + 1
     end
