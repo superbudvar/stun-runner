@@ -200,9 +200,11 @@ add_executable(stunrun-native-shell
   musashi_loader.c
   cpu_override.c
   game_loop.c
+  road_submission.c
   road_strip.c
   state_watch.c
   ../reproduction/maincpu/trajectory_state.c
+  ../reproduction/maincpu/state_dispatch.c
   ../reproduction/maincpu/geom_upload.c
   ../reproduction/maincpu/road_fifo.c
   render.c
@@ -323,12 +325,26 @@ add_executable(stunrun-game-loop-test
   fake_ports.c
   game_loop.c
   ../reproduction/maincpu/trajectory_state.c
-  ../reproduction/maincpu/geom_upload.c
-  ../reproduction/maincpu/road_fifo.c
+  ../reproduction/maincpu/state_dispatch.c
   game_loop_test.c)
 set_target_properties(stunrun-game-loop-test PROPERTIES C_STANDARD 99)
 target_include_directories(stunrun-game-loop-test PRIVATE . ../reproduction/maincpu)
 add_test(NAME native-game-loop-c COMMAND stunrun-game-loop-test)
+add_executable(stunrun-road-submission-test
+  fake_ports.c
+  road_submission.c
+  ../reproduction/maincpu/geom_upload.c
+  ../reproduction/maincpu/road_fifo.c
+  road_submission_test.c)
+set_target_properties(stunrun-road-submission-test PROPERTIES C_STANDARD 99)
+target_include_directories(stunrun-road-submission-test PRIVATE . ../reproduction/maincpu)
+add_test(NAME native-road-submission-c COMMAND stunrun-road-submission-test)
+add_executable(stunrun-maincpu-state-dispatch-test
+  ../reproduction/maincpu/state_dispatch.c
+  ../reproduction/maincpu/state_dispatch_test.c)
+set_target_properties(stunrun-maincpu-state-dispatch-test PROPERTIES C_STANDARD 99)
+target_include_directories(stunrun-maincpu-state-dispatch-test PRIVATE ../reproduction/maincpu)
+add_test(NAME maincpu-state-dispatch-c COMMAND stunrun-maincpu-state-dispatch-test)
 add_executable(stunrun-render-test render.c render_test.c)
 set_target_properties(stunrun-render-test PROPERTIES C_STANDARD 99)
 add_test(NAME native-render-boundary-c COMMAND stunrun-render-test)
@@ -372,29 +388,28 @@ endif()
 find_package(PkgConfig QUIET)
 if (OpenGL_FOUND AND PkgConfig_FOUND)
   pkg_check_modules(GLFW3 QUIET glfw3)
-  if (GLFW3_FOUND AND EXISTS stage.c AND EXISTS vehicle.c)
-add_executable(stunrun-opengl-demo
+endif()
+if (OpenGL_FOUND AND PkgConfig_FOUND AND GLFW3_FOUND)
+    add_executable(stunrun-opengl-demo
       opengl_demo.c
-      stage.c
-      vehicle.c
-      gsp_video.c
-      ../reproduction/maincpu/score.c
-      ../reproduction/maincpu/award_path.c
-      mc68010_physics.c
       fake_ports.c
       game_loop.c
       road_strip.c
       render.c
       ../reproduction/maincpu/trajectory_state.c
-      ../reproduction/maincpu/geom_upload.c
-      ../reproduction/maincpu/road_fifo.c)
+      ../reproduction/maincpu/state_dispatch.c)
     target_include_directories(stunrun-opengl-demo PRIVATE .
       ../reproduction/maincpu ../reproduction/sound ${GLFW3_INCLUDE_DIRS})
     target_compile_options(stunrun-opengl-demo PRIVATE ${GLFW3_CFLAGS_OTHER})
     target_link_libraries(stunrun-opengl-demo PRIVATE
       stunrun-opengl-backend ${GLFW3_LIBRARIES} OpenGL::GL m)
     set_target_properties(stunrun-opengl-demo PROPERTIES C_STANDARD 99)
-  endif()
+elseif(NOT OpenGL_FOUND)
+  message(STATUS "Skipping stunrun-opengl-demo: OpenGL development files not found")
+elseif(NOT PkgConfig_FOUND)
+  message(STATUS "Skipping stunrun-opengl-demo: pkg-config not found")
+elseif(NOT GLFW3_FOUND)
+  message(STATUS "Skipping stunrun-opengl-demo: pkg-config module glfw3 not found")
 endif()
 if(EXISTS stage.c AND EXISTS vehicle.c)
   add_executable(stunrun-stage-test
@@ -409,8 +424,6 @@ if(EXISTS stage.c AND EXISTS vehicle.c)
     ../reproduction/maincpu/award_path.c
     mc68010_physics.c
     ../reproduction/maincpu/trajectory_state.c
-    ../reproduction/maincpu/geom_upload.c
-    ../reproduction/maincpu/road_fifo.c
     stage_test.c)
   target_include_directories(stunrun-stage-test PRIVATE . ../reproduction/maincpu
     ../reproduction/sound)

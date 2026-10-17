@@ -25,9 +25,9 @@ Original in MAME: **ROM-validated and runtime-inventoried; title checkpoint esta
 
 Step 0 driver mining: **worked example retained; runtime tags reconciled against system MAME 0.289**
 
-Reproduction target: **initial ADSP replacement slice only; gameplay reproduction not started**
+Reproduction target: **initial ADSP replacement slice only; main-CPU gameplay behavior has not been reproduced end-to-end**
 
-Native target: **deterministic replay/checkpoint scaffolding and evidence-backed slices; game implementation not started**
+Native target: **deterministic replay/checkpoint scaffolding and evidence-backed slices; a C translation now covers the 68010 state-dispatch table, but state handlers and integrated gameplay behavior remain unported**
 
 Verification harness: **bounded replay/checkpoint/trace path implemented; M1 machine facts are promoted into selectors and evidence fixtures**
 

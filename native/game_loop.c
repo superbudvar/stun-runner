@@ -2,8 +2,7 @@
 #include "game_loop.h"
 
 #include "trajectory_state.h"
-#include "geom_upload.h"
-#include "road_fifo.h"
+#include "../reproduction/maincpu/state_dispatch.h"
 
 static void service_interrupt_tick(stunrun_game_loop_t *loop)
 {
@@ -41,23 +40,31 @@ void stunrun_game_loop_init(stunrun_game_loop_t *loop,
     loop->ports = ports;
     loop->frame = 0u;
     loop->global_tick = 0u;
+    loop->state_word = 0u;
+    loop->state_dispatch_target_pc = 0u;
     loop->steering_delta = 0;
     loop->trajectory_coordinate = stunrun_trajectory_initial();
     loop->motion_delta = 0;
     (void)stunrun_mem_write16_be(ports, 0xFFDD16u, 0u);
-    loop->road_fifo_count = 0u;
-    loop->road_ready = 0;
 }
 
 void stunrun_game_loop_step(stunrun_game_loop_t *loop)
 {
     unsigned tick;
+    uint16_t state_word;
     if (loop == NULL || loop->ports == NULL)
         return;
     for (tick = 0u; tick < STUNRUN_INTERRUPT_TICKS_PER_FRAME; tick++)
         service_interrupt_tick(loop);
     sample_inputs(loop);
     update_trajectory_state(loop);
+    if (stunrun_mem_read16_be(loop->ports,
+                              STUNRUN_STATE_DISPATCH_WORD_ADDR,
+                              &state_word)) {
+        loop->state_word = state_word;
+        loop->state_dispatch_target_pc =
+            stunrun_maincpu_state_dispatch_target(state_word);
+    }
     loop->frame++;
 }
 
@@ -69,41 +76,4 @@ void stunrun_game_loop_set_motion_delta(stunrun_game_loop_t *loop,
         (void)stunrun_mem_write16_be(loop->ports, 0xFFDD16u,
                                      (uint16_t)motion_delta);
     }
-}
-
-int stunrun_game_loop_load_road_table(stunrun_game_loop_t *loop,
-                                      const uint16_t *table)
-{
-    if (loop == NULL || table == NULL ||
-        stunrun_geom_upload(STUNRUN_GEOM_COPY_COUNT, table,
-                            loop->road_base, loop->road_twin) !=
-            STUNRUN_GEOM_COPY_COUNT)
-        return 0;
-    loop->road_fifo_count = 0u;
-    loop->road_ready = 1;
-    return 1;
-}
-
-size_t stunrun_game_loop_submit_road(stunrun_game_loop_t *loop)
-{
-    size_t i;
-    if (loop == NULL || loop->ports == NULL || !loop->road_ready)
-        return 0u;
-    loop->road_fifo_count = stunrun_road_fifo_drain(
-        loop->road_base, STUNRUN_GAME_LOOP_ROAD_WORDS,
-        loop->road_fifo, STUNRUN_GAME_LOOP_FIFO_WORDS);
-    /* Each datum is a 32-bit long carried by two 16-bit host writes, the high
-     * halfword to $C0000C first and the low halfword to $C0000E second
-     * (findings 75). Split it here so the FIFO sees the measured bus shape. */
-    for (i = 0u; i < loop->road_fifo_count; i++) {
-        uint16_t half[2];
-        size_t n;
-
-        if (stunrun_road_fifo_host_writes(&loop->road_fifo[i], 1u, half, 2u) != 2u)
-            return 0u;
-        for (n = 0u; n < 2u; n++)
-            if (!stunrun_gsp_fifo_push(loop->ports, half[n]))
-                return i;
-    }
-    return loop->road_fifo_count * 2u;
 }

@@ -244,6 +244,7 @@ static void gsp_rtl_bus_observer(void *ctx,
 #include "text_record.h"
 #include "fake_ports.h"
 #include "game_loop.h"
+#include "road_submission.h"
 #include "road_strip.h"
 #ifdef STUNRUN_GSP_GL_SCANOUT
 #include "gsp_scanout_gl.h"
@@ -1224,6 +1225,7 @@ static int run_walk(void)
     stunrun_fifo_run_summary_t fifo_summary;
     stunrun_fake_ports_t ports;
     stunrun_game_loop_t game_loop;
+    stunrun_road_submission_t road_submission;
     const char *control_state = "skipped";
     const char *counts_state = "skipped";
     size_t emitted;
@@ -1365,6 +1367,7 @@ static int run_walk(void)
         }
     }
     stunrun_game_loop_init(&game_loop, &ports);
+    stunrun_road_submission_init(&road_submission, &ports);
     stunrun_adsp_control_tally_init(&tally);
     stunrun_render_init(&renderer);
     stunrun_gsp_video_init(&video);
@@ -1825,10 +1828,11 @@ static int run_walk(void)
             printf("shell: geometry-upload fixture=read-failed\n");
             g_failures++;
         } else {
-            passes = stunrun_game_loop_load_road_table(&game_loop,
-                                                       geometry_table) ?
+            passes = stunrun_road_submission_load_table(&road_submission,
+                                                         geometry_table) ?
                      STUNRUN_GEOM_COPY_COUNT : 0u;
-            size_t fifo_words = stunrun_game_loop_submit_road(&game_loop);
+            size_t fifo_words =
+                stunrun_road_submission_submit(&road_submission);
             /* Measured transport (findings 75): the 384 source words ride the
              * host port as 192 packed longs, i.e. 384 16-bit writes that
              * reproduce the source sequence in order. Checking each packed
@@ -1837,13 +1841,14 @@ static int run_walk(void)
             int fifo_match =
                 fifo_words == 2u * STUNRUN_ROAD_FIFO_WRITES;
             for (i = 0; i < STUNRUN_GEOM_MARCH_WORDS; i++)
-                if (game_loop.road_base[i] != game_loop.road_twin[i] ||
-                    game_loop.road_base[i] != geometry_table[i])
+                if (road_submission.road_base[i] !=
+                        road_submission.road_twin[i] ||
+                    road_submission.road_base[i] != geometry_table[i])
                     copies_match = 0;
             for (i = 0; i < STUNRUN_ROAD_FIFO_WRITES; i++) {
-                if (game_loop.road_fifo[i] !=
-                        (((uint32_t)game_loop.road_base[i * 2u] << 16) |
-                         (uint32_t)game_loop.road_base[i * 2u + 1u]))
+                if (road_submission.road_fifo[i] !=
+                        (((uint32_t)road_submission.road_base[i * 2u] << 16) |
+                         (uint32_t)road_submission.road_base[i * 2u + 1u]))
                     fifo_match = 0;
             }
             expect(passes == STUNRUN_GEOM_COPY_COUNT);
@@ -1853,7 +1858,7 @@ static int run_walk(void)
                    "bytes=%u sum=0x%08X copies=match fifo-drain=%u/384 "
                    "dest=0x%08X\n", passes,
                    STUNRUN_GEOM_MARCH_WORDS * 2u,
-                   (unsigned)geometry_sum(game_loop.road_base),
+                    (unsigned)geometry_sum(road_submission.road_base),
                    (unsigned)fifo_words, STUNRUN_ROAD_FIFO_DEST);
         }
     }

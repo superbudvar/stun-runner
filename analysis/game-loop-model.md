@@ -49,8 +49,43 @@ Evidence: `analysis/track-position-findings.md`,
 
 ### 2. Main state dispatch and input sampling
 
-`0xFF9550` is a state/dispatch latch. The routine at `0x02452C` dispatches
-through it, but the complete state table is not yet named.
+`0xFF9550` is a state/dispatch latch. At `0x02452C`, the ROM compares the
+unsigned word against `$45`; values above that branch to `$025436`. Values
+`$00..$45` index a 70-word signed-relative jump table at `$024542`, whose
+targets are based at `$024544`. The table is now transcribed in
+`reproduction/maincpu/state_dispatch.c` and checked against the ROM-derived
+expected target list in `state_dispatch_test.c`. All 70 entries resolve to
+distinct target PCs. This establishes dispatch routing, **not** the semantics
+or complete C implementation of the handlers at those targets. In particular,
+an address selected by the jump table is not by itself proof that the address
+is a standalone function boundary.
+
+ROM evidence: rev-6 maincpu image SHA-256
+`29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c`;
+verification command `ctest --test-dir <build> -R
+maincpu-state-dispatch-c --output-on-failure`.
+
+| State | Target | State | Target | State | Target | State | Target | State | Target |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 00 | 024546 | 01 | 02468A | 02 | 024BD6 | 03 | 024CCE | 04 | 024DF2 |
+| 05 | 024DFC | 06 | 025436 | 07 | 024782 | 08 | 0248B6 | 09 | 024B5C |
+| 0A | 024B66 | 0B | 024B70 | 0C | 024B7A | 0D | 024BFC | 0E | 024C6E |
+| 0F | 0245D0 | 10 | 0248C0 | 11 | 024B8E | 12 | 024BE0 | 13 | 024C64 |
+| 14 | 024CB4 | 15 | 024B84 | 16 | 0248CA | 17 | 0249CC | 18 | 024B52 |
+| 19 | 024E06 | 1A | 024E10 | 1B | 024E1A | 1C | 024E24 | 1D | 024E3E |
+| 1E | 024ECA | 1F | 024CD8 | 20 | 024DA0 | 21 | 024C96 | 22 | 024CA0 |
+| 23 | 024C82 | 24 | 024C8C | 25 | 024ED4 | 26 | 024ED8 | 27 | 024EE2 |
+| 28 | 025010 | 29 | 02501A | 2A | 0247CE | 2B | 0246D6 | 2C | 0246E0 |
+| 2D | 025024 | 2E | 0252F6 | 2F | 02538C | 30 | 0253D8 | 31 | 0253E2 |
+| 32 | 0253DC | 33 | 0253F8 | 34 | 025400 | 35 | 025408 | 36 | 025410 |
+| 37 | 025418 | 38 | 025420 | 39 | 025428 | 3A | 025430 | 3B | 02472C |
+| 3C | 024736 | 3D | 024864 | 3E | 024916 | 3F | 024920 | 40 | 02496C |
+| 41 | 024976 | 42 | 0249C2 | 43 | 024A14 | 44 | 025396 | 45 | 0253A0 |
+
+The native `game_loop` now records the current state word and selected target
+PC each step. It does **not** execute those handler bodies; the actual 68010
+still does so through Musashi when that mode is enabled. This makes the native
+state selection observable without claiming a complete game-loop port.
 
 The strongest input-path candidate is:
 

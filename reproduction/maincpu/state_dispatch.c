@@ -1,0 +1,30 @@
+/* Literal state dispatch at $02452C from the rev-6 maincpu ROM.
+ *
+ * ROM evidence: roms/stunrun/stunrun_maincpu.bin, SHA-256
+ * 29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c.
+ * At $02452C the code compares D0 with $45, branches to $025436 if unsigned
+ * higher, then doubles D0, reads a signed word from $024542 + D0, and jumps
+ * using the displacement from PC base $024544. The table stores signed
+ * offsets and preserves the ROM's literal branch destinations.
+ */
+#include "state_dispatch.h"
+
+static const int16_t state_offsets[STUNRUN_STATE_DISPATCH_MAX + 1u] = {
+    0x0002, 0x0146, 0x0692, 0x078a, 0x08ae, 0x08b8, 0x0ef2,
+    0x023e, 0x0372, 0x0618, 0x0622, 0x062c, 0x0636, 0x06b8,
+    0x072a, 0x008c, 0x037c, 0x064a, 0x069c, 0x0720, 0x0770,
+    0x0640, 0x0386, 0x0488, 0x060e, 0x08c2, 0x08cc, 0x08d6,
+    0x08e0, 0x08fa, 0x0986, 0x0794, 0x085c, 0x0752, 0x075c,
+    0x073e, 0x0748, 0x0990, 0x0994, 0x099e, 0x0acc, 0x0ad6,
+    0x028a, 0x0192, 0x019c, 0x0ae0, 0x0db2, 0x0e48, 0x0e94,
+    0x0e9e, 0x0e98, 0x0eb4, 0x0ebc, 0x0ec4, 0x0ecc, 0x0ed4,
+    0x0edc, 0x0ee4, 0x0eec, 0x01e8, 0x01f2, 0x0320, 0x03d2,
+    0x03dc, 0x0428, 0x0432, 0x047e, 0x04d0, 0x0e52, 0x0e5c
+};
+
+uint32_t stunrun_maincpu_state_dispatch_target(uint16_t state)
+{
+    if (state > STUNRUN_STATE_DISPATCH_MAX)
+        return STUNRUN_STATE_DISPATCH_DEFAULT_PC;
+    return 0x024544u + (uint32_t)(int32_t)state_offsets[state];
+}
