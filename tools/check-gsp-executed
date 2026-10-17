@@ -1,0 +1,523 @@
+#!/usr/bin/env python3
+"""Classify every GSP program word by EXECUTION, then by what MAME's decoder says.
+
+THE QUESTION
+------------
+`tools/disasm-gsp` reports whether MAME's TMS34010 decoder has a mnemonic for a
+word. That is not the same question as "is this word an instruction". A `DW`
+line means the *decoder* has nothing, and a plausible mnemonic means the *bytes*
+form a legal encoding -- both are statements about the decoder meeting the
+bytes, and neither is a statement about the GSP. Every classification by
+decoding alone is therefore double-blind in the same direction: it cannot find a
+real instruction the decoder lacks, and it cannot reject a data word that
+happens to be legal.
+
+This tool partitions the share by the only thing that settles it -- the address
+was FETCHED -- crossed with what the decoder does with the word there:
+
+    | bucket | fetched | decodes | meaning                                              |
+    |--------|---------|---------|------------------------------------------------------|
+    | A      | yes     | yes     | code, fine                                           |
+    | B      | yes     | no      | REAL INSTRUCTION MAME CANNOT DECODE -> our decoder   |
+    | C      | no      | yes     | data that happens to be a legal encoding             |
+    | D      | no      | no      | data, correctly undecoded                            |
+
+Only B changes what we implement. A is already handled. C and D are both data,
+and the difference between them is a fact about the decoder, not about the
+game.
+
+WHAT IT GETS WRONG -- read before quoting any number from it
+------------------------------------------------------------
+  * **C and D mean "not fetched in THIS trace", not "data".** A bounded trace
+    window, or one the hook truncated at its MAX, leaves cells unfetched simply
+    because the run stopped. The tool reports the trace's record count and
+    whether the hook wrote its truncation marker, and prints a warning when the
+    trace is bounded, but it cannot tell a not-yet-reached cell from a data
+    cell. A truncated trace makes C and D *lower bounds* on data.
+
+  * **The unit is the WORD (2 bytes), not the 16-byte cell.** The GSP can fetch
+    at any word address, and the frame-404 capture really does hold 262,144
+    distinct words -- `tools/mame-gsp-vram-dump` steps 0x10 address units per
+    word and writes one word per 2-byte slot, so it is NOT one word replicated
+    eight times per cell. The tool measures that (`image.
+    replicated_8x_within_cells`) so a reader of a different capture is not
+    misled, but it decodes at word resolution either way. §85.1 counted 32,768
+    cells; that is a coarser question and the counts are not comparable.
+
+  * **The decode column is a decode, not an interpretation.** A word that
+    renders as a mnemonic here is a word the DECODER accepted. Bucket A is
+    "fetched and accepted"; bucket C is "not fetched but accepted". Neither
+    says what the instruction would do.
+
+  * **The fetch trace's time column is unusable.** Every record this
+    instrumentation has produced carries the same `time_attoseconds`
+    (1000000000000000000, exactly 1.0 s) regardless of when the fetch happened,
+    so a trace cannot be windowed by time and this tool does not try. Provenance
+    of a corpus is the trace's record count and the run that made it, not a
+    timestamp inside it.
+
+  * **It says nothing about the share above 512 KiB.** The GSP address window is
+    4 MiB with eight aliases of the 512 KiB share. Folding is `(pc_bits >> 3) &
+    0x7FFFF`, and every share offset has eight addresses in the window; this
+    tool reports the low alias (`0xff800000 + offset << 3`) and says so.
+    Whether the real board ALIASES there or leaves it unwired is UNKNOWN
+    (Margolin, S3, withheld that schematic section; findings 84.2).
+
+  * **A fetched word that decodes is only "A" for that run.** A single bounded
+    power-on run is not the whole program. Nothing here bounds what a longer or
+    different-input run would fetch.
+
+ADDRESS FOLD, AND THE PROOF OF IT
+----------------------------------
+A fetch record carries `pc_bits`, the TMS34010's own BIT address (ROPCODE()
+advances it by `2 << 3`). The physical share offset is
+
+    share_offset = ((pc_bits - 0xff800000) >> 3) & 0x7ffff
+
+which reduces to `(pc_bits >> 3) & 0x7ffff` because the map base is a multiple of
+the 512 KiB share. `harddriv.cpp:628` installs
+`map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram")` over a
+512 KiB backing, so one address unit is one bit (addrshift 3) and eight aliases
+of the share fill the window.
+
+The tool does not ask you to trust that: it compares every trace record's
+`opcode` field against the word in the image at the folded offset and reports
+how many agreed. A fold that is off by a factor of eight fails that check
+immediately, and a trace and an image from different runs do not agree either --
+so a nonzero mismatch count is a provenance warning, not a rounding error.
+
+Usage:
+    tools/check-gsp-executed SHARE.bin --fetch-trace TRACE.txt
+    tools/check-gsp-executed SHARE.bin --fetch-trace TRACE.txt --json
+
+Without `--fetch-trace` the tool still runs and still decodes every word, but
+every address is then unfetched by construction: buckets A and B are empty and
+C and D hold everything. That mode answers "what does MAME decode here", which
+is §85.1's question and not this tool's, and the report says so on stdout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import concurrent.futures as futures
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+
+REPO = pathlib.Path(__file__).resolve().parents[1]
+DISASM = REPO / "tools" / "disasm-gsp"
+
+# 512 KiB PHYSICAL SHARE. The 4 MiB figure is the GSP address WINDOW (harddriv.cpp:628),
+# not the share, and conflating them is what made tools/disasm-gsp refuse the
+# oracle's own capture before 0fef4c6. See findings 84 and 85.
+SHARE_BASE = 0xFF800000
+SHARE_BYTES = 0x80000
+GSP_WINDOW_BYTES = 0x400000
+# One instruction word occupies one 16-byte cell, replicated 8x, in a capture.
+WORD_STRIDE = 16
+WORDS_PER_CELL = WORD_STRIDE // 2
+CELLS = SHARE_BYTES // WORD_STRIDE
+# MAME's marker for a word its TMS34010 decoder declines to name.
+UNKNOWN_MNEMONIC = "DW"
+# The driver prints "<off>: <b1><b0>  <mnemonic> <operands>   [N word(s)]".
+DRIVER_LINE = re.compile(r"^\s*([0-9a-f]+):\s+\S+\s+(\S+)(.*?)\s*(?:\[\d+ word\(s\)\])?\s*$")
+
+SCHEMA = "stunrun-gsp-executed-v1"
+
+
+# ---------------------------------------------------------------- inputs
+
+
+def read_share(path: pathlib.Path) -> tuple[bytes, dict]:
+    """The 512 KiB physical share, refusing any other size loudly.
+
+    These are unversioned binary dumps. A reader built against the 4 MiB
+    address window accepts a 4194304-byte program-ADDRESS image and invents
+    plausible cells out of it, which is exactly the defect that shipped once.
+    """
+    data = path.read_bytes()
+    if len(data) != SHARE_BYTES:
+        raise SystemExit(
+            f"share image {path} is {len(data)} bytes, expected {SHARE_BYTES}.\n"
+            f"  {GSP_WINDOW_BYTES} bytes is the GSP program-address WINDOW\n"
+            f"  (harddriv.cpp:628 map(0xff800000,0xffbfffff).mirror(0x0400000)),\n"
+            f"  not the share MAME allocates. addrshift is 3, so one address unit\n"
+            f"  is one bit: {SHARE_BYTES} bytes = {SHARE_BYTES * 8} address units.\n"
+            f"  Any other length is a different container, and every address this\n"
+            f"  tool would report would be wrong."
+        )
+    words = CELLS * WORDS_PER_CELL
+    info = {
+        "path": str(path),
+        "bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "cells": CELLS,
+        "words": words,
+        "replicated_8x_within_cells": data == b"".join(
+            data[i:i + 2] * WORDS_PER_CELL for i in range(0, len(data), WORD_STRIDE)),
+    }
+    return data, info
+
+
+def read_trace(path: pathlib.Path) -> tuple[set[int], int, dict]:
+    """Fetched share byte offsets from a STUNRUN-FETCH trace.
+
+    Five whitespace fields per line: `<index> <time> <pc_bits> <pc_byteaddr>
+    <opcode>`; `#` lines are the hook's own truncation marker. Parse before
+    counting -- a five-word English sentence passes a field count and then dies
+    in int(), which is a traceback rather than a diagnosis, and a reader that
+    quietly reports an empty executed set is indistinguishable from "the GSP
+    never ran".
+    """
+    fetched: set[int] = set()
+    opcodes: dict[int, int] = {}
+    records = 0
+    truncated = False
+    truncated_at = None
+    unaligned = 0
+    timestamps: set[int] = set()
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if line.startswith("#"):
+                match = re.search(r"TRUNCATED at (\d+) fetches", line)
+                if match:
+                    truncated = True
+                    truncated_at = int(match.group(1))
+                continue
+            parts = line.split()
+            if len(parts) != 5:
+                continue
+            try:
+                pc_bits = int(parts[2], 16)
+                opcode = int(parts[4], 16)
+            except ValueError:
+                continue
+            records += 1
+            timestamps.add(int(parts[1]))
+            offset = (pc_bits >> 3) & (SHARE_BYTES - 1)
+            if offset & 1:
+                unaligned += 1
+                continue
+            fetched.add(offset)
+            opcodes.setdefault(offset, opcode)
+    if records == 0:
+        raise SystemExit(
+            f"{path} contains no fetch records.\n"
+            f"A STUNRUN-FETCH trace has 5 whitespace-separated fields per line:\n"
+            f"  <index> <time> <pc_bits> <pc_byteaddr> <opcode>\n"
+            f"Produced by the observer build with STUNRUN_GSP_FETCH_OUT set.")
+    info = {
+        "path": str(path),
+        "records": records,
+        "distinct_word_addresses": len(fetched),
+        "truncated_by_hook": truncated,
+        "truncation_note": (f"the hook stopped after {truncated_at} recorded fetches; "
+                            f"cells outside the executed set are lower bounds on data"
+                            if truncated else None),
+        "unaligned_records": unaligned,
+        "distinct_time_values": len(timestamps),
+        "opcodes": opcodes,
+    }
+    return fetched, records, info
+
+
+# ------------------------------------------------------------- decoding
+
+
+def _load_disasm():
+    """Import tools/disasm-gsp so there is exactly ONE decoder in the tree.
+
+    The decode must be MAME's 34010dsm.cpp, not a reimplementation, or the whole
+    question ("what does MAME decode") is answered by something else.
+    """
+    loader = importlib.machinery.SourceFileLoader("stunrun_disasm_gsp", str(DISASM))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def decode_sweep(binary: pathlib.Path, image: pathlib.Path, start: int) -> dict[int, str]:
+    """One linear pass, starting at `start`, decoded by MAME, keyed by offset.
+
+    A linear pass is exactly what produces §85.1's table: it steps over the
+    words a multi-word instruction consumes, so it reports fewer results than
+    there are words, and it only ever visits offsets congruent to its start
+    modulo the 16-byte word stride. Eight passes -- one per residue class --
+    therefore reach every word the program can start an instruction at, and the
+    words they stepped over are recovered individually below.
+    """
+    proc = subprocess.run([str(binary), str(start), str(CELLS + 1), str(image)],
+                          capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        raise SystemExit(proc.stderr.strip() or "the decoder driver failed")
+    decoded: dict[int, str] = {}
+    for line in proc.stdout.splitlines():
+        match = DRIVER_LINE.match(line)
+        if match:
+            decoded[int(match.group(1), 16)] = match.group(2).upper()
+    return decoded
+
+
+def decode_offsets(binary: pathlib.Path, image: pathlib.Path,
+                   offsets: list[int], workers: int = 16) -> dict[int, str]:
+    """Decode individual word addresses the linear passes stepped over."""
+    if not offsets:
+        return {}
+
+    def one(offset: int) -> tuple[int, str | None]:
+        proc = subprocess.run([str(binary), str(offset), "1", str(image)],
+                              capture_output=True, text=True, check=False)
+        for line in proc.stdout.splitlines():
+            match = DRIVER_LINE.match(line)
+            if match:
+                return offset, match.group(2).upper()
+        return offset, None
+
+    out: dict[int, str] = {}
+    with futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        for offset, mnemonic in pool.map(one, sorted(offsets)):
+            if mnemonic is not None:
+                out[offset] = mnemonic
+    return out
+
+
+# ----------------------------------------------------------------- misc
+
+
+def to_ranges(offsets: list[int]) -> list[list[int]]:
+    """Collapse a sorted offset list into [first, last_exclusive] byte ranges."""
+    ranges: list[list[int]] = []
+    start = prev = None
+    for offset in offsets:
+        if start is None:
+            start = prev = offset
+        elif offset == prev + 2:
+            prev = offset
+        else:
+            ranges.append([start, prev + 2])
+            start = prev = offset
+    if start is not None:
+        ranges.append([start, prev + 2])
+    return ranges
+
+
+def low_alias_address(offset: int) -> int:
+    """The lowest GSP bit address that folds onto this share offset.
+
+    The window is eight aliases of the share (see the module docstring), so this
+    is one of eight addresses that name the same word.
+    """
+    return SHARE_BASE + (offset << 3)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Partition the GSP program share by execution and by decode.")
+    parser.add_argument("image", type=pathlib.Path,
+                        help="gsp_vram.bin: the whole 512 KiB physical share")
+    parser.add_argument("--fetch-trace", type=pathlib.Path,
+                        help="STUNRUN-FETCH trace from the observer build")
+    parser.add_argument("--max-list", type=int, default=4096,
+                        help="cap the explicit per-word list in JSON for a bucket "
+                             "(default 4096; 0 = unlimited). Ranges are always "
+                             "emitted and are never capped.")
+    parser.add_argument("--json", action="store_true",
+                        help="emit a stunrun-gsp-executed-v1 document on stdout")
+    args = parser.parse_args()
+
+    if not args.image.is_file():
+        print(f"no share image at {args.image}", file=sys.stderr)
+        return 2
+
+    image, image_info = read_share(args.image)
+
+    fetched: set[int] = set()
+    trace_info: dict = {"path": str(args.fetch_trace) if args.fetch_trace else None,
+                        "records": 0, "distinct_word_addresses": 0,
+                        "truncated_by_hook": False, "truncation_note": None,
+                        "unaligned_records": 0, "distinct_time_values": 0}
+    opcodes: dict[int, int] = {}
+    if args.fetch_trace:
+        fetched, _, trace_info = read_trace(args.fetch_trace)
+        opcodes = trace_info.pop("opcodes")
+
+    module = _load_disasm()
+    workdir = pathlib.Path(tempfile.gettempdir()) / "stunrun-dsm"
+    workdir.mkdir(parents=True, exist_ok=True)
+    binary = module.build(workdir)
+
+    # Eight linear passes, one per 2-byte residue class, then an individual
+    # decode for every word a pass stepped over. Every one of the 262,144 word
+    # addresses ends up with its OWN decode; nothing is inferred from a
+    # neighbour.
+    word_mnemonic: dict[int, str] = {}
+    swept = 0
+    for residue in range(0, WORD_STRIDE, 2):
+        decoded = decode_sweep(binary, args.image, residue)
+        swept += len(decoded)
+        word_mnemonic.update(decoded)
+    stepped_over = [offset for offset in range(0, SHARE_BYTES, 2)
+                    if offset not in word_mnemonic]
+    individually = decode_offsets(binary, args.image, stepped_over)
+    word_mnemonic.update(individually)
+
+    notes: list[str] = []
+    undecodable = {off for off, m in word_mnemonic.items()
+                   if m is None or m in (UNKNOWN_MNEMONIC, "?")}
+    decode_missing = sorted(off for off, m in word_mnemonic.items() if m is None)
+    if decode_missing:
+        notes.append(f"{len(decode_missing)} word addresses produced no decoder "
+                     f"output at all; they are UNKNOWN, not DW")
+
+    words = sorted(word_mnemonic)
+    buckets: dict[str, list[int]] = {"A": [], "B": [], "C": [], "D": []}
+    for offset in words:
+        fetched_here = offset in fetched
+        decodes_here = offset not in undecodable
+        if fetched_here:
+            buckets["A" if decodes_here else "B"].append(offset)
+        else:
+            buckets["C" if decodes_here else "D"].append(offset)
+
+    # Fold proof: does the image agree with the opcodes the trace recorded?
+    matched = mismatched = 0
+    mismatch_examples = []
+    for offset, opcode in sorted(opcodes.items()):
+        word = image[offset] | (image[offset + 1] << 8)
+        if word == opcode:
+            matched += 1
+        else:
+            mismatched += 1
+            if len(mismatch_examples) < 8:
+                mismatch_examples.append({"share_byte_offset": offset,
+                                          "trace_opcode": opcode, "image_word": word})
+
+    distinct_mnemonics = sorted({m for m in word_mnemonic.values()
+                                 if m is not None and m not in (UNKNOWN_MNEMONIC, "?")})
+
+    document = {
+        "schema": SCHEMA,
+        "image": image_info,
+        "trace": trace_info,
+        "address_fold": {
+            "rule": "(pc_bits >> 3) & 0x7ffff",
+            "share_base": SHARE_BASE,
+            "share_bytes": SHARE_BYTES,
+            "aliases_per_offset_in_window": GSP_WINDOW_BYTES // SHARE_BYTES,
+            "opcode_match": matched,
+            "opcode_mismatch": mismatched,
+            "mismatch_examples": mismatch_examples,
+            "verified": mismatched == 0 and matched > 0,
+        },
+        "decode": {
+            "decoder": "MAME src/devices/cpu/tms34010/34010dsm.cpp via tools/disasm-gsp",
+            "unit": "word",
+            "words": len(words),
+            "decoded": len(words) - len(undecodable) - len(decode_missing),
+            "unknown_dw": len(undecodable) - len(decode_missing),
+            "no_decoder_output": len(decode_missing),
+            "distinct_mnemonics": len(distinct_mnemonics),
+            "mnemonic_examples": distinct_mnemonics[:12],
+            "results_from_linear_sweeps": swept,
+            "words_decoded_individually": len(individually),
+        },
+        "buckets": {name: len(offsets) for name, offsets in buckets.items()},
+        "buckets_total": len(words),
+        "notes": notes,
+    }
+
+    for name in ("A", "B", "C", "D"):
+        offsets = buckets[name]
+        listed = offsets if args.max_list == 0 else offsets[:args.max_list]
+        document[f"bucket_{name}"] = {
+            "count": len(offsets),
+            "ranges": [[lo, hi] for lo, hi in to_ranges(offsets)],
+            "range_count": len(to_ranges(offsets)),
+            "words": listed,
+            "words_listed": len(listed),
+            "words_omitted": len(offsets) - len(listed),
+        }
+
+    if args.json:
+        print(json.dumps(document, indent=2))
+        return 0
+
+    counts = document["buckets"]
+    print(f"share   {args.image}  {image_info['bytes']} bytes  "
+          f"sha256 {image_info['sha256']}")
+    print(f"        {counts['A'] + counts['B'] + counts['C'] + counts['D']} word "
+          f"addresses, {CELLS} 16-byte cells; this capture replicates each "
+          f"cell's word 8x: {image_info['replicated_8x_within_cells']}")
+    if args.fetch_trace:
+        print(f"trace   {args.fetch_trace}  {trace_info['records']} records, "
+              f"{trace_info['distinct_word_addresses']} distinct word addresses, "
+              f"truncated={trace_info['truncated_by_hook']}, "
+              f"unaligned={trace_info['unaligned_records']}, "
+              f"distinct time values={trace_info['distinct_time_values']}")
+    else:
+        print("trace   (none supplied) -- every cell is C or D by construction, "
+              "and bucket B is empty for want of evidence, not of instructions")
+    print(f"fold    (pc_bits >> 3) & 0x7ffff: {matched} opcode(s) agree with the "
+          f"image, {mismatched} disagree")
+    if not document["address_fold"]["verified"]:
+        print("        ^ FOLD NOT VERIFIED: the trace and the image are not a pair, "
+              "or the fold is wrong. Every address below is suspect.")
+    print(f"decode  {document['decode']['decoded']} words decode, "
+          f"{document['decode']['unknown_dw']} are DW, "
+          f"{len(distinct_mnemonics)} distinct mnemonics")
+    print(f"        {swept} words from {WORDS_PER_CELL} linear sweeps (one per "
+          f"2-byte residue class), {len(individually)} decoded individually "
+          f"after a sweep stepped over them")
+    print()
+    print(f"{'bucket':>7}  {'count':>7}  meaning")
+    print(f"{'A':>7}  {counts['A']:>7}  fetched, decodes -- code MAME reads")
+    print(f"{'B':>7}  {counts['B']:>7}  fetched, does NOT decode -- REAL, needs our decoder")
+    print(f"{'C':>7}  {counts['C']:>7}  not fetched, decodes -- data that looks like code")
+    print(f"{'D':>7}  {counts['D']:>7}  not fetched, does not decode -- data")
+    print(f"{'total':>7}  {document['buckets_total']:>7}")
+    for note in notes:
+        print(f"\nnote: {note}")
+
+    print(f"\nBucket B -- {counts['B']} word address(es). Share byte offsets; "
+          f"lowest GSP bit address in parentheses.")
+    if not buckets["B"]:
+        print("  (empty) Every word the GSP fetched decoded. There is no "
+              "instruction MAME cannot name in this corpus, so nothing here "
+              "changes what we implement.")
+    for offset in buckets["B"]:
+        print(f"  0x{offset:05X}  word 0x{image[offset] | (image[offset + 1] << 8):04X}"
+              f"  (0x{low_alias_address(offset):08X})")
+    if len(to_ranges(buckets["B"])) != counts["B"]:
+        print("  ranges:")
+        for lo, hi in to_ranges(buckets["B"]):
+            print(f"    0x{lo:05X}-0x{hi - 2:05X} ({hi - lo} bytes)")
+
+    ranges_d = to_ranges(buckets["D"])
+    print(f"\nBucket D -- {counts['D']} word address(es) in {len(ranges_d)} range(s):")
+    for lo, hi in ranges_d[:64]:
+        print(f"  0x{lo:05X}-0x{hi - 2:05X}  {(hi - lo) // 2} words")
+    if len(ranges_d) > 64:
+        print(f"  ... {len(ranges_d) - 64} more range(s); --json has all of them")
+
+    print(f"\nBucket A -- {counts['A']} word address(es) in "
+          f"{len(to_ranges(buckets['A']))} range(s). These are the words the GSP "
+          f"actually fetched; every one of them decoded.")
+    for lo, hi in to_ranges(buckets["A"]):
+        print(f"  0x{lo:05X}-0x{hi - 2:05X}  {(hi - lo) // 2} words"
+              f"  (low alias 0x{low_alias_address(lo):08X})")
+
+    if trace_info.get("truncated_by_hook"):
+        print("\nWARNING: the hook truncated this trace. Bucket C and D are lower "
+              "bounds on data, not measurements of it.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
