@@ -65,6 +65,15 @@ mnemonic and its own expansion were compared as if they were rival claims. This
 would have become a false upstream bug report, which is the specific harm
 `BUGS.md` exists to avoid.
 
+> **Does MD-14 contradict (2)? No — different field.** Correction 2 is about
+> the **condition** field `op[11:8]`: disassembler mnemonic vs executor predicate,
+> and the two agree on all sixteen. `BUGS.md` **MD-14** is about the **form**
+> field `op & 0x00ff`, where the disassembler and the executor select *different
+> instructions* and both disagree with SPVU001A in opposite directions. A reader
+> who finds "no disassembler-vs-executor divergence on JR" and "MD-14: JR
+> divergence" is looking at two axes of the same instruction, not a
+> contradiction. The condition table is sound; the form decode is not.
+
 **3. MD-09's "non-canonical `movea.l`" claim is retracted.**
 `0x2279 & 0xf1ff == 0x2079` exactly — canonical `movea.l #<long>`, An=1, full
 32-bit immediate. Musashi agrees on its own mask (`0x2279 & 0xf1c0 == 0x2040`,
@@ -84,34 +93,27 @@ MAME binaries — the count above is the deduplicated executable set.)
 
 ---
 
+## Drained — removed because the answer is elsewhere and acted on
+
+Five rows left this file on 2026-10-17. The question text is gone; where the
+answer lives is not. Nothing is restated as authority here, per the rule above.
+
+| was | settled | the answer is here |
+|---|---|---|
+| `F1` | the MD-12 behavioural patch is ours, recorded, and **inert here** | `analysis/mame-local-patches.json` (`behaviour_changes.MD-12-IOBOUNDS`, corrected reason), `analysis/mame-local-patches.md:131-152` (corrected), `BUGS.md` MD-12 (evidence retracted), findings **§52.2** (annotated: its run was vacuous) and **§86.2**/**§87** (the non-vacuous re-run) |
+| `F2` | the pinned tree records and guards its patches; STATUS.md says so | `STATUS.md:192-197` ("Closed 2026-10-17: the pinned oracle binary is not stock MAME"), `analysis/mame-local-patches.json`, and the 9-test guard `tests/test_mame_local_patches.py` |
+| `F4` | §47.10's filing precondition is **not met**, so the candidate is not fileable | findings **§52.4**, annotated in place 2026-10-17, with §86.2 as the measurement |
+| `F8` | the sixteen-row condition table is transcribed and tested | `analysis/gsp-jr-conditions.md` (all 16 codes, ISA text, SPVU001A page images, executor predicates) and `tests/test_gsp_jr_conditions.py` (29 tests, negative-controlled by perturbing copies of MAME's source). Bead `stun-runner-6tf` stays open until the files are committed. |
+| `F9` | §20.7's "Not yet ported" list is implemented | findings **§20.7**, annotated in place 2026-10-17; `native/mc68010_text_writer.h:76`; findings §21, §23 |
+
+`F8`'s bead (`stun-runner-6tf`) is **still open** — answered is not the same as
+closed, and it closes on the commit.
+
+---
+
 ## Section A — the findings log, `STATUS.md`, and the analysis notes
 
 ## The rows
-
-### F1 — MD-12 is already fixed in the pinned tree; the bug row and the triage hook both still describe the unfixed state
-
-- **Question** — "**GSP register writes run off the end of `m_IOregs`**", status **unresolved**, "indexing confirmed; impact not", next step "**no — needs a sanitiser run first**" (`analysis/mame-bugs.md:28`); mechanism: "`internal_regs_map` exposes `map(0xc0000000, 0xc00001ff)` — 512 bytes of offsets — while the backing store is `uint16_t m_IOregs[64]` and `IOREG(reg)` is `m_IOregs[reg]` with no mask. The real S.T.U.N. Runner GSP program writes at offsets `0x90`–`0x160`, so it indexes 208 entries past the end." (`analysis/mame-bugs.md:80-83`)
-- **Where the answer may already be** — three places, all read in this pass:
-  1. `tms34010.h:350-353` — the declaration is now `uint16_t m_IOregs[0x200];` under a comment that reads "Indexed by IOREG() with a 0x1ff mask, covering the whole range internal_regs_map exposes. **Was 64**, which the GSP program overruns -- see the macro and BUGS.md MD-12."
-  2. `34010ops.h:40` — `#define IOREG(reg) (m_IOregs[(reg) & 0x1ff])`. Both halves of the bug row's mechanism are false as written.
-  3. `analysis/mame-local-patches.md:131-152` — "**The one behavioural change: MD-12** … The fix grows the array to `0x200` entries and masks `IOREG()` to `0x1ff`. Access below `0x40` is byte-for-byte unchanged … **This changes emulation behaviour** … Any measurement that depends on GSP internal register state at an offset of `0x40` or above is suspect until this is settled either way." Recorded in `analysis/mame-local-patches.json` under tag `MD-12-IOBOUNDS` with `observation_only: false`.
-- **Status** — `ANSWER ALREADY EXISTS`
-- **Bead** — none
-- **Three stale artefacts this leaves behind, all pointing the same way:**
-  - `analysis/mame-bugs.md:80-83` still states the unfixed 64-entry mechanism and still queues a sanitiser run for it.
-  - The `STUNRUN-IOB` triage hook's own comment (`tms34010.cpp:1580-1586`) and the `purpose` field in `analysis/mame-local-patches.json` both say "m_IOregs holds only 64 entries and `IOREG()` indexes it unmasked". In the current tree it holds `0x200` and `IOREG()` is masked. The inventory faithfully records stale text as a record of what was written; the *tree* refutes it.
-  - findings **§52.2** (`:9750-9777`) concluded from a null `STUNRUN_GSP_IOBREPORT` run that the `0x90`–`0x160` premise was "**stale or a misreading**". `analysis/mame-local-patches.md:138-140` says the opposite — "S.T.U.N. Runner's GSP program stores at offsets `0x110`–`0x160` … and **those fetches were traced executing**". See F3; this is the same contradiction, and it is why F3 is ranked first.
-- **What MD-12 still legitimately asks** — `analysis/mame-local-patches.md:150-152` records the surviving question: whether the register file should be **128 four-byte-spaced registers rather than 512 bytes at two-byte spacing**. That is F3's hardware question, restated from the fix side, and it is not answered by the tree.
-- **Verified how** — `sed -n '350,356p' src/devices/cpu/tms34010/tms34010.h`; `grep -n "define IOREG" src/devices/cpu/tms34010/34010ops.h`; `python3 -c` over `analysis/mame-local-patches.json`; `sed -n '131,152p' analysis/mame-local-patches.md`.
-
-### F2 — STATUS.md says the oracle's local patches are unrecorded; the tree records and guards them
-
-- **Question** — "**Still open from that work:** the pinned oracle binary is not stock MAME. `/mnt/build/mame-ref` carries local observation-only hooks in `harddriv_m.cpp`, `harddriv_v.cpp` and `tms34010.cpp`, and **this repository does not yet record them**. See the open question below." (`STATUS.md:192-195`)
-- **Where the answer may already be** — `analysis/mame-local-patches.json`: eight patch records (`STUNRUN-DEBUG`, `STUNRUN-DUMP`, `STUNRUN-DPY`, `STUNRUN-HOSTPROBE`, `STUNRUN-OPLOG`, `STUNRUN-FETCH`, `VERSION`, `STUNRUN-IOB`), each with `observation_only: true` and an explicit file list covering all three files STATUS.md names. Plus `analysis/mame-local-patches.md` and the guard `tests/test_mame_local_patches.py`.
-- **Status** — `ANSWER ALREADY EXISTS`.
-- **Bead** — none
-- **Verified how** — `python3 -m unittest tests.test_mame_local_patches` → **9 tests OK**, including `test_every_modified_source_file_is_recorded` ("A modified file the inventory never mentions") and `test_every_stunrun_tag_in_the_source_is_recorded`. Those two passing is the claim: a modified or unrecorded source file fails them.
-- **Carried further than STATUS.md** — the inventory also separates two binaries the STATUS text does not mention: `observer_has_behavioural_changes: true` vs `oracle_has_behavioural_changes: false`, with the note that a measurement taken with `/mnt/build/mame-ref/mame` is *not* comparable to anything in `reference/` captured with the frozen oracle. That distinction is load-bearing for every §-number that quotes a `GSPREG` line.
 
 ### F3 — the TMS34010 I/O register-numbering question: two measurements in the tree do not reconcile
 
@@ -123,14 +125,7 @@ MAME binaries — the count above is the deduplicated executable set.)
   4. `third_party/tms34010_sv/PROVENANCE.md:31` — upstream's `third_party/TMS34010_Info` submodule, "carrying TI documentation", was **deliberately not vendored**. If the answer is in the RTL author's own notes, that is where they were.
 - **Status** — `candidate, unverified`
 - **Bead** — none (Bugs.md candidate, unfiled, deliberately — `BUGS.md` entries get reported upstream)
-- **Contradiction, and the reason this is the highest-value row in the file.** I read `tms34010_core.sv:4231` and `:3407` in this pass. The bus address the core presents for an I/O access is the **instruction's 32-bit immediate**, latched unmodified. Therefore §47.6's address list (`0x000000 … 0x000160`, stride `0x10`) is a fact about the *uploaded GSP program's encoded immediates* — ROM data, not an artefact of our decode. Under MAME's rule (`tms34010.cpp:37`, the `.rw()` handler) an encoded `$C0000160` write arrives at an offset well above `0x40`, and §52.2's instrument is gated on exactly that: the `STUNRUN_GSP_IOBREPORT` file is `fopen`ed inside `if (offset >= 64)` (`tms34010.cpp:1596-1615`, recorded in the tree at `analysis/mame-local-patches.json` as tag `STUNRUN-IOB`). **No file was created.** But `analysis/mame-local-patches.md:138-140` asserts the program "stores at offsets `0x110`–`0x160` … and those fetches were traced executing". So the tree contains **two opposite claims about whether the GSP ever writes at a MAME-offset of `0x40` or above**, and F1 shows why the answer changed underneath both: MD-12's fix made the two MAME binaries behave differently, and the two claims were made against different binaries (see F28). I could not resolve which is right, and I am not going to guess: I re-ran neither, and the runs have different windows (§47.6 is an RTL-core run, §52.2 a 30 s oracle run).
-
-### F4 — §52.4's "not filed" and §47.10's "should not be filed until…" are now stale
-
-- **Question** — §47.10: the register-index BUGS.md candidate "should not [be filed] until `STUNRUN_GSP_IOBREPORT` has been run against the same traffic" (`:9335`). §52.4: "**Not filed:** the §47.6 BUGS.md candidate. The premise … is now contradicted by direct measurement, so there is nothing left to report upstream for that specific claim" (`:9810-9812`).
-- **Where the answer may already be** — the condition §47.10 sets is met by §52.2's measurement; what remains is bookkeeping in `analysis/mame-bugs.md`, whose table row for MD-12 still reads **unresolved** with a sanitiser run as the next step.
-- **Status** — `ANSWER ALREADY EXISTS` (that the condition is met and the candidate is not fileable), pointing at the same stale artefact as **F1**.
-- **Bead** — none
+- **Contradiction, and the reason this is the highest-value row in the file.** I read `tms34010_core.sv:4231` and `:3407` in this pass. The bus address the core presents for an I/O access is the **instruction's 32-bit immediate**, latched unmodified. Therefore §47.6's address list (`0x000000 … 0x000160`, stride `0x10`) is a fact about the *uploaded GSP program's encoded immediates* — ROM data, not an artefact of our decode. Under MAME's rule (`tms34010.cpp:37`, the `.rw()` handler) an encoded `$C0000160` write arrives at an offset well above `0x40`, and §52.2's instrument is gated on exactly that: the `STUNRUN_GSP_IOBREPORT` file is `fopen`ed inside `if (offset >= 64)` (`tms34010.cpp:1596-1615`, recorded in the tree at `analysis/mame-local-patches.json` as tag `STUNRUN-IOB`). **No file was created.** But `analysis/mame-local-patches.md:138-140` asserts the program "stores at offsets `0x110`–`0x160` … and those fetches were traced executing". So the tree contains **two opposite claims about whether the GSP ever writes at a MAME-offset of `0x40` or above**, and the drained `F1` row (ledger above) shows why the answer changed underneath both: MD-12's fix made the two MAME binaries behave differently, and the two claims were made against different binaries (see F28). I could not resolve which is right, and I am not going to guess: I re-ran neither, and the runs have different windows (§47.6 is an RTL-core run, §52.2 a 30 s oracle run).
 
 ### F5 — `$818040`: the window MAME maps does not contain it
 
@@ -158,22 +153,6 @@ MAME binaries — the count above is the deduplicated executable set.)
 - **Status** — `candidate, unverified`. I did **not** establish where the low half *does* come from. That is the remaining half of §82.3 and it is now a much smaller question.
 - **Bead** — none
 - **Note** — `tools/disasm-adsp` consumes the capture and is independent of the window; §82.3 already says its output stands.
-
-### F8 — `analysis/gsp-program-upload.md`'s untranscribed condition table is in the pinned tree
-
-- **Question** — "`0xcb04`'s condition field is `0xb00`; the table above stops at `0x600` and the remaining codes were not read off `print_condition_code` before the end of this session — **the full condition list still needs transcribing**" (`analysis/gsp-program-upload.md:299-301`).
-- **Where the answer may already be** — `/mnt/build/mame-ref/src/devices/cpu/tms34010/34010dsm.cpp:132-153`, `tms34010_disassembler::print_condition_code`. Read in this pass: all sixteen entries, `0x0000` → `0x0f00`.
-- **Status** — `ANSWER ALREADY EXISTS`.
-- **Bead** — none
-- **Already corroborated** — findings §85.1 (`:13191-13194`) measured that all 18 JR condition variants occur in the real uploaded program, i.e. the table can be completed *and* checked against observed traffic in one pass. The note's own caveat says the table is what the decoder prints, so transcribing it is a copy, not an inference.
-
-### F9 — §20.7's "Not yet ported" list is done
-
-- **Question** — "Missing: selector resolution (`$25F6`-`$2604`), descriptor decode (`$2608`-`$262E`), and the loop nesting (`$262E`-`$269C`) … Filed as no bead — the gap is closed (see the status column)." (findings **§20.7**, `:3484-3491`)
-- **Where the answer may already be** — findings **§23** supersedes it, and `native/mc68010_text_writer.h:20,76` now carries the selector table with its `$25F6` provenance.
-- **Status** — `ANSWER ALREADY EXISTS`.
-- **Bead** — no bead — the gap is closed (see the status column)
-- **Gloss** — the caveat in §20.7 about `clr.w $608000` and `andi.w #$e7ff,$c00008` being part of the routine's observable effect still stands as a constraint on the port, not as a gap.
 
 ### F10 — §68.5's "the `$052F`-`$0544` scan is still untranscribed" is superseded
 
@@ -231,7 +210,7 @@ MAME binaries — the count above is the deduplicated executable set.)
 
 ### F17 — §62's non-reproducing capture: the provenance is a file read, not an investigation
 
-- **Question** — "the cause is UNKNOWN: possible difference in the old capture's invocation, input/harness state, or runtime configuration. **We need its full provenance before using it to assert a live F1 field value.**" (findings **§62**, `:10617-10621`)
+- **Question** — "the cause is UNKNOWN: possible difference in the old capture's invocation, input/harness state, or runtime configuration. **We need its full provenance before using it to assert a live MD-12 field value.**" (findings **§62**, `:10617-10621`)
 - **Where the answer may already be** — the committed 2026-10-10 capture's own `metadata.json` under `reference/experiments/stunrun/`, which per `EVIDENCE.md` is supposed to carry invocation, harness identity and start condition. Read it and diff against the failing command quoted in §62.
 - **Status** — `candidate, unverified`
 - **Bead** — `stun-runner-q9t` / `stun-runner-alo`
@@ -322,7 +301,7 @@ MAME binaries — the count above is the deduplicated executable set.)
   1. `fixtures/oracle/frame_600/frame_600_screen.png` (byte-identical to `reference/experiments/stunrun/normal-frames-1-600/screens/frame-000600.png`, `sha256 6d46e033e29b049e…`) shows **self-play** — 3D tunnel, ship, HUD.
   2. `fixtures/oracle/frame_600/metadata.json` describes that same frame as **"INSERT 1 COIN title/attract screen"**. "The description is wrong; the pixels are not in question."
   3. Running `tools/mame-gsp-state-snapshot` with the same `--input none` and the same frame targets against **either** binary today produces a **title screen** at frame 600 (`sha256 29f95e8820efecde…`). So the committed frame is not reproducible from the tree as it stands.
-  4. The cause is F1's MD-12: "MD-12 is a defect in the *driver's* GSP register write path … A fix there changes GSP I/O behaviour on exactly the hardware the title screen depends on."
+  4. The cause is MD-12 itself: "MD-12 is a defect in the *driver's* GSP register write path … A fix there changes GSP I/O behaviour on exactly the hardware the title screen depends on."
 - **Status** — `ANSWER ALREADY EXISTS` — and it is load-bearing for three other rows, none of which mention it:
   - **F12.** §50's 99.81%-differing measurement compares our frame-600 output against `fixtures/oracle/frame_600/frame_600_screen.png`. That PNG is self-play and does not reproduce on either binary today, so §50's percentage has no stable reference.
   - **F13.** §80's frame-400 work and §39.6's shear are both frame-600/400 picture questions on the same fixture line.
@@ -337,24 +316,19 @@ MAME binaries — the count above is the deduplicated executable set.)
 
 ### 1. `ANSWER ALREADY EXISTS` — verified in this pass
 
-Ten rows. In rough order of value:
+Six rows, after draining five into the ledger above. In rough order of value:
 
 | # | Row | What is already there | Why it matters |
 |---|---|---|---|
-| F1 | MD-12 | **Already fixed in the pinned tree** (`tms34010.h:353` = `m_IOregs[0x200]`, `34010ops.h:40` masks to `0x1ff`), recorded as the one behavioural patch in `analysis/mame-local-patches.md:131-152` | `BUGS.md` entries get reported upstream. `analysis/mame-bugs.md` is still describing the unfixed state and still queueing a sanitiser run for it. |
 | F28 | the frame-600 fixture | `analysis/mame-local-patches.md:162-200`: the PNG shows self-play, its metadata says title/attract, and it does not reproduce on **either** binary today | Load-bearing for F12, F13 and F27, none of which mention it. It changes what a whole class of frame-600 comparison means. |
-| F2 | STATUS.md's unrecorded-patch question | `analysis/mame-local-patches.json` + a 9-test guard that **passes**, including "a modified file the inventory never mentions" | Free to close, and STATUS.md is the file most-read at handoff. |
 | F12 | §39.6/§50/§53.3 colour parity | A negative measurement, plus an internal contradiction about what it means, plus F28 removing its reference frame | Cheapest row here to reconcile, and the contradictions are the real content. |
 | F23 | SOM consumer semantics | §57/§59/§60 answer §54.5's sub-questions | Splits one long "not established" list into a closed part (§58.4, listed in section 3) and a genuinely open part. |
 | F27 | §85.3's 2,718-vs-4,356 | The cause, with both binary hashes and mtimes | Reconciled as *cause*, not as measurement — the images are not committed. |
 | F10 | §68.5's `$052F`-`$0544` scan | Findings §71 | Direct transcription work removed from a bead's critical path. |
 | F11 | §69.5's ring caller | Findings §72 | Same. |
-| F9 | §20.7's "Not yet ported" | Findings §23 and `native/mc68010_text_writer.h` | Closes no bead — the gap is closed (see the status column)'s recorded gap. |
-| F8 | `gsp-program-upload.md`'s condition table | `34010dsm.cpp:132-153`, all 16 entries, already corroborated by §85.1 | Pure transcription, zero risk, self-checking. **Start here.** |
-| F4 | §47.10's filing precondition | Met, and F1 shows the candidate is now moot for the reason §47.10 gave | Bookkeeping, but it is part of what kept F1's stale text alive. |
 
 **Nothing in this section is a guess.** Every row was re-checked by reading the
-cited code in this pass; F2's was additionally *executed* (the guard test run).
+cited code in this pass; the (now drained) `F2` guard was additionally *executed*.
 If a row here turns out to be wrong when you re-verify it, the failure is in a
 file I quoted, not in the reading — quote the line and re-read it.
 
@@ -366,14 +340,14 @@ Cheapest first. Every one of these is a file read or a single grep.
    candidates despite being the hardest**, because it is not a plain gap: I found
    **three** recorded claims in the tree that do not line up (§47.6's program
    address list, §52.2's null `STUNRUN_GSP_IOBREPORT` run, and
-   `analysis/mame-local-patches.md:138-140`'s "traced executing"), and F1/F28
+   `analysis/mame-local-patches.md:138-140`'s "traced executing" — since corrected, see the drained `F1` row — and F28
    explain why the answer changed underneath the log. What settles it is S9's
    register-file address table — not held locally — so it may not settle cheaply.
-   Read F1 and F28 before touching it.
+   Read the drained `F1` row above and F28 before touching it.
 2. **F5** — `$818040` vs `harddriv.cpp:4830-4835`. One grep settles whether the
    address is in any mapped window. Already narrowed; the gap is visible in the
    pinned source.
-3. **F8** — transcribe 16 table rows out of `34010dsm.cpp` and check them against
+3. ~~**F8** — transcribe 16 table rows~~ **DONE 2026-10-17**; see the ledger above. It was: transcribe 16 table rows out of `34010dsm.cpp` and check them against
    §85.1's observed variants. (Listed here as well as in section 1 because the
    *check* is cheap even though the answer is already in the tree.)
 4. **F15** — `m_gsp_speedup_addr`: the expression is read; the remaining question
@@ -450,7 +424,7 @@ this session, not on recall:
   61.4, 62, 66.6, 67.7, 68.5, 69.5, 71-72, 74.3, 75.4, 76.9, 77.9, 80.9, 81.4,
   82.3, 84.1-84.2, 85.1-85.5 — read.
 
-**Bucket counts.** 28 rows: **10** `ANSWER ALREADY EXISTS` (F1, F2, F4, F8, F9,
+**Bucket counts.** Was 28 rows / 10 `ANSWER ALREADY EXISTS`; **now 23 rows / 5**, after draining `F1`, `F2`, `F4`, `F8`, `F9` (the historical list follows in parentheses):
 F10, F11, F12, F27, F28), **14** `candidate, unverified` (F3, F5, F6, F7, F13,
 F14, F15, F16, F17, F18, F19, F20, F22, F26), **2** `no candidate` (F21, F25),
 and **2 rows whose status is split across sub-questions** — F23 (`ANSWER ALREADY
@@ -470,7 +444,7 @@ exists to catch.
   recorded claims that do not line up and stopped there. The runs have
   different windows and different binaries; I re-ran none of them, and guessing
   here would repeat MD-13.
-- **F1 / MD-12.** I established that the fix is applied and recorded. I did
+- **(drained) F1 / MD-12.** I established that the fix is applied and recorded. I did
   **not** judge whether the fix is *correct* — `analysis/mame-local-patches.md:150-152`
   itself flags the surviving question (128 four-byte registers vs 512 bytes at
   two-byte spacing), and that is F3, not something I closed. Nor did I re-derive
@@ -495,7 +469,7 @@ exists to catch.
   data-vs-code split is out of reach of the route I am pointing at.
 - **F12.** I did not pick a winner between §50 and §53.3. They may be about
   different questions.
-- **`m_IOregs` bounds (F1).** I did not re-derive MD-12's out-of-bounds claim.
+- **`m_IOregs` bounds (drained F1).** I did not re-derive MD-12's out-of-bounds claim.
   §52.2's null result and the MAME source I read (`IOREG()` unmasked at
   `tms34010.cpp:1576-1577`) are compatible with *both* "no out-of-bounds access
   occurred" and "one did not fire the report" — I could not separate them, and
@@ -506,7 +480,7 @@ exists to catch.
 seven highest-UNKNOWN `analysis/` notes named in the brief. The remaining 40
 notes in `analysis/` were sampled by UNKNOWN-marker count and not read, so
 questions recorded only in them are absent here — with one exception worth
-naming: I read `analysis/mame-local-patches.md` and `.json` because F2 pointed
+naming: I read `analysis/mame-local-patches.md` and `.json` because the (now drained) `F2` pointed
 at them, and they turned out to carry more recorded answers than the brief's
 UNKNOWN counts suggest, which is itself an argument for reading a note by
 relevance rather than by marker count. `BUGS.md` was read for MD-12 and MD-13
@@ -517,7 +491,7 @@ only; its SR-* and other MD-* entries are another agent's section. `EVIDENCE.md`
 `docs/sources.md`: **S3** (Margolin, F24's ramp source and F25's silence),
 **S6** (SP-338, F25), **S9** (SPVU001A — F3's only real authority, **not held
 locally**, cited by section). **S7** (MAME `harddriv.cpp`) and **S8** (MAME
-TMS34010 device) cover the code F1, F3, F5, F6, F7 and F15 rest on.
+TMS34010 device) cover the code the drained F1, and F3, F5, F6, F7 and F15 rest on.
 `docs/mame-machine-reference.md` is a local synthesis of S7/S8, not itself a
 register entry, so it is cited by path rather than by `S#` (F19).
 
@@ -622,7 +596,7 @@ gloss. `—` means the bead states none, which is 30 of 44.
 | `stun-runner-47h` | Establish the GSP share fold period: what the board does above 512 KiB | open | — |
 | `stun-runner-4vf` | native: integrate GSP/TMS34010 video output | open | — **blocked by `stun-runner-s5r`** |
 | `stun-runner-63p` | Adopt structured evidence bundles and preflight | open | — |
-| `stun-runner-6tf` | Complete the TMS34010 JR condition table from the 7,411 real instructions | open | — |
+| `stun-runner-6tf` | Complete the TMS34010 JR condition table from the uploaded GSP program *(retitled: the old title cited §85.1's `7,411`, which §87 qualifies to a one-word-in-eight subsample)* | open | — |
 | `stun-runner-8ix` | Decide the fate of three superseded agent branches | open | — (recommendation recorded: do not merge; one asset at risk, see row) |
 | `stun-runner-8p4` | [epic] Capture and isolate TMS34010 program upload and replay | open | bounded provenance-linked capture of upload + release events + pre-release image; replay into a clean RTL board reconstructs the same state; ≥1 controlled variation has an asserted output difference |
 | `stun-runner-9rm` | native: shell segfaults in GLX teardown when a ROM directory is set | open | headless runs with a ROM dir exit 0; GL window torn down before exit without faulting libGLX; not fixed as a drive-by |
@@ -754,7 +728,7 @@ entry, against that column:
 | MD-06, MD-07 | **the most likely to be accepted as-is** | matches `:60-61`; both are self-contained Lua-side, both are *misuse-shaped* like MD-10/MD-11 — MD-07 in particular is "the type is a finder object, use `.target()`", which is exactly the class MD-13 taught us to check for a primary-source "this is how it works" statement before filing. **Recommend one more pass of that check.** |
 | MD-04 + MD-08 | **send as one**, not two | matches `:63-68`; two reports where one gets closed "by design" loses both. |
 | MD-09 | **do not send — and one of its two stated reasons is now refuted** | see T18. |
-| MD-12 | **do not send** | `mame-bugs.md:78+` wants a sanitiser run; independently, section A **F1** records that the pinned tree already carries the fix, so the tree's own comment and the analysis still describe an unfixed state. |
+| MD-12 | **do not send** | `mame-bugs.md:78+` wants a sanitiser run; independently, the drained `F1` row records that the pinned tree already carries the fix, so the tree's own comment and the analysis still describe an unfixed state. |
 | MD-13 | **do not send** | withdrawn. Leave the ID retired, as the entry says. |
 
 ### The three rows I would not present as they stand
@@ -785,7 +759,7 @@ fetched, so they executed", listing `C0000110h` … `C0000160h`. Findings **§52
 `if (offset >= 64)` — never fired across ~1800 frames on either binary, and
 concluded the claim is "stale or a misreading". `analysis/mame-local-patches.md:131-153`
 never updated: it still says the stores "were traced executing", and is the stated
-cause of the frame-600 title-vs-self-play divergence (`:191-195`). Section A **F1/F3**
+cause of the frame-600 title-vs-self-play divergence (`:191-195`). The drained `F1` row and F3
 flag the same two claims as opposites. **I did not re-run either instrument**, so
 which is right is `UNKNOWN`; but a behavioural patch to the oracle should not rest
 on a premise the tree has already contradicted once. (Also: `docs/sources.md` has
@@ -890,7 +864,7 @@ this session, not on recall:
   61.4, 62, 66.6, 67.7, 68.5, 69.5, 71-72, 74.3, 75.4, 76.9, 77.9, 80.9, 81.4,
   82.3, 84.1-84.2, 85.1-85.5 — read.
 
-**Bucket counts.** 28 rows: **10** `ANSWER ALREADY EXISTS` (F1, F2, F4, F8, F9,
+**Bucket counts.** Was 28 rows / 10 `ANSWER ALREADY EXISTS`; **now 23 rows / 5**, after draining `F1`, `F2`, `F4`, `F8`, `F9` (the historical list follows in parentheses):
 F10, F11, F12, F27, F28), **14** `candidate, unverified` (F3, F5, F6, F7, F13,
 F14, F15, F16, F17, F18, F19, F20, F22, F26), **2** `no candidate` (F21, F25),
 and **2 rows whose status is split across sub-questions** — F23 (`ANSWER ALREADY
@@ -910,7 +884,7 @@ exists to catch.
   recorded claims that do not line up and stopped there. The runs have
   different windows and different binaries; I re-ran none of them, and guessing
   here would repeat MD-13.
-- **F1 / MD-12.** I established that the fix is applied and recorded. I did
+- **(drained) F1 / MD-12.** I established that the fix is applied and recorded. I did
   **not** judge whether the fix is *correct* — `analysis/mame-local-patches.md:150-152`
   itself flags the surviving question (128 four-byte registers vs 512 bytes at
   two-byte spacing), and that is F3, not something I closed. Nor did I re-derive
@@ -935,7 +909,7 @@ exists to catch.
   data-vs-code split is out of reach of the route I am pointing at.
 - **F12.** I did not pick a winner between §50 and §53.3. They may be about
   different questions.
-- **`m_IOregs` bounds (F1).** I did not re-derive MD-12's out-of-bounds claim.
+- **`m_IOregs` bounds (drained F1).** I did not re-derive MD-12's out-of-bounds claim.
   §52.2's null result and the MAME source I read (`IOREG()` unmasked at
   `tms34010.cpp:1576-1577`) are compatible with *both* "no out-of-bounds access
   occurred" and "one did not fire the report" — I could not separate them, and
@@ -946,7 +920,7 @@ exists to catch.
 seven highest-UNKNOWN `analysis/` notes named in the brief. The remaining 40
 notes in `analysis/` were sampled by UNKNOWN-marker count and not read, so
 questions recorded only in them are absent here — with one exception worth
-naming: I read `analysis/mame-local-patches.md` and `.json` because F2 pointed
+naming: I read `analysis/mame-local-patches.md` and `.json` because the (now drained) `F2` pointed
 at them, and they turned out to carry more recorded answers than the brief's
 UNKNOWN counts suggest, which is itself an argument for reading a note by
 relevance rather than by marker count. `BUGS.md` was read for MD-12 and MD-13
@@ -957,6 +931,6 @@ only; its SR-* and other MD-* entries are another agent's section. `EVIDENCE.md`
 `docs/sources.md`: **S3** (Margolin, F24's ramp source and F25's silence),
 **S6** (SP-338, F25), **S9** (SPVU001A — F3's only real authority, **not held
 locally**, cited by section). **S7** (MAME `harddriv.cpp`) and **S8** (MAME
-TMS34010 device) cover the code F1, F3, F5, F6, F7 and F15 rest on.
+TMS34010 device) cover the code the drained F1, and F3, F5, F6, F7 and F15 rest on.
 `docs/mame-machine-reference.md` is a local synthesis of S7/S8, not itself a
 register entry, so it is cited by path rather than by `S#` (F19).

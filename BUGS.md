@@ -613,9 +613,23 @@ dumps belong there. Two consequences:
   offsets, `0x00`..`0x1ff`. The backing store is `uint16_t m_IOregs[64]`, and
   `IOREG(reg)` is `m_IOregs[reg]` with **no mask**. Any access at an offset of
   `0x40` or above indexes past the end of the array.
-- **Evidence:** S.T.U.N. Runner's GSP program reaches this directly. Disassembly
+> **Evidence — RETRACTED 2026-10-17 as to "and the addresses were fetched,
+> so they executed".** The disassembly below stands (it is a statement about the
+> program image). The claim that those seven addresses were *fetched* does not,
+> and the section it rested on (§52.2) reached its null result **vacuously**:
+> it ran the frozen oracle, which contains zero occurrences of the
+> `STUNRUN_GSP_IOBREPORT` hook string, so the instrument was absent and its
+> silence proved nothing. §86.2 re-ran the same test on `md12-fixed`, which
+> **does** contain the hook: 600 frames power-on and 600 frames of service mode
+> produced **no report file**, and since the file is `fopen`'d inside the
+> `offset >= 64` branch, its absence is positive evidence that branch was never
+> taken. **On the paths we run, the GSP never writes at a MAME-offset ≥ `0x40`.**
+> The overrun is real in the unfixed array; it does not occur here. See §87.
+
+- **Superseded evidence (the disassembly, which does stand):** S.T.U.N. Runner's
+GSP program reaches this directly. Disassembly
   of the uploaded program (`tools/disasm-gsp`, share offset `0x340000`) contains
-  seven such stores, and the addresses were fetched, so they executed:
+  seven such stores:
 
   ```text
   00340040: 00050080  MOVE   A0,@C0000110h,0
@@ -628,9 +642,9 @@ dumps belong there. Two consequences:
   ```
 
   Each `@C00001xx` is offset `0x110`..`0x160` into a 64-element array — 208
-  entries past the end. The image word at each of those offsets matches the
-  opcode recorded in the `STUNRUN-FETCH` trace, so this is executed code and not
-  a decode artifact.
+  entries past the end. (The original entry added "and not a decode artifact"
+  from a `STUNRUN-FETCH` trace; that trace claim is part of what is retracted
+  above.)
 - **Confidence:** the out-of-bounds indexing is **confirmed by reading the
   source**; what it *corrupts* is not. The build does not crash, because the
   overflow lands in adjacent `tms34010_device` members rather than unmapped
@@ -684,6 +698,90 @@ refutation, not in this section.
 > as a defect, without checking the ISA for whether the instruction exists. A
 > missing mnemonic only means something once the primary source says the opcode
 > should produce a different one. Leave this ID retired.
+
+### MD-14 — TMS34010 JR/JA: the executor swaps the two special form-field cases
+
+- **Kind:** driver defect (ISA divergence, both disassemble *and* execute wrongly
+  in different places)
+- **Where:** `src/devices/cpu/tms34010/34010ops.hxx:1577-1603` (`j_xx_8`,
+  `j_xx_0`, `j_xx_x` macros); `tms34010.cpp:163` (`DSTREG`); `34010dsm.cpp:1451-1486`
+- **Symptom:** for the JR/JA family the *form* field (`op & 0x00ff`) selects
+  between a ±32K relative branch and a 32-bit absolute target. MAME's
+  disassembler and MAME's executor select **differently, and the two disagree
+  on exactly the two special cases, in opposite directions.**
+
+  | `op & 0x00ff` | ISA (SPVU001A) | MAME disassembler | MAME executor |
+  |---|---|---|---|
+  | `0x00` | ±32K **relative**, 2 words | `print_relative` | **absolute** — wrong |
+  | `0x80` | **absolute**, 3 words (`JAcc`) | `print_long_parm`, prints `JA` | **±127 relative** — wrong |
+  | other | ±127 relative, 1 word | `print_relative_8bit` | relative — agrees |
+
+- **Evidence:** the two selections, read from source.
+
+  `34010dsm.cpp:1473-1485` switches on `op & 0x00ff` and picks
+  `print_relative` for `0x00`, `print_long_parm` for `0x80`, and
+  `print_relative_8bit` otherwise — the table above, column 3.
+
+  `34010ops.hxx:1577-1603` branches on `if (DSTREG(op))` — **relative** — `else`
+  **absolute**, with `DSTREG(O) = ((O) & 0x0f)` (`tms34010.cpp:163`). The
+  executor therefore keys the form on the **low nibble**, so it takes the
+  absolute arm only when `op & 0x0f == 0` and the relative arm for every
+  nonzero value, including `0x8`. That is the table above, column 4.
+
+  The two agree only in the "other" rows. In both special cases they are
+  **swapped relative to each other and to the ISA.** MAME's own disassembler is
+  the correct one: `analysis/gsp-jr-conditions.md` reads SPVU001A pp. 12-92 /
+  12-94 / 12-96 directly off the page images and records `JAcc` as
+  `1 1 0 0 code 1 0 0 0 0 0 0 0`, 3 words.
+
+  The `_0`/`_8`/`_x` split is **not** the bug and should not be reported as one.
+  `34010tbl.hxx:591-592` binds `j_UC_0` at column 0, `j_UC_8` at column 8 and
+  `j_UC_x` at all 14 remaining columns, so the dispatch has already pinned
+  `op & 0x0f`. Each macro is the same generic body, and whichever constant
+  condition its column implies makes one arm dead. `j_xx_8`'s absolute arm is
+  unreachable *by construction*, exactly as `j_xx_x`'s is at column 1 — that is
+  a compile-time specialisation, not a missing implementation.
+
+- **Not specific to this game or to this part.** `j_xx_0`/`j_xx_8`/`j_xx_x` are
+  macros on `tms340x0_device`, the common base, and `34010tbl.hxx` binds the
+  matching `tms34020_device::j_UC_0` at line 1364 for the TMS34020. The same
+  `DSTREG` test drives both tables, so the divergence applies to the TMS34020 as
+  well. That widens an upstream report well beyond stunrun.
+
+- **How much of it reaches this game — pattern matches, NOT confirmed
+  instructions.** Scanning the frame-404 upload-boundary image (the pristine
+  program, `release - 1`; capture at `md12-fixed`, sha256 `55956f2b…`), over
+  every word with `op & 0xf000 == 0xc000`:
+
+  | form | pattern matches | what MAME would do wrong |
+  |---|---|---|
+  | `0x00` | **161** | absolute jump where hardware branches relatively |
+  | `0x80` | **5** | ±127 relative where hardware jumps absolutely |
+  | other | 1,340 | — (agrees) |
+
+  These are opcode-pattern counts over a memory image and **overcount**,
+  because data words look like jumps. The decoded-instruction count is lower:
+  `tools/disasm-gsp` accounts for 1,258 of 1,506, the 248-word gap being words
+  the decoder will not name. The same distinction as §85.1's cell-versus-word
+  views — a raw pattern count and a decoder's count answer different questions
+  and must not be compared.
+
+- **Confidence:** the **source-level disagreement is confirmed by reading the
+  source**, and needs no capture. The counts are pattern matches over one
+  image. **UNKNOWN, and the only thing that decides impact: whether any of the
+  166 was ever FETCHED.** If one was, MAME branched somewhere the hardware did
+  not, and every measurement taken through this GSP after that point inherits
+  the error. `tools/check-gsp-executed` (`stun-runner-8y8`) is the thing that
+  answers it; do not assume the answer either way.
+
+- **Impact on us:** potentially severe and **not yet bounded**. A 161-candidate
+  form that silently jumps to a 32-bit literal instead of branching is the
+  signature of a program that appears to run but does the wrong thing, which
+  would look like a defect in *our* port. Hold this as the leading candidate
+  for any unexplained GSP control-flow divergence, and check it before
+  blaming a transcription. Reduced to a three-line TMS34010 reproducer this is
+  a strong upstream report: the fix is in the `DSTREG` test, and MAME's own
+  disassembler already says what the answer should be.
 
 ### Local build note (not upstreamable) — generated makefiles keep absolute paths
 

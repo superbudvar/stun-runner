@@ -3483,6 +3483,13 @@ character is simply the blank glyph.
 
 ### 20.7 Not yet ported
 
+> **SUPERSEDED 2026-10-17 — the list below is DONE, not pending.** All three
+> items are implemented: selector resolution (`$25F6`-`$2604`) is the table at
+> `native/mc68010_text_writer.h:76` (394 long pointers, selector `$00`..`$189`),
+> the descriptor decode and the loop nesting went in with it, and `§23` and
+> `§21` carry the observations. The caution below still stands — it is a
+> constraint on the port, not a gap.
+
 `native/mc68010_text_writer.{h,c}` takes an already-resolved descriptor and
 font words and covers the executed glyph loop. Missing: selector resolution
 (`$25F6`-`$2604`), descriptor decode (`$2608`-`$262E`), and the loop nesting
@@ -9817,6 +9824,18 @@ decode differences — nothing here controls for emulated time.
 
 ### 52.4 Status: UNKNOWN, and the BUGS.md candidate is not filed
 
+> **RESOLVED AS TO THE FILING QUESTION, 2026-10-17 — the "not filed" is settled,
+> and it is settled in the direction of *do not file*.** The heading's implied
+> "still pending" is stale. `§47.10`'s precondition (evidence that the driver
+> mis-encodes the address) **is not met**: §86.2 measured, on `md12-fixed`, zero
+> GSP register writes at a MAME-offset ≥ `0x40` across 600 frames power-on and
+> 600 frames of service mode, so the GSP never reaches the regime where the two
+> address rules would differ. The candidate is therefore **not fileable on this
+> game's evidence** — not "not yet filed".
+>
+> The underlying address-rule question stays **UNKNOWN**, and that half is
+> untouched by this note.
+
 **Not established:** which of the two address rules the real TMS34010 uses. The
 evidence above does not decide it. `DPYSTRT` matching is consistent with our rule
 being right, but is not a discriminator on its own — it would also match if only
@@ -13437,21 +13456,42 @@ discrepancy visible.
 `tests/test_disasm_gsp.py` pins the 16-byte model, so the constant cannot be
 changed without changing that file too. Filed P1.
 
-### 87.3 The address arithmetic does not follow, and that is a separate open question
+### 87.3 RETRACTED 2026-10-17 — the address fold DOES follow; I used the wrong rule
 
-The dense layout has a consequence that is *not* resolved by the stride fix.
-MAME hardcodes `m_gsp_speedup_pc = 0xfff41070` for stunrun. Folding that with the
-obvious rule, `(addr - 0xff800000) & 0x7ffff`, gives share word offset `0x41070`,
-which at a dense 2-byte stride is byte `0x820E0` — **8,160 bytes past the end of a
-524,288-byte share.**
+**What I wrote here was wrong.** I folded `m_gsp_speedup_pc = 0xfff41070` with
+`(addr - 0xff800000) & 0x7ffff`, concluded it landed 8,160 bytes past the end of
+a 512 KiB share, and raised the address-to-offset fold as an open question. The
+rule is wrong: TMS34010 addresses are in units of 8 (`addrshift=3`), so the
+address must be **shifted right by 3 before it is masked**, and the mask is the
+**word** count `0x3FFFF`, not the byte count `0x7FFFF`.
 
-So either the address-to-offset fold is not that rule, or `0xfff41070` genuinely
-lives in the mirrored region rather than the captured bank. `harddriv.cpp:628`
-maps a 4 MiB window with `.mirror(0x0400000)`, and how MAME's mirror folds a
-32-bit address onto a 512 KiB store is precisely what `stun-runner-47h` asks and
-has not answered. **The stride question and the fold question are separate, and
-fixing the first does not answer the second.** Do not let a green test on the
-first imply the second.
+| fold rule | word offset | verdict |
+|---|---|---|
+| `(addr) & 0x7FFFF` — what this section used | 266,352 | past the end (wrong rule) |
+| `((addr) >> 3) & 0x3FFFF` — measured | **164,366** | **in range** |
+
+164,366 words is byte offset `0x5041C` of `0x80000`. The speedup PC is inside the
+captured share and nothing is anomalous.
+
+Measured, not assumed: `tools/check-gsp-executed` folds with
+`(pc_bits >> 3) & 0x7FFFF` and **self-verifies** — it compares the opcodes it
+recovers at each folded offset against the opcodes the fetch trace recorded, and
+reports the agreement count. **656 of 656 agree.** The same work shows
+`tools/gsp-program-map:88` folding with `pc & (SHARE_BYTES - 1)` — a bit address
+masked by a byte size, never shifted — where **0 of 656** records land correctly.
+Two tools, two rules, and the one carrying the self-check is the one that is
+right.
+
+So `stun-runner-47h` is answered for MAME's side: the fold is `(addr >> 3) &
+0x3FFFF`, the share holds 262,144 words, and each has eight aliases across the
+4 MiB window — which is what Margolin's "memory org changed dynamically according
+to the address being selected" describes. The *hardware* half, and whether the
+board's fold matches MAME's, stay open.
+
+**The lesson is §88.4's, one instance further along:** I asserted an arithmetic
+anomaly from a rule I had not verified, and the anomaly was my rule. Deriving the
+fold from the trace and checking it against recovered opcodes costs one run and
+would have caught this at once.
 
 ### 87.4 The transferable lesson
 
@@ -13464,3 +13504,99 @@ model**. `tests/test_disasm-gsp.py` builds its images with
 The check that would have caught it is cheap and belongs here: **a share sweep's
 nonzero-word count must equal the count the capture metadata reports.** That
 number was sitting in `result.json` the whole time.
+
+## 88. The GSP's JR/JA form field: MAME's executor and MAME's own disassembler disagree, and both differ from the ISA
+
+### 88.1 What the JR pass found, and what was actually bigger
+
+The JR-condition transcription (`analysis/gsp-jr-conditions.md`, bead
+`stun-runner-6tf`) reported one divergence, and routed it here instead of filing
+it: `j_xx_8`'s absolute arm is unreachable, so `op & 0x00ff == 0x80` executes as
+a ±127 relative where the disassembler prints a 32-bit `JA`. Filed as `BUGS.md`
+**MD-14**.
+
+Re-derived from source before filing, and the report understated it. There are
+**two** divergent cases, not one, and they are swapped with respect to each
+other and to the ISA:
+
+| `op & 0x00ff` | ISA (SPVU001A) | MAME disassembler | MAME executor |
+|---|---|---|---|
+| `0x00` | ±32K **relative**, 2 words | `print_relative` | **absolute** |
+| `0x80` | **absolute**, 3 words (`JAcc`) | `print_long_parm`, prints `JA` | **±127 relative** |
+| other | ±127 relative, 1 word | `print_relative_8bit` | relative — agrees |
+
+`34010ops.hxx:1577-1603` branches on `if (DSTREG(op))` — relative — `else`
+absolute, and `DSTREG(O) = ((O) & 0x0f)` (`tms34010.cpp:163`). The executor
+therefore keys the *form* on the **low nibble**, taking the absolute arm only
+when `op & 0x0f == 0`. The ISA assigns that encoding to the relative form.
+`34010dsm.cpp:1473-1485` switches on `op & 0x00ff` and gets it right.
+
+**MAME's own disassembler is the authority here**, and that is what makes this
+reportable rather than a judgement call.
+
+### 88.2 The `_0`/`_8`/`_x` split is not the bug
+
+Worth stating, because the hand-back named it and a reviewer would otherwise
+report it upstream as a missing implementation.
+
+`34010tbl.hxx` binds `j_UC_0` at column 0, `j_UC_8` at column 8, and `j_UC_x` at
+the other fourteen. The dispatch (`s_opcode_table[op >> 4]`, one column per
+`op & 0x0f`) has **already pinned the nibble** before the macro runs. Each of
+the three macros is the same generic body, and whichever constant condition its
+column implies makes one arm dead. `j_xx_8`'s absolute arm is unreachable
+*exactly as* `j_xx_x`'s is at column 1. That is a compile-time specialisation.
+The defect is the `DSTREG` test.
+
+### 88.3 Getting the opcode mask wrong, twice, for a third time
+
+Counting this needs the jump opcode set, and the obvious sources for it are both
+misleading:
+
+- `34010dsm.cpp:1451-1458` lists `case 0xc000, 0xc200, … 0xce00` — **eight even
+  condition codes only**. Taken as the family, it undercounts by more than a
+  third. Measured on the frame-404 image: 892 even-code words vs 1,506 total.
+- The executor table is the authority: every row from `// 0xc000` to `// 0xcf0`
+  dispatches to a `j_*` handler. So `op & 0xf000 == 0xc000`, **all sixteen
+  condition codes**.
+
+Whether MAME's *disassembler* decodes the odd-code jumps elsewhere at this site
+was not established. **UNKNOWN**, and worth settling before an upstream report.
+
+### 88.4 Counts, and the denominator trap — for the third time
+
+| quantity | `tools/disasm-gsp` | opcode pattern over the image |
+|---|---|---|
+| JR/JA words, whole share | 1,258 (decoded) | 1,506 (matches the pattern) |
+| distinct JA/JR names | 18 | 18 |
+| `op & 0xff == 0x80` occurrences | 5 | 5 |
+| `op & 0xff == 0x00` occurrences | not counted | **161** |
+
+Names and the `0x80` count reproduce exactly. The totals do not, and **both are
+right**: 1,506 is every word *matching the pattern*, 1,258 is what the decoder
+*named*, and data looks like jumps. This is §85.1's cell-versus-word views again,
+and it is now the third time in this file that a count has been compared across
+two different denominators. **A count is meaningless without its denominator.**
+
+The transcriptions' "3 of the 5 inside the documented extent" is **UNKNOWN**,
+not verified. The extent is stated in GSP addresses (`$340000`–`$35DC00`);
+converting those to share word offsets requires the address-to-offset fold, which
+is unresolved and is `stun-runner-47h`. Measured directly, the JR/JA-bearing
+region spans word offsets `0x285c4`..`0x360bc`. Without the fold, "inside" is not
+a decidable predicate, so the claim is carried as unknown rather than repeated.
+
+### 88.5 What decides impact, and it is not yet known
+
+**UNKNOWN: whether any of those 166 words was ever FETCHED.** That single fact
+separates "a defect in MAME" from "a defect in every measurement we have taken
+through this GSP."
+
+If one was, MAME branched where the hardware did not, and the signature would be
+a program that appears to run and quietly does the wrong thing — which reads as
+a defect in *our* port, and would send the next person to re-check a
+transcription that is probably fine. The 161-candidate form is the dangerous
+one: an absolute jump to a 32-bit literal where hardware branches relatively
+produces plausible-looking execution.
+
+`tools/check-gsp-executed` (bead `stun-runner-8y8`) is the thing that answers
+it. Do not assume the answer either way, and do not treat the fix to the decode
+stride (`stun-runner-a9q`) as settling it — different question.

@@ -25,8 +25,9 @@ more credibility than the finding is worth.
 | MD-09 | Service mode "BAD GSP VRAM" | driver defect **or** ROM behaviour | **unresolved** | **no — do not report yet** |
 | MD-10 | *withdrawn 2026-10-13 — documented behaviour, not a defect* | — | — | no |
 | MD-11 | *withdrawn 2026-10-13 — misuse of a documented API, not a defect* | — | — | no |
-| MD-12 | GSP register writes run off the end of `m_IOregs` | driver defect (memory safety) | indexing confirmed; impact not | **no — needs a sanitiser run first** |
+| MD-12 | GSP register writes run off the end of `m_IOregs` | driver defect (memory safety) | indexing confirmed; **inert for this game** (§86.2) | **no — needs a sanitiser run first** |
 | MD-13 | *withdrawn 2026-10-17 — the part has no repeat instructions; our error* | — | — | no |
+| MD-14 | TMS34010 JR/JA: executor and MAME's own disassembler select different forms | driver defect (ISA divergence) | **disagreement confirmed by source**; impact unbounded | **yes — strongest candidate now**, after the fetched question |
 
 ## What each needs before it can be sent
 
@@ -79,8 +80,25 @@ settled, a report would be asserting one of two contradictory things.
 
 `internal_regs_map` exposes `map(0xc0000000, 0xc00001ff)` — 512 bytes of offsets —
 while the backing store is `uint16_t m_IOregs[64]` and `IOREG(reg)` is
-`m_IOregs[reg]` with no mask. The real S.T.U.N. Runner GSP program writes at
-offsets `0x90`–`0x160`, so it indexes 208 entries past the end.
+`m_IOregs[reg]` with no mask. > **CORRECTED 2026-10-17 — this game does NOT do that.** The claim that "the
+> real S.T.U.N. Runner GSP program writes at offsets `0x90`–`0x160`, so it indexes
+> 208 entries past the end" is **disproven**. MAME ships the `STUNRUN_GSP_IOBREPORT`
+> triage hook, which `fopen`s a report lazily inside the `if (offset >= 64)` arm.
+> Run on `md12-fixed`, which **contains** the hook: 600 frames power-on and 600
+> frames of service mode produced **no report file**, so no write at offset ≥ `0x40`
+> ever happened (findings §86.2). Findings §52.2 reached the same conclusion but
+> **vacuously** — it ran the frozen oracle, which contains zero occurrences of the
+> hook string, so the instrument was absent.
+>
+> The overflow is real in the unfixed array; it does not occur on this game's
+> paths. **The sanitiser run below is therefore no longer on the critical path
+> for S.T.U.N. Runner** — it would demonstrate a latent defect in the array, not
+> anything that affects us. Prioritise **MD-14** instead, which is a live ISA
+> divergence with 161 candidate sites on the frame-404 image.
+
+The array's declared extent is 64 entries while `internal_regs_map` exposes
+`0x200` bytes of offsets, so any program that did write above `0x40` would
+index up to 208 entries past the end.
 
 The out-of-bounds indexing is confirmed by reading the source. What it *corrupts*
 is not, and ASAN will probably not tell us: the overflow lands inside the

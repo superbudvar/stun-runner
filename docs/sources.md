@@ -57,10 +57,13 @@ cite.
 | `analysis/hardware-lineage.md` | S3 against S1/S6/S7 for the VRAM result |
 | `docs/hardware-contract.md` | S6 `[MANUAL]`, S7 `[MAME]`, S1 `[ROM]`, S3 `[MARGOLIN]` |
 | `docs/mame-machine-reference.md` | S7 `[MAME]` + S8 throughout; S6 and S1 for the cross-checks |
-| `docs/mc68010-boot-findings.md` | S1 `[ROM]`, S7 `[MAME]`, S6 `[MANUAL]` |
 | `analysis/rom-text-strings.md` | S1 throughout |
-| `docs/mc68010-boot-findings.md` | S1 `[ROM]`, S7 `[MAME]`, S6 `[MANUAL]`, **S9 `[SPVU001A]`** (§83) |
+| `docs/mc68010-boot-findings.md` | S1 `[ROM]`, S7 `[MAME]`, S6 `[MANUAL]`, **S9 `[SPVU001A]`** (§83 condition table, §88 the JR/JA form field) |
 | `analysis/gsp-program-upload.md` | **S9 `[SPVU001A]`** for the instruction set; S7/S8 for the decode |
+| `analysis/gsp-jr-conditions.md` | **S9 `[SPVU001A]`** for every condition predicate and the three JR/JA forms (pp. 12-92/94/96, read off page images); S7 `[MAME]` for `34010dsm.cpp` / `34010ops.hxx` |
+| `tests/test_gsp_jr_conditions.py` | **S9 `[SPVU001A]`** for every expected predicate; S7 for the executor text it perturbs |
+| `tools/check-gsp-executed` | S7 `[MAME]` for the fetch/oplog hooks and the share layout |
+| `BUGS.md` **MD-14** | **S9 `[SPVU001A]`** is the authority on the JR/JA forms; S7 `[MAME]` for the conflicting dsm/executor source |
 | `tests/test_disasm_gsp.py` | **S9 `[SPVU001A]`** for every expected mnemonic and encoding |
 
 ## Adding a source

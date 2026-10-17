@@ -377,6 +377,26 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
 
 ## Current blockers
 
+- **MD-14: MAME's TMS34010 executor and MAME's own disassembler disagree on the
+  GSP's JR/JA form field — check this before blaming our port.** For `op & 0x00ff`
+  the ISA assigns `0x00` to the ±32K *relative* form and `0x80` to the 32-bit
+  *absolute* (`JAcc`) form. MAME's disassembler agrees with the ISA; the executor
+  branches on `DSTREG(op) = op & 0x0f` and takes the absolute arm only when the
+  low nibble is zero, so the two special cases are **swapped**. On the frame-404
+  pristine program image that is 161 pattern matches of the `0x00` form and 5 of
+  the `0x80` form. **UNKNOWN whether any was ever fetched** (`stun-runner-m5t`) —
+  that single fact separates "a defect in MAME" from "a defect in every
+  measurement taken through this GSP", and the signature of the 161-candidate form
+  (an absolute jump to a 32-bit literal where hardware branches relatively) is a
+  program that runs plausibly and does the wrong thing. `BUGS.md` MD-14,
+  findings §88, `analysis/gsp-jr-conditions.md`. Note this is the **form** field
+  and does not contradict the verified **condition** table.
+- **`tools/disasm-gsp` still has `WORD_STRIDE = 16`, wrong for the dense 512 KiB
+  share** (`stun-runner-a9q`, P1). §84 fixed the share *size* and missed the
+  *stride*, so the tool reads one word in eight while every test stayed green —
+  `tests/test_disasm_gsp.py` encodes the same assumption in its `share()`
+  helper. Sanity check that would have caught it: a share sweep's nonzero-word
+  count must equal the `nonzero_words` in the capture's `result.json`.
 - **Physical GSP VRAM is now established as 512 KiB.** SP-338 Page 10 says
   `VRAM Array (16) 64K x 4`; MAME's direct `m_gsp_vram` pointer dump reports
   524,288 bytes / 262,144 words. TMS34010 addresses are bit addresses
