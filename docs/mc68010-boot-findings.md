@@ -13221,6 +13221,63 @@ tables regardless, but a real undecoded instruction needs our own decoder.
 Both are resolvable by observation now that we hold the program and can execute
 it, which is the route the 22 shift/normalize forms should take first.
 
+### 85.4 The 22 partial decodes are RESOLVED, from MAME's executor — and they were never "unknown instructions"
+
+The bare `??` is **not** in the opcode. It is in the **operand field**, and the
+instruction itself was always decoded. MAME's *disassembler* and MAME's
+*executor* are two independent implementations of the same ISA in the same tree,
+and they disagree — the executor is the one that matters, because it is what
+actually produced the behaviour we measure.
+
+The mechanism:
+
+- `2100dasm.cpp:17` —
+  `shift_xop[] = { "SI", "??", "AR", "MR0", "MR1", "MR2", "SR0", "SR1" }`.
+  Index 1 is `??`, where the ALU's parallel table (`alu_xop[]`) has `AX1`. So the
+  mnemonic was known all along (`LSHIFT`/`ASHIFT`/`NORM`/`EXP`) and only the
+  X-operand could not be *named*.
+- `adsp2100.cpp:253-254` — the executor's shift X-register file:
+
+  ```cpp
+  m_shift_xregs[0] = &m_core.si;
+  m_shift_xregs[1] = &m_core.si;   // <-- also SI
+  ```
+
+  **Index 1 is SI, the same as index 0.** MAME's disassembler printed `??`
+  because its author declined to assert the alias; the executor says plainly
+  what it is.
+
+- `2100ops.hxx:715-716` — the macros make the operand width explicit:
+  `SHIFT_GETXREG_UNSIGNED` reads `*(uint16_t *)`, `SHIFT_GETXREG_SIGNED` reads
+  `*(int16_t *)`.
+- `2100ops.hxx:1994-2008` — `shift_op()` switches on `BIT(op, 11, 4)`, so all
+  sixteen forms are enumerated and each is a few lines: `LSHIFT (HI)`, `(HI, OR)`,
+  `(LO)`, `(LO, OR)`, `ASHIFT (…)`, `NORM (…)`, `EXP (…)`. The signed forms
+  propagate the sign (`(xop >> -sc) : (xop >> 31)`).
+- `shift_op_imm()` at `:2158` is the same thing with the shift count taken from
+  `(int8_t)op` instead of `SE`.
+
+So each of the 22 renders, for example, `SR = LSHIFT SI (HI), DM(I4,M4) = AX0`.
+There is nothing unresolved. **`ckb` is answerable entirely from the pinned tree.**
+
+Note the shape of the error: this is MD-13's mistake wearing different clothes.
+There, a missing mnemonic was read as a defect; here, a missing *operand name*
+was nearly read as an unknown instruction. Both times the question to ask first
+was "what does the part actually do", and the executor — not the disassembler —
+answers it.
+
+### 85.5 The general rule this yields
+
+When MAME's disassembler is silent, ask the executor before calling anything
+unknown. The disassembler prints `???` for encodings it declines to name, and
+`2100ops.hxx` covers 213 opcode cases against the disassembler's 49. The
+executor is the oracle: it is the code that produced every behaviour in
+`reference/`.
+
+**Caveat that must not be lost:** the executor settles what an encoding
+*computes*. It cannot settle whether an address was ever *fetched*. That is
+still `stun-runner-yuv`, and it is why 224 addresses are still unclassified.
+
 ### 85.3 An unexplained discrepancy, recorded not reconciled
 
 §"Completed baseline slices" records this tool capturing "a repeatable full ADSP
