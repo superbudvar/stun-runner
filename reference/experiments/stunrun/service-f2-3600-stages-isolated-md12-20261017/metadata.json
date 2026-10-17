@@ -1,0 +1,12 @@
+{
+  "schema": "stunrun-reference-experiment/v1",
+  "status": "invalid-incomplete",
+  "experiment": "service-f2-3600-staged-screens-isolated-attempt",
+  "reason": "The tool ran and emitted state snapshots, but the relative --screen-dir paths were not created by MAME; the wrapper refused the capture because all requested PNGs were missing.",
+  "command": "tools/mame-gsp-state-snapshot roms reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017 --mame /mnt/build/mame-ref/mame --input service --frames 3600 --targets 120,300,600,900,1200,1500,1800,2100,2400,2700,3000,3300,3600 --nothrottle --screen-dir reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017/screens",
+  "diagnostic": "Re-running with an absolute --screen-dir in the v2 sibling produced all 13 screens; use service-f2-3600-stages-isolated-md12-20261017-v2/ as the complete capture.",
+  "artifacts": [
+    {"path":"mame.log","sha256":"603c4c2ca24910913cdcd7ef461069fe6488c880dbd1594052cef3c49d118341"},
+    {"path":"result.json","sha256":"a7f21807a5651e488c355da1cb11b73f208f0d51ff5180b3d153997bfa2427b5"}
+  ]
+}
