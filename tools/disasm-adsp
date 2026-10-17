@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""Disassemble the ADSP-2100 program the 68010 uploads, out of a captured image.
+
+Answers: "what ADSP-2100 machine code is in program RAM after the upload?" The
+68010 writes 24-bit ADSP instructions into the DSP's program RAM; this decodes
+them with MAME's own disassembler
+(`src/devices/cpu/adsp2100/2100dasm.cpp`) compiled standalone against the shim
+in `tools/emu_shim.py`, so the decoding is MAME's and cannot drift from the
+oracle. Nothing here re-implements an ADSP opcode.
+
+INPUT CONTRACT -- `adsp2100.bin` as written by `tools/mame-adsp-program-dump`:
+
+  * a bare 32768-byte file, no JSON, no base64;
+  * 8192 32-bit words, 4 bytes each, BIG-ENDIAN;
+  * one word per ADSP **program address**, in ascending order;
+  * the low 24 bits of a word are the instruction; bits 31:24 are unused and
+    never read (see ADDRESSING below).
+
+`tools/mame-adsp-program-snapshot` emits no image at all -- it records only
+landmark values in `result.json` -- so it imposes no competing size.
+`tools/build-replacement-image` does emit a bare big-endian dword container,
+but of *fixture* length (`init-prefix` is 0x835 words, not 0x2000); those are
+rejected rather than decoded, because a container that stops early means
+"this build only wrote this far" and reading past it would invent addresses.
+`reference/experiments/stunrun/m3-adsp-program-image.metadata.json` records the
+frame-600 capture at `payload_length: 32768`, `program_words: 8192`, which is
+what this tool accepts.
+
+ADDRESSING -- what `--at` counts, stated once because it is easy to misread:
+
+  `--at` and every `pc` in the output are ADSP **program addresses**, the same
+  numbering as the ADSP `PC` state field, `hdadsp_speedup_r`'s `PC <= 0x3b`
+  test (`src/mame/atari/harddriv_m.cpp:2000-2011`), MAME's own `dasm` command
+  over `:mainpcb:adsp`, and the `0x0004` reset entry in `STATUS.md` and
+  `analysis/interconnect.md`. One program address is exactly one 24-bit
+  instruction; there is no "half word" second half to account for.
+
+  In the file, program address A occupies bytes `4*A .. 4*A+3`. `byte_offset`
+  in the JSON is that number. Every recorded "program word index" in this
+  repository (the `destination_word_index` records in
+  `reference/experiments/stunrun/adsp-program-upload.metadata.json`, the
+  `readback_entry_word` slots in `m3-adsp-program-image.metadata.json`, the
+  word indices in `tools/build-replacement-image`) is in the same numbering.
+
+  Why that is the right mapping, not a convenient one:
+
+    * `adsp2100.cpp:134` gives the program space `datawidth 32, addrwidth 14,
+      addrshift -2`, so one program address is one 32-bit bus access and the
+      debugger's address mask is `logaddrmask() == 0x3fff`.
+    * `adsp2100.cpp:848-851` fetches `m_cache.read_dword(m_pc)`, and
+      `adsp2100.cpp:1204-1205` advances `m_pc` by one per instruction.
+    * `harddriv.cpp:680-685` maps program addresses `0x0000-0x1fff` to the
+      32 KiB `adsp_pgm_memory` share and `0x2000-0x3fff` to `nopr()`.
+    * MAME's own debug disassembly buffer for exactly this shape -- 32-bit
+      bus granularity, `opcode_alignment() == 1` -- fills one `u32` per program
+      address from `space->read_dword(lpc)` (`src/emu/debug/debugbuf.cpp:258-270`)
+      and hands it back through `m_do_r32` (`:709-716`). That buffer is what
+      produced `0x0004: CALL $0780` in the recorded trace.
+    * `2100dasm.cpp:235` reads that buffer with a single
+      `opcodes.r32(pc)`; it calls no other width, and never reads `params`.
+
+  The 24-bit instruction therefore sits in bits 23:0 of the dword, with the
+  opcode class in bits 23:16. In the file that means the opcode class is at
+  byte `4*A+1`, not `4*A+0`, even though the capture itself is big-endian --
+  big-endian container, little-endian field layout, and reading it the other
+  way round still decodes to plausible text.
+  `hd68k_adsp_program_r/w` (`harddriv_m.cpp:615-641`) splits the same dword
+  into two 16-bit lanes, an even 68010-window offset taking bits 31:16, which
+  is the board-side reason the first halfword the 68010 writes carries bits
+  23:8 of the instruction; bits 23:16 are that lane's low byte, hence the +1.
+
+WHAT IT GETS WRONG -- read this before trusting a decode:
+
+  * It decodes a *linear* sweep. It does not follow control flow, does not
+    know which program addresses were ever written, and will happily decode
+    the zero-filled hole in the image as `NOP` after `NOP`. The upload's own
+    record structure (17 records, an explicit destination gap at word indices
+    2203-4136, `adsp-program-upload.metadata.json`) is not consulted; nothing
+    in this tool knows that gap exists.
+
+  * MAME's ADSP decoder emits conditional-execute text as *leading words*.
+    Verified outputs, not illustrations: word `0x00202000` decodes to
+    `IF EQ MR = MX0 * MY0 (RND)` and word `0x0014123F` to
+    `DO $0123 UNTIL FOREVER` (`2100dasm.cpp:29-47` and `:49-67`, applied at
+    `:444` and `:460`). There is no `mnemonic`/`operands` split in the JSON for
+    that reason -- a first-word "mnemonic" would read `IF` or `DO` on exactly
+    the instructions a reader most wants to read. `text` is MAME's output
+    verbatim and is the only field that should be pattern-matched on.
+
+  * MAME's disassembler covers ADSP-21xx generally, including ADSP-218x-only
+    encodings (the `0x01` IO moves at `2100dasm.cpp:245-253` and `aluconst` at
+    `:208-230`). This board has an ADSP-2100. Nothing here rejects a
+    218x-only encoding, so such a word decodes to plausible-looking text that
+    this part could not execute.
+
+  * Encoding an unknown word is a `??? (%06X)` line
+    (`2100dasm.cpp:274, 310, 317, ...`), not an error. A sweep over an
+    uninitialised or half-written image will contain them; a run with none is
+    not proof the image is code.
+
+  * Nothing here verifies that the bytes came from the game rather than from a
+    capture artifact, and it does not compare against the ROM. The upload's
+    bytes are ROM-resident (`adsp-program-upload.metadata.json`,
+    `source_mapping`), but that check lives upstream of this tool.
+
+  * The length in the returned value is MAME's, reported verbatim as
+    `length`. On this part it is always 1 -- `2100dasm.cpp:562` returns
+    `1 | dasmflags | SUPPORTED` unconditionally -- so there is no
+    word-count annotation to read. If a future MAME makes it variable, the
+    `pc` sequence in the JSON will say so.
+
+  * `tools/disasm-gsp` still carries a private copy of the same shim; folding
+    it onto `tools/emu_shim.py` is deliberate follow-up work, not an oversight.
+    See that module's docstring.
+
+Requires a C++ compiler and the pinned MAME source tree.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import pathlib
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import emu_shim  # noqa: E402  (needs the sys.path line above)
+
+MAME_TREE = emu_shim.MAME_TREE
+
+# harddriv.cpp:680-685: program addresses 0x0000-0x1fff are the internal RAM
+# share, 0x2000-0x3fff is nopr(). 4 bytes per address in the capture.
+PROGRAM_ADDRESSES = 0x2000
+IMAGE_BYTES = PROGRAM_ADDRESSES * 4
+
+# The reset entry, from STATUS.md / analysis/interconnect.md and confirmed by
+# the recorded MAME trace (processor-trace-600.metadata.json:
+# first_non_nop_pc "0x0004").
+DEFAULT_PC = 0x0004
+
+DRIVER = r'''
+#include "emu.h"
+#include "2100dasm.h"
+#include <cstdio>
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <vector>
+
+// adsp2100.cpp:134: program space is ENDIANNESS_LITTLE, data width 32,
+// addr width 14, addr shift -2 -> one program address is one dword, and
+// logaddrmask() is 0x3fff (logaddr_width = addr_width, emumem.cpp:492).
+static constexpr u32 PC_MASK = 0x3fff;
+
+// harddriv.cpp:683: 0x0000-0x1fff is RAM; :684 maps 0x2000-0x3fff to nopr().
+static constexpr u32 PROGRAM_RAM_ADDRESSES = 0x2000;
+
+// adsp2100.cpp:838-851 reads the instruction with a dword read at the program
+// address, and debugbuf.cpp:258-270 fills one u32 per program address from
+// space->read_dword(lpc) for exactly this space shape (32-bit granularity,
+// opcode_alignment() == 1), handing it back through m_do_r32 at
+// debugbuf.cpp:709-716.
+struct membuf : util::disasm_interface::data_buffer {
+    std::vector<u32> word;          // one entry per ADSP program address
+    explicit membuf(std::vector<u32> v) : word(std::move(v)) {}
+
+    // 2100dasm.cpp reads the buffer exactly once, `opcodes.r32(pc)` at line
+    // 235. It never calls r8/r16/r64 and never touches `params`. MAME's own
+    // buffer aborts on r8/r16 for a 32-bit-granular bus (debugbuf.cpp:710-711),
+    // so abort here rather than hand back a zero: if the pinned MAME source
+    // ever grows an r16 read, this must fail loudly instead of silently
+    // decoding an instruction whose second half it never saw.
+    u8  r8 (offs_t pc) const override { unreachable_width("r8", pc); }
+    u16 r16(offs_t pc) const override { unreachable_width("r16", pc); }
+
+    u32 r32(offs_t pc) const override {
+        const offs_t address = pc & PC_MASK;
+        // Above 0x1fff the driver is nopr(); read open bus as 0.
+        return address < word.size() ? word[address] : 0;
+    }
+    u64 r64(offs_t pc) const override {
+        return u64(r32(pc)) | (u64(r32(pc + 1)) << 32);
+    }
+
+private:
+    [[noreturn]] static void unreachable_width(const char *width, offs_t pc) {
+        std::fprintf(stderr,
+            "adsp21xx_disassembler requested %s at 0x%04X, but 2100dasm.cpp "
+            "only reads r32(pc) and the ADSP-2100 program bus is 32 bits "
+            "granular. The pinned MAME source has changed and this membuf no "
+            "longer models it.\n", width, pc);
+        std::exit(3);
+    }
+};
+
+int main(int argc, char **argv)
+{
+    if (argc < 4) {
+        std::fprintf(stderr,
+            "usage: adsp-dsm <program_address> <count> <image>\n");
+        return 2;
+    }
+    const offs_t start = offs_t(strtoul(argv[1], nullptr, 0));
+    const unsigned count = unsigned(strtoul(argv[2], nullptr, 0));
+
+    std::vector<u8> raw;
+    FILE *handle = std::fopen(argv[3], "rb");
+    if (!handle) { std::perror(argv[3]); return 2; }
+    u8 buffer[65536];
+    size_t got;
+    while ((got = std::fread(buffer, 1, sizeof buffer, handle)) > 0)
+        raw.insert(raw.end(), buffer, buffer + got);
+    std::fclose(handle);
+
+    if (raw.size() != size_t(PROGRAM_RAM_ADDRESSES) * 4) {
+        std::fprintf(stderr,
+            "expected %u bytes: %u ADSP program addresses x 4 bytes each "
+            "(the whole adsp_pgm_memory share, as tools/mame-adsp-program-dump "
+            "writes it). Got %zu bytes.\n"
+            "This is not a smaller view of the share: a short file means only "
+            "that much was written, and a long one is not this capture at all. "
+            "Decoding it anyway would place every address wrongly.\n",
+            unsigned(PROGRAM_RAM_ADDRESSES * 4), unsigned(PROGRAM_RAM_ADDRESSES),
+            raw.size());
+        return 2;
+    }
+
+    // Big-endian on disk, one word per program address. tools/mame-adsp-program-dump
+    // writes struct.pack(">I", space:read_u32(address)) for address 0..0x1fff.
+    std::vector<u32> words(PROGRAM_RAM_ADDRESSES);
+    for (u32 address = 0; address < PROGRAM_RAM_ADDRESSES; address++) {
+        words[address] = (u32(raw[4 * address + 0]) << 24)
+                       | (u32(raw[4 * address + 1]) << 16)
+                       | (u32(raw[4 * address + 2]) << 8)
+                       |  u32(raw[4 * address + 3]);
+    }
+
+    membuf opcodes(words), params(words);
+    adsp21xx_disassembler disasm;   // 2100dasm.h:12 -- takes no arguments
+
+    // Reported, not asserted: the reader should see MAME's own answer.
+    std::cout << "# opcode_alignment=" << disasm.opcode_alignment() << "\n";
+
+    offs_t pc = start;
+    for (unsigned index = 0; index < count; index++) {
+        const offs_t address = pc & PC_MASK;
+        if (address >= PROGRAM_RAM_ADDRESSES) break;
+        std::ostringstream text;
+        const offs_t returned = disasm.disassemble(text, pc, opcodes, params);
+        const offs_t length = returned & util::disasm_interface::LENGTHMASK;
+        std::cout << "0x" << std::hex << std::setfill('0')
+                  << std::setw(4) << address
+                  << "  0x" << std::setw(8) << words[address]
+                  << "  " << text.str()
+                  << "  raw=0x" << std::setw(8) << returned
+                  << std::dec << "\n";
+        if (length == 0) break;
+        // 2100dasm.cpp:562 returns `1 | dasmflags | SUPPORTED`, so this is
+        // always +1 today. It is taken from MAME rather than assumed.
+        pc += length;
+    }
+    return 0;
+}
+'''
+
+# "0x0004  0x001c780f  <text>  raw=0xa0000001". The trailing raw= field is this
+# driver's own annotation of what disassemble() returned, not MAME's text; it
+# is parsed out here so `text` is MAME's output verbatim. The anchored leading
+# fields are what the parse depends on.
+LINE = re.compile(
+    r"^0x([0-9a-f]{4})  0x([0-9a-f]{8})  (.*?)(?:  raw=0x([0-9a-f]{8}))?$")
+HEADER = re.compile(r"^# opcode_alignment=([0-9a-f]+)$")
+
+FLAG_BITS = (
+    ("supported", 0x80000000),
+    ("step_out", 0x40000000),
+    ("step_over", 0x20000000),
+    ("step_cond", 0x10000000),
+)
+OVERINSTMASK = 0x0C000000
+OVERINSTSHIFT = 26
+LENGTHMASK = 0x0000FFFF
+
+
+def flags(returned: int) -> list[str]:
+    """Names for the dasmflags MAME returned. Values from disasmintf.h:39-44."""
+    return [name for name, bit in FLAG_BITS if returned & bit]
+
+
+def build(workdir: pathlib.Path) -> pathlib.Path:
+    """Compile MAME's ADSP-2100 disassembler against the shim. Cached by hash."""
+    cpu = MAME_TREE / "src/devices/cpu/adsp2100"
+    return emu_shim.build_disassembler(
+        workdir,
+        tag="adsp2100-dsm",
+        sources=[cpu / "2100dasm.cpp"],
+        inputs=[cpu / "2100dasm.cpp", cpu / "2100dasm.h"],
+        driver=DRIVER,
+    )
+
+
+def decoder_provenance() -> dict:
+    """Which MAME source produced this text, and what it hashes to."""
+    cpu = MAME_TREE / "src/devices/cpu/adsp2100"
+    digest = hashlib.sha256()
+    hashed = 0
+    for name in ("2100dasm.cpp", "2100dasm.h"):
+        path = cpu / name
+        if path.is_file():
+            digest.update(path.read_bytes())
+            hashed += 1
+    return {
+        "decoder": "mame adsp21xx_disassembler",
+        "decoder_source": str(cpu / "2100dasm.cpp"),
+        "decoder_sha256": digest.hexdigest() if hashed else None,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Disassemble the ADSP-2100 program from a captured image.")
+    parser.add_argument("image", type=pathlib.Path,
+                        help="adsp2100.bin, as written by "
+                             "tools/mame-adsp-program-dump")
+    parser.add_argument("--at", default="0x%04X" % DEFAULT_PC,
+                        help="start, as an ADSP program address "
+                             "(default 0x%04X, the reset entry)" % DEFAULT_PC)
+    parser.add_argument("--count", type=int, default=32,
+                        help="instructions to disassemble (default 32)")
+    parser.add_argument("--json", action="store_true",
+                        help="emit a stunrun-disasm-adsp-v1 document")
+    args = parser.parse_args()
+
+    if not args.image.is_file():
+        print(f"no image at {args.image}", file=sys.stderr)
+        return 2
+    size = args.image.stat().st_size
+    if size != IMAGE_BYTES:
+        # Guard loudly. This reader requires the whole adsp_pgm_memory share.
+        # A capture of another length is not a smaller view of it: the record
+        # structure in adsp-program-upload.metadata.json means a short image
+        # means "only this much was written", and addresses past the end would
+        # be invented rather than decoded.
+        multiple = "" if size % 4 == 0 else (
+            f"\n{size} is also not a multiple of 4, so it is not a whole "
+            f"number of 32-bit program-address words at all.")
+        print(f"expected a {IMAGE_BYTES}-byte image "
+              f"({PROGRAM_ADDRESSES} program addresses x 4 bytes), "
+              f"got {size} bytes.{multiple}\n"
+              f"This is not a smaller view of program RAM; it is a different "
+              f"container, so every decoded address would be wrong.",
+              file=sys.stderr)
+        return 2
+
+    workdir = emu_shim.default_cache("STUNRUN_ADSP_DSM_CACHE", "stunrun-dsm-adsp")
+    binary = build(workdir)
+
+    start = int(args.at, 0)
+    proc = subprocess.run([str(binary), str(start), str(args.count), str(args.image)],
+                          capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        print(proc.stderr, file=sys.stderr)
+        return proc.returncode
+
+    opcode_alignment = None
+    instructions = []
+    for line in proc.stdout.splitlines():
+        header = HEADER.match(line)
+        if header:
+            opcode_alignment = int(header.group(1), 16)
+            continue
+        match = LINE.match(line)
+        if not match:
+            continue
+        address = int(match.group(1), 16)
+        word = int(match.group(2), 16)
+        text = match.group(3)
+        returned = int(match.group(4), 16) if match.group(4) else 0
+        instructions.append({
+            "pc": address,
+            "byte_offset": address * 4,
+            "word": word,
+            "instruction": word & 0xFFFFFF,
+            "text": text,
+            "length": returned & LENGTHMASK,
+            "overinst": (returned & OVERINSTMASK) >> OVERINSTSHIFT,
+            "flags": flags(returned),
+            "raw": returned,
+        })
+
+    if args.json:
+        document = {
+            "schema": "stunrun-disasm-adsp-v1",
+            "image": str(args.image),
+            "image_bytes": size,
+            "program_addresses": PROGRAM_ADDRESSES,
+            "bytes_per_program_address": 4,
+            "start_pc": start,
+            "opcode_alignment": opcode_alignment,
+            "limitations": "linear sweep; no control flow, no knowledge of "
+                           "which addresses were written, no mnemonic/operands "
+                           "split (MAME emits 'IF'/'DO' prefixes as leading "
+                           "words); 'text' is MAME's output verbatim",
+        }
+        document.update(decoder_provenance())
+        document["instructions"] = instructions
+        print(json.dumps(document, indent=2))
+    else:
+        sys.stdout.write(proc.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -12868,3 +12868,91 @@ Read the formats before comparing them. Twice now in this session a conclusion
 came from comparing things that were not comparable — once palettes, once two
 MAME binaries that `analysis/mame-local-patches.md` explicitly says are not
 interchangeable.
+
+## 82. Refutation: a header is not a translation unit (and MAME's ADSP program space is not 4096 words)
+
+Two things about `tools/disasm-adsp`, both of which cost real confusion before
+they were settled. Recorded here rather than only in the tool because both are
+mistakes a reader will otherwise repeat.
+
+### 82.1 Passing `2100dasm.h` to the compiler
+
+Building MAME's ADSP-2100 decoder standalone means compiling
+`src/devices/cpu/adsp2100/2100dasm.cpp` against a small shim that supplies
+`util::disasm_interface`. The natural-looking move is to hand the build both
+the `.cpp` **and** the `.h`, since the class is declared in the header and it
+seems odd to compile without it.
+
+That compiles the header as its own translation unit, where `util::disasm_interface`
+is undeclared — the shim that declares it is not visible from inside the header.
+The resulting error is a declaration failure in MAME's own header, which reads
+like a broken shim rather than a wrong build-input list. I read it that way
+first.
+
+The fix in `tools/emu_shim.py` is to separate the two concepts the API had
+conflated: `sources` are the translation units to compile (`.cpp` only), and
+`inputs` is every file whose contents should force a rebuild — headers included,
+because editing `2100dasm.h` should invalidate the cache. The cache key is the
+SHA-256 of every input plus the shim plus the driver.
+
+A header belongs in the cache key, never on the compiler command line.
+
+### 82.2 MAME models the ADSP-2100 program space as 32-bit granular, 8192 addresses
+
+I asserted, from `map(0x0000, 0x1fff)` alone, that ADSP program RAM is "8 KiB /
+4096 16-bit words". **That is wrong**, and every address derived from it would be
+halved.
+
+- `2100dasm.cpp` reads exactly one width through the buffer: `opcodes.r32(pc)`
+  at `2100dasm.cpp:235`. It never calls `r8`, `r16` or `r64`, and `params`
+  appears only in the function signature at `:233`. Confirmed by count: 1
+  `.r32(`, 0 of each other.
+- `adsp2100.cpp:134` gives the program space `ENDIANNESS_LITTLE, data width 32,
+  addr width 14, addr shift -2`, so one program address is one dword bus access;
+  `opcode_read()` is `m_cache.read_dword(m_pc)` (`adsp2100.cpp:848-851`).
+- `harddriv.cpp:683-684` maps `0x0000-0x1fff` — 8192 addresses × 4 bytes = a
+  32 KiB `uint32_t` share, one 24-bit instruction per address.
+
+So in MAME's model a program address indexes a **dword**, and the instruction is
+bits 23:0 of it; the opcode class is bits 23:16 (`2100dasm.cpp:239`,
+`switch (BIT(op, 16, 8))`). The real part has 8K×16 internal program RAM, so
+MAME is modelling 24-bit-wide program storage, one dword per address, rather
+than 16-bit words.
+
+This is not a MAME defect, so it does not belong in `BUGS.md`. But note
+`harddriv.cpp:684` still carries `map(0x2000, 0x3fff).nopr(); // ROM?` — MAME's
+own unresolved question about the upper program address range, which is a
+standing driver gap and not ours to close.
+
+A second consequence worth stating because it is easy to get backwards: the
+capture is **big-endian in the container** (`tools/mame-adsp-program-dump`
+writes `struct.pack(">I", space:read_u32(address))`), yet the instruction's
+highest fields live at file byte `4*A+1`, not `4*A+0`. The cause is board-side:
+`hd68k_adsp_program_r/w` (`harddriv_m.cpp:615-641`) splits the dword into two
+16-bit lanes with the even 68010-window offset taking bits 31:16, so the first
+halfword the 68010 writes carries instruction bits 23:8. Bits 31:24 are never
+read — the highest field the decoder touches is `BIT(op,16,8)`.
+
+Big-endian container, little-endian field layout. Read the driver's split
+before concluding either.
+
+### 82.3 Still open, and not reconciled
+
+`hd68k_adsp_program_w(offset)` indexes `m_adsp_pgm_memory[offset/2]`, i.e. an
+even offset takes the **high** lane. A 68010 `MOVE.L` issues its two 16-bit
+writes at offsets *k* and *k+2*, which are the same parity — so both would take
+the high lane of two consecutive dwords and the low halves would never be
+written, which contradicts the captured entry word `0x001C780F` having a
+non-zero low half.
+
+Either the window-byte-offset ↔ word-index arithmetic in
+`reference/experiments/stunrun/adsp-program-upload.metadata.json` needs a
+factor-of-two re-derivation, or the upload is two masked `MOVE.W`s at offsets
+`2N`/`2N+1`. **`destination_word_index` and the recorded byte range in that
+metadata are not currently reconciled, and no claim that a 68010 window byte
+offset equals an ADSP program address is safe until they are.**
+
+`tools/disasm-adsp` consumes the capture and does not depend on the window, so
+its output stands regardless — but this is the kind of unresolved unit that
+produced the 8x share error retracted in §34, and it wants a follow-up before
+anyone builds on the upload metadata.
