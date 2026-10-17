@@ -62,7 +62,18 @@ TOOL = REPO / "tools" / "disasm-gsp"
 # harddriv.cpp -> multisync_gsp_map: map(0xff800000, 0xffbfffff)
 #   .mirror(0x0400000).ram().share("gsp_vram")
 SHARE_BASE = 0xFF800000
-SHARE_PERIOD = 0x400000
+# The PHYSICAL SHARE is 512 KiB. harddriv.cpp:628 maps a 4 MiB address WINDOW
+# with a mirror mask, and an earlier revision of this file called that window
+# "the share" -- which is what made tools/disasm-gsp refuse the oracle's own
+# 524288-byte capture. MAME's direct m_gsp_vram dump reports 262144 words;
+# Margolin (S3) counts 8 banks of 64Kx8 on the MultiSync board; SP-338 (S6)
+# says "VRAM Array (16) 64K x 4".
+SHARE_BYTES = 0x80000
+GSP_WINDOW_BYTES = 0x400000
+# Window-space offsets folded into the 512 KiB physical share. These were
+# written as share offsets in the old 4 MiB WINDOW space; they are now
+# physical offsets (& 0x7FFFF). The GSP window address each came from is
+# recoverable by adding 0xFF800000 plus the folded-out multiple of 0x80000.
 # One instruction word per 16-byte cell, replicated 8x. See the tool's docstring.
 WORD_STRIDE = 16
 
@@ -80,24 +91,24 @@ ILLEGAL_RANGES = (
 # 85 instruction words transcribed from the capture, as contiguous 16-byte
 # cells. Format: name -> (base share offset, "wwwwww..." little-endian words).
 PROGRAM = {
-    # Display setup. 0x340040 is the first of the seven out-of-bounds GSP
+    # Display setup. 0x40040 is the first of the seven out-of-bounds GSP
     # register writes that BUGS.md MD-12 is about; the two words after the
     # opcode are the @C0000110h address, high word first.
-    "ENTRY": (0x340000, "0550074009c0000005800110c000184005800150c00009c0000005800160c000"
+    "ENTRY": (0x40000, "0550074009c0000005800110c000184005800150c00009c0000005800160c000"
                       "09e0fffc000005800090c0000580f5a0fff609d8000009d1040009d304004e306a"
                       "0005800130c0004e706a000580"),
     # The hottest address in the 400,000-fetch trace (78,994 fetches) and the
     # ready-handshake that contains MAME's hardcoded speed-up PC.
-    "HOTLOOP": (0x340f40, "fff707e016a0fff74820c4fb560005e016a0fff7058016c0fff7055007400"
+    "HOTLOOP": (0x40f40, "fff707e016a0fff74820c4fb560005e016a0fff7058016c0fff7055007400"
                         "9e3fc00fff984600b600000ffffcb0409e5fc10fff9c00b09e3"),
     # Post-release GSP PCs sampled elsewhere in this project, each with the two
     # cells that follow so multi-word instructions get real operands.
-    "S_342e50": (0x342e40, "04000fc009af"),
-    "S_3414c0": (0x3414b0, "fff707a01670"),
-    "S_345330": (0x345320, "848005800000"),
-    "S_3479e0": (0x3479d0, "fff505990000"),
-    "S_359a70": (0x359a60, "100b498bc8fb"),
-    "S_359dd0": (0x359dc0, "0962098f0054"),
+    "S_342e50": (0x42e40, "04000fc009af"),
+    "S_3414c0": (0x414b0, "fff707a01670"),
+    "S_345330": (0x45320, "848005800000"),
+    "S_3479e0": (0x479d0, "fff505990000"),
+    "S_359a70": (0x59a60, "100b498bc8fb"),
+    "S_359dd0": (0x59dc0, "0962098f0054"),
 }
 
 # The 18 distinct words in the window the STUNRUN first-output boundary defines
@@ -115,16 +126,16 @@ FILL_WORDS = {
 
 
 def share(cells: dict[int, int]) -> bytes:
-    """A 4 MiB share image with `word` written little-endian at each cell offset.
+    """A 512 KiB share image with `word` written little-endian at each cell offset.
 
     An offset outside the share raises rather than being written: bytearray
     slice assignment past the end *appends*, which would silently produce an
     oversized image and then fail the tool's size guard for the wrong reason.
     """
-    buf = bytearray(SHARE_PERIOD)
+    buf = bytearray(SHARE_BYTES)
     for offset, word in cells.items():
-        if not 0 <= offset <= SHARE_PERIOD - 2:
-            raise ValueError(f"cell 0x{offset:x} does not fit a {SHARE_PERIOD}-byte share")
+        if not 0 <= offset <= SHARE_BYTES - 2:
+            raise ValueError(f"cell 0x{offset:x} does not fit a {SHARE_BYTES}-byte share")
         buf[offset:offset + 2] = struct.pack("<H", word)
     return bytes(buf)
 
@@ -235,9 +246,9 @@ class DecodingTests(DisasmGspCase):
                          body).group(1)
         speedup_pc = int(pc, 16)
         speedup_addr = int(addr, 16)
-        offset = (speedup_pc - SHARE_BASE) % SHARE_PERIOD
+        offset = (speedup_pc - SHARE_BASE) % SHARE_BYTES
 
-        self.assertEqual(offset, 0x341070, "the hardcoded PC moved")
+        self.assertEqual(offset, 0x41070, "the hardcoded PC moved")
         ins = decode(self.image, offset, 1)[offset]
         self.assertEqual(ins["mnemonic"], "CMPI",
                          "MAME spins while the GSP is at m_gsp_speedup_pc, so "
@@ -261,7 +272,7 @@ class DecodingTests(DisasmGspCase):
         signed and whose target is `pc + 16 + (disp << 4)` in this program's
         16-byte cells. Computed here from the bits, not read back.
         """
-        offset = 0x340F90
+        offset = 0x40f90
         word = self.cells[offset]
         self.assertEqual(word & 0xFE00, 0xC400, "not the JRcc family")
         displacement = word & 0xFF
@@ -285,24 +296,24 @@ class DecodingTests(DisasmGspCase):
         `MOVE Rs,Rd  0100 11MS SSSR DDDD`; A-15: `LMO Rs,Rd  0110 101S SSSR
         DDDD`; A-14: `MOVB Rs,@Daddress  0000 0101 111R SSSS`.
         """
-        got = decode(self.image, 0x340000, 20)
+        got = decode(self.image, 0x40000, 20)
         self.assertEqual(
             [got[offset]["mnemonic"] for offset in sorted(got)],
             ["SETF", "SETF", "MOVI", "MOVE", "MOVK", "MOVE", "MOVI", "MOVE",
              "MOVI", "MOVE", "MOVE", "MOVI", "MOVI", "MOVI", "MOVE", "LMO",
              "MOVE", "MOVE", "LMO", "MOVE"])
 
-        # 0x340040 is the first of MD-12's seven register writes past the end
+        # 0x40040 is the first of MD-12's seven register writes past the end
         # of MAME's 64-entry m_IOregs. The address is the two words after the
         # opcode, high word first.
-        ins = got[0x340040]
+        ins = got[0x40040]
         self.assertEqual(ins["mnemonic"], "MOVE")
         self.assertIn("@C0000110h", ins["operands"], ins["operands"])
 
     def test_sampled_post_release_pcs_decode_inside_the_uploaded_range(self):
         """The eight PCs sampled elsewhere in this project, all decoded.
 
-        Each share offset is (PC - SHARE_BASE) mod SHARE_PERIOD, which is what
+        Each share offset is (PC - SHARE_BASE) mod SHARE_BYTES, which is what
         the tool's own `vram` field inverts. The assertion is that the tool
         agrees on the mapping and produces an instruction -- not what the
         instruction is, because nothing independent fixes that.
@@ -310,8 +321,8 @@ class DecodingTests(DisasmGspCase):
         pcs = (0xFFF59A70, 0xFFF59DD0, 0xFFF42E50, 0xFFF40F90, 0xFFF41060,
                0xFFF414C0, 0xFFF45330, 0xFFF479E0)
         for pc in pcs:
-            offset = (pc - SHARE_BASE) % SHARE_PERIOD
-            self.assertTrue(0x340000 <= offset <= 0x35DC00,
+            offset = (pc - SHARE_BASE) % SHARE_BYTES
+            self.assertTrue(0x40000 <= offset <= 0x5dc00,
                             f"{pc:#010x} -> {offset:#x} is outside the upload")
             ins = decode(self.image, offset, 1).get(offset)
             self.assertIsNotNone(ins, f"nothing decoded at {pc:#010x}")
@@ -333,7 +344,7 @@ class DecodingTests(DisasmGspCase):
         asserted the field *was* the word; the mutation and alignment controls
         are what caught it.
         """
-        for offset in (0x340000, 0x340070, 0x340F90, 0x341070):
+        for offset in (0x40000, 0x40070, 0x40f90, 0x41070):
             word = self.cells[offset]
             ins = decode(self.image, offset, 1)[offset]
             self.assertEqual(ins["opcode"], f"{word >> 8:04x}{word & 0xFF:04x}",
@@ -354,7 +365,7 @@ class AddressingTests(DisasmGspCase):
 
     def test_offsets_advance_in_whole_sixteen_byte_cells(self):
         """Every decoded offset is a multiple of 16 and rises by at least 16."""
-        got = sorted(decode(self.image, 0x340000, 24))
+        got = sorted(decode(self.image, 0x40000, 24))
         self.assertGreaterEqual(len(got), 8)
         for offset in got:
             self.assertEqual(offset % WORD_STRIDE, 0, f"{offset:#x}")
@@ -362,7 +373,7 @@ class AddressingTests(DisasmGspCase):
             self.assertGreaterEqual(after - before, WORD_STRIDE)
             self.assertEqual(after - before,
                              WORD_STRIDE * ((after - before) // WORD_STRIDE))
-        proc = run("--at", "0x340000", "--count", "1", "--json", image=self.image)
+        proc = run("--at", "0x40000", "--count", "1", "--json", image=self.image)
         self.assertEqual(json.loads(proc.stdout)["word_stride"], WORD_STRIDE)
 
     def test_neighbouring_cells_are_distinguished(self):
@@ -420,7 +431,7 @@ class AddressingTests(DisasmGspCase):
         """
         word = 0xC4FB   # JRLT, from the captured hot loop
         cell = struct.pack("<H", word) * (WORD_STRIDE // 2)
-        buf = bytearray(SHARE_PERIOD)
+        buf = bytearray(SHARE_BYTES)
         buf[0x22000:0x22000 + WORD_STRIDE] = cell
         path = pathlib.Path(self._dir.name) / "cell.bin"
         path.write_bytes(bytes(buf))
@@ -534,10 +545,10 @@ class NegativeControlTests(DisasmGspCase):
         than excluded, because "the control passed" must not mean "the control
         skipped some":
 
-          * 0x340050 holds `$0110`, the address word of the three-word `MOVE`
-            at 0x340040. It is an operand, not an instruction; MAME renders it
+          * 0x40050 holds `$0110`, the address word of the three-word `MOVE`
+            at 0x40040. It is an operand, not an instruction; MAME renders it
             and the word with bit 0 set alike as `EMU`.
-          * 0x342e50 holds `$0FC0`, which SPVU001A A-13 gives as
+          * 0x42e50 holds `$0FC0`, which SPVU001A A-13 gives as
             `FILL L  0000 1111 1100 0000` -- bit 0 is not in the encoding, so
             `$0FC1` is the same instruction and *must* render identically.
         """
@@ -553,26 +564,50 @@ class NegativeControlTests(DisasmGspCase):
                 if before == after:
                     inert.add(offset)
         self.assertEqual(
-            inert, {0x340050, 0x342E50},
+            inert, {0x40050, 0x42e50},
             "the set of cells whose decode survives a one-bit mutation changed; "
             "if a new cell is inert the mutation control no longer covers it, "
             "and if a known one is no longer inert MAME's decoder has changed")
 
-    def test_size_guard_refuses_every_wrong_sized_image(self):
-        """A capture that is not the whole share must be refused, not decoded.
+    def test_the_oracles_own_capture_size_is_accepted(self):
+        """The 512 KiB direct share capture MUST be accepted.
 
-        `mame-gsp-vram-dump.lua`'s 512 KiB form is a different region, not a
-        smaller view of it, so decoding one silently would place every address
-        wrong by a constant -- and still print text.
+        An earlier revision of this tool demanded 4194304 bytes -- the GSP
+        ADDRESS WINDOW from harddriv.cpp:628 -- and so refused
+        `tools/mame-gsp-vram-dump.lua`'s own 524288-byte output, with a message
+        claiming the 512 KiB form "is a different region". That was wrong: MAME's
+        direct m_gsp_vram dump IS 524288 bytes / 262144 words, Margolin (S3)
+        counts 8 banks of 64Kx8 on the MultiSync board, and SP-338 (S6) says
+        "VRAM Array (16) 64K x 4".
+
+        The regression this pins is narrow and deliberate: if someone reintroduces
+        the window size as the accepted size, this fails.
         """
-        for size in (0, 512 * 1024, SHARE_PERIOD // 2, SHARE_PERIOD + 1):
+        path = pathlib.Path(self._dir.name) / "oracle-shaped.bin"
+        path.write_bytes(bytes(SHARE_BYTES))
+        proc = run("--at", "0x40000", "--count", "2", image=path)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stderr, "", "the oracle-shaped capture produced a diagnostic")
+        self.assertIn("DW", proc.stdout)
+
+    def test_size_guard_refuses_every_wrong_sized_image(self):
+        """A capture that is neither 512 KiB nor empty-of-content must be refused.
+
+        Wrong sizes include the 4 MiB ADDRESS WINDOW: it is a different
+        container from the 512 KiB physical share, and decoding one silently
+        would place every address wrong by a constant -- and still print text.
+        """
+        for size in (0, SHARE_BYTES // 2, SHARE_BYTES + 4, GSP_WINDOW_BYTES):
             with self.subTest(size=size):
                 path = pathlib.Path(self._dir.name) / f"size-{size}.bin"
                 path.write_bytes(b"\x00" * size)
-                proc = run("--at", "0x340000", "--count", "2", image=path)
+                proc = run("--at", "0x40000", "--count", "2", image=path)
                 self.assertNotEqual(proc.returncode, 0,
                                     f"a {size}-byte image was decoded")
-                self.assertIn("not a smaller view", proc.stderr)
+                # The message must name the physical size and must not let the
+                # window size pass as the share.
+                self.assertIn("524288", proc.stderr)
+                self.assertIn("WINDOW", proc.stderr)
 
     def test_a_missing_image_is_a_diagnosis_not_a_traceback(self):
         proc = run("--count", "1",

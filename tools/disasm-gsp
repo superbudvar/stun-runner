@@ -122,12 +122,29 @@ import tempfile
 REPO = pathlib.Path(__file__).resolve().parents[1]
 MAME_TREE = pathlib.Path(os.environ.get("MAME_SRC", "/mnt/build/mame-ref"))
 
-# From harddriv.cpp: stunrun -> multisync_nomsp -> multisync_gsp_map, which maps
-# map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram"). So the
-# share is 4 MiB mirrored every 4 MiB, and a share offset is (addr - 0xff800000)
-# mod 0x400000.
+# PHYSICAL SHARE IS 512 KiB. The 4 MiB figure is the ADDRESS WINDOW, not the
+# share, and conflating the two is what made this tool refuse the oracle's own
+# capture.
+#
+# harddriv.cpp:628 -- stunrun -> multisync_nomsp -> multisync_gsp_map:
+#     map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram")
+# That is a 4 MiB WINDOW with a mirror mask. The backing STORE is 512 KiB:
+#     * MAME's own direct `m_gsp_vram` dump reports 524288 bytes / 262144 words
+#       (findings 34; reproduced today by tools/capture-gsp-program-upload,
+#       which reports bytes=524288 words=262144).
+#     * Margolin, S3: the MultiSync main board used "8 banks of 64Kx8
+#       (16 64Kx4 VRAMs)" = 512 KiB. The non-MultiSync board used 16 banks = 1 MiB
+#       (harddriv.cpp:579 and :669 map a plain 0xff800000-0xffffffff, no mirror).
+#     * SP-338, S6: "VRAM Array (16) 64K x 4" = 4 Mbit = 512 KiB.
+#     * native/gsp_rtl/gsp_board.h already models 512 KiB.
+#
+# So an address folds into the share; anything the driver writes above 512 KiB is
+# an alias in MAME. Whether the real board ALIASES there or leaves it unwired is
+# UNKNOWN -- Margolin withheld the GSP schematic section deliberately. Logged in
+# docs/mc68010-boot-findings.md 84.
 SHARE_BASE = 0xFF800000
-SHARE_PERIOD = 0x400000
+SHARE_BYTES = 0x80000          # the physical share MAME allocates
+GSP_WINDOW_BYTES = 0x400000    # the address window the map covers, NOT the share
 
 # One instruction word per 16-byte cell, replicated 8x.
 WORD_STRIDE = 16
@@ -288,13 +305,20 @@ def main() -> int:
         print(f"no image at {args.image}", file=sys.stderr)
         return 2
     size = args.image.stat().st_size
-    if size != SHARE_PERIOD:
-        # Guard loudly. This reader assumes the dump is the whole 4 MiB share.
-        # A 512 KiB capture is not a smaller view of it, it is a different
-        # region, and decoding it silently would place every address wrongly.
-        print(f"expected a {SHARE_PERIOD}-byte share, got {size} bytes.\n"
-              f"This is not a smaller view of the share; it is a different\n"
-              f"region, so every decoded address would be wrong.", file=sys.stderr)
+    if size != SHARE_BYTES:
+        # Guard loudly. The accepted size is the 512 KiB PHYSICAL SHARE that
+        # MAME's own direct dump produces -- not the 4 MiB address window, which
+        # is what an earlier revision of this tool demanded, which made it
+        # refuse the oracle's own output. A capture that is neither is a
+        # different container, not a smaller view of the share.
+        print(f"expected a {SHARE_BYTES}-byte physical share "
+              f"({SHARE_BYTES // 2} words), got {size} bytes.\n"
+              f"The {GSP_WINDOW_BYTES}-byte figure is the GSP address WINDOW\n"
+              f"(harddriv.cpp:628), not the share. A share is 512 KiB: 8 banks of\n"
+              f"64Kx8 per Margolin (S3), 'VRAM Array (16) 64K x 4' per SP-338 (S6),\n"
+              f"and 262144 words in MAME's own dump. Any other length is a\n"
+              f"different container, so every decoded address would be wrong.",
+              file=sys.stderr)
         return 2
 
     workdir = pathlib.Path(os.environ.get(
@@ -330,7 +354,7 @@ def main() -> int:
             operands = re.sub(r"\s*\[\d+ word\(s\)\]\s*$", "", operands).strip()
             instructions.append({
                 "offset": offset,
-                "vram": SHARE_BASE + (offset % SHARE_PERIOD),
+                "vram": SHARE_BASE + (offset % SHARE_BYTES),
                 "opcode": opcode,
                 "mnemonic": mnemonic,
                 "operands": operands,
@@ -340,7 +364,7 @@ def main() -> int:
             "schema": "stunrun-gsp-disasm/v1",
             "image": str(args.image),
             "start": start,
-            "start_vram": SHARE_BASE + (start % SHARE_PERIOD),
+            "start_vram": SHARE_BASE + (start % SHARE_BYTES),
             "word_stride": WORD_STRIDE,
             "instructions": instructions,
         }, indent=2))

@@ -13,7 +13,9 @@ WHAT IT GETS WRONG, and these are load-bearing:
     confident, plausible, wrong instructions. In the capture this was written
     for, a linear decode ran from 0x340000 to 0x365c90, roughly 4 KiB past the
     last fetched address, without any visible sign that it had stopped being
-    code. Anything in the trace is code; anything outside it is unknown.
+    code. (Those are 4 MiB-WINDOW offsets, from a capture read before the window
+    was distinguished from the 512 KiB share; the physical offsets are 0x40000
+    to 0x65c90.) Anything in the trace is code; anything outside it is unknown.
 
   * **Unreached call targets are unknown, not dead.** 34 of 44 call targets were
     not fetched in the capture, because the trace is bounded and this game's GSP
@@ -40,8 +42,15 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[1]
 DISASM = REPO / "tools" / "disasm-gsp"
 
+# The PHYSICAL SHARE is 512 KiB, not 4 MiB. harddriv.cpp:628 maps a 4 MiB
+# address WINDOW with a mirror mask; MAME's direct m_gsp_vram dump is 524288
+# bytes / 262144 words; Margolin (S3) counts 8 banks of 64Kx8 on the MultiSync
+# board; SP-338 (S6) says "VRAM Array (16) 64K x 4". Conflating the window with
+# the share is what made this tool and tools/disasm-gsp refuse the oracle's own
+# capture. See docs/mc68010-boot-findings.md 84.
 SHARE_BASE = 0xFF800000
-SHARE_PERIOD = 0x400000
+SHARE_BYTES = 0x80000
+GSP_WINDOW_BYTES = 0x400000
 WORD_STRIDE = 16
 
 # The TMS34010 has no absolute-jump table; these are the call forms whose
@@ -76,7 +85,7 @@ def read_trace(path: pathlib.Path) -> set[int]:
             except ValueError:
                 continue
             rows += 1
-            fetched.add(pc & (SHARE_PERIOD - 1))
+            fetched.add(pc & (SHARE_BYTES - 1))
     if rows == 0:
         raise SystemExit(
             f"{path} contains no fetch records.\n"
@@ -99,12 +108,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Map the GSP program's functions and call graph.")
     parser.add_argument("image", type=pathlib.Path,
-                        help="gsp_vram.bin, the whole 4 MiB share")
+                        help="gsp_vram.bin, the whole 512 KiB physical share")
     parser.add_argument("--fetch-trace", type=pathlib.Path,
                         help="gsp-upload-events-style STUNRUN-FETCH trace, "
                              "used to tell code from data")
-    parser.add_argument("--at", default="0x340000",
-                        help="share offset of the program start (default 0x340000)")
+    parser.add_argument("--at", default="0x40000",
+                        help="physical share offset of the program start (default 0x40000)")
     parser.add_argument("--count", type=int, default=7000,
                         help="instructions to decode (default 7000)")
     parser.add_argument("--json", action="store_true",
@@ -134,7 +143,7 @@ def main() -> int:
             # calling one (CALLA E060DA4h at 0x35a3c0). Recorded, not resolved.
             out_of_share.setdefault(f"0x{canonical:08X}", []).append(item["offset"])
             continue
-        target = canonical & (SHARE_PERIOD - 1)
+        target = canonical & (SHARE_BYTES - 1)
         edges.setdefault(target, []).append(item["offset"])
         callsites[item["offset"]] = target
 

@@ -13067,3 +13067,170 @@ All in `tools/disasm-gsp`, all outside the change that was authorised:
 3. `--json` skips any output line it cannot parse instead of reporting it, so a
    driver or decoder format change would yield a silently short `instructions`
    list.
+
+## 84. The GSP share is 512 KiB; the 4 MiB is the address WINDOW — and two tools believed the window
+
+### 84.1 The fact
+
+`harddriv.cpp:628` (stunrun) reads:
+
+```cpp
+map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram");
+```
+
+That is a **4 MiB address window with a mirror mask**. The backing **share** is
+512 KiB. Four independent sources agree on the 512 KiB:
+
+1. **MAME's own dump.** `tools/capture-gsp-program-upload` reports
+   `bytes=524288, words=262144` for both boundary images; findings §34 recorded
+   the same from the direct `m_gsp_vram` pointer hook.
+2. **The designer.** Margolin (S3): "The GSP system in the MultiSync Main Board
+   used a memory organization of only 8 banks of 64Kx8 (16 64Kx4 VRAMs) **in
+   order to save money**. In addition to having less memory, the system could
+   only fill 8 pixels at at time instead of 16." 8 × 64 KiB = 512 KiB.
+3. **The manual.** SP-338 (S6) page 10: "VRAM Array (16) 64K x 4" — 4 Mbit =
+   512 KiB.
+4. **Our own model.** `native/gsp_rtl/gsp_board.h` already carried
+   `GSP_BOARD_VRAM_BYTES 0x80000` from gsvp.3.
+
+S.T.U.N. Runner is the MultiSync board (`init_stunrun()` → `init_multisync(0)` →
+`m_gsp_multisync = true`). The original non-MultiSync Hard Drivin' board was
+"16 banks of 64Kx8 (32 64Kx4 VRAMs)" = **1 MiB**, which is why `harddriv.cpp:579`
+and `:669` map a plain `0xff800000-0xffffffff` with no mirror. The two board
+variants genuinely differ in VRAM size, and MAME models them differently.
+
+### 84.2 Above the physical size, the board ALIASES — it does not go dead
+
+The natural inference from "512 KiB of VRAM in a 4 MiB window" is that accesses
+above 512 KiB are unwired and therefore a no-op. **Margolin's own page says
+otherwise**, in the sentence immediately after the one above:
+
+> "Fortunately the TMS34010 had a huge memory space, so I switched the memory
+> organization according to the memory space used. Programs used one memory
+> space, polygon creation used another, and Graphic Display used a third. **The
+> memory organization was changed dynamically according to the address being
+> selected.**"
+
+High address bits are **decoded** — they select the memory organization. So an
+access above the physical size is folded onto the same banks under a different
+organisation: an **alias, not a void**.
+
+That reading also explains something already measured and previously unexplained.
+The 68010 uploads the GSP program to `$FFF40000`+ while the display buffers sit
+lower in the share (gsvp.5: 6,091 words into `$FFF40000`–`$FFFFFFE0`; §36's first
+output at `$FFB67530`–`$FFB6CC80`). Different address windows being different
+organizations is *by design*, not an emulation artefact.
+
+So MAME's `.mirror(0x0400000)` is closer to the real board than "unwired" is.
+The **exact fold period is still UNKNOWN** — it may not be 512 KiB, because the
+organization switching Margolin describes is not a simple alias. The thing that
+would settle it is the bank decode, which was deliberately withheld: "The circuit
+for the Main Board GSP system was not included as part of the published
+schematic package in an attempt to keep some of the details secret." He has since
+posted the GSP section PDFs, so that avenue may not be closed.
+
+### 84.3 Three defects, all from the window being mistaken for the share
+
+Recorded because the first one made a tool refuse the oracle's own output:
+
+1. **`tools/disasm-gsp` demanded 4,194,304 bytes** and refused
+   `tools/mame-gsp-vram-dump.lua`'s own 524288-byte capture, with a message
+   asserting the 512 KiB form "is a different region; every decoded address would
+   be wrong". It could not consume its own pipeline's output. I only got a sweep
+   at all by hand-padding a 4 MiB container — which is itself the tell.
+2. **`tools/gsp-program-map` had the identical error** — `SHARE_PERIOD = 0x400000`
+   and `--help` text reading "the whole 4 MiB share" — with the same wrong fold in
+   both the trace reader and the call-target folder, and a `--at` default of
+   `0x340000` that is a window offset.
+3. **`tests/test_gsp_program_map.py` pointed at absolute `/tmp/opencode/...` paths**
+   for a 4 MiB capture and a 19 MB fetch trace, with `skipUnless(IMAGE.is_file())`
+   on every test. That combination is worse than no test: it reported as present
+   while asserting **nothing** on every machine but the one whose `/tmp` still had
+   the files, and its "fixture" was ROM-derived capture data living in a temp
+   directory, which this repository does not treat as evidence. It also pinned the
+   wrong size, so it would have defended the bug.
+
+All three are fixed. Both tools now name `SHARE_BYTES = 0x80000` separately from
+`GSP_WINDOW_BYTES = 0x400000` and carry the four corroborations at the constant.
+The test synthesises its own fixture in a temp dir, uses no ROM data, and skips
+nothing. Regression control: reinstating `SHARE_BYTES = 0x400000` turns 20 tests
+red, including the new
+`test_the_oracles_own_capture_size_is_accepted`.
+
+Note the folded window-space offsets in `tests/test_disasm_gsp.py`: `0x340000`
+→ `0x40000` and friends. VRAM addresses (`0xff8000`, `0xfff9fc`) and size
+constants were deliberately **not** folded — only cell offsets.
+
+## 85. Both processors disassemble, and the blanks are known and bounded
+
+Now that `tools/disasm-adsp` and `tools/disasm-gsp` exist, the obvious test is
+the one that actually matters: run them over **the real programs**, not over
+random data. (Both agents had been asked for landmark corpora and negative
+controls, and neither was asked this. Exhaustive sweeps over random or synthetic
+images answer "is there a gap in the decoder anywhere", which is a different and
+much weaker question than "does our program decode".)
+
+### 85.1 GSP: nothing is unknown
+
+`tools/capture-gsp-program-upload roms OUT --frame 600` reproduced the recorded
+boundary exactly — release at **frame 405**, `seq 631205`, HSTCTL `$7800`, **83,194
+nonzero words** at frame 405, matching §36's figure from a fresh run.
+
+The frame-404 image (GSP still halted, program intact) swept through the decoder:
+
+| | |
+|---|---|
+| cells | 32,768 |
+| **real instructions** | **7,411** |
+| distinct mnemonics | **85** |
+| **unknown (`?`) encodings** | **0** |
+| `DW` | 24,182 |
+
+Every encoding present decodes. The 74% `DW` is **data, not undecodable code** —
+fill patterns, ramps and object buffers share the address space with the program,
+and a data cell is what `DW` looks like. All 18 JR condition variants appear
+(`JRGE`/`JRLS`/`JRNC`/`JRNV`/`JRP`… plus `JA`/`JR`/`JRC`), which is enough to
+complete the condition table `analysis/gsp-program-upload.md` records as stopping
+at `$600`.
+
+For contrast, the frame-600 share has only **113** real instructions across the
+whole bank: by frame 600 the GSP has overwritten nearly everything. The
+frame-600 capture is the wrong corpus for "what does the program say"; the
+upload-boundary capture is the right one.
+
+### 85.2 ADSP: 246 of 8192 addresses, and 22 of them are the dangerous kind
+
+Fresh `tools/mame-adsp-program-dump roms OUT --frame 600`: 32,768 bytes, entry
+`0x0004`, **4,356 nonzero words**, capture PC `$060E`. Swept all 8192 program
+addresses:
+
+- **224** addresses decode as `??? (xxxxxx)` — wholly unknown. They fall in **165
+  contiguous ranges** covering 224 words, i.e. mostly isolated single words plus a
+  few short runs. At least one is demonstrably a **data table**, not code:
+  `$1041-$104A` reads `0BA200, 0AAA00, 09D800, 092400, 088800, 080000, 078700,
+  071C00, 06BC00, 066600` — a smooth descending numeric ramp.
+- **22** addresses decode *partially*: an instruction renders with a bare `??`
+  inside it. **All 22 are one family** — `NORM ??`, `ASHIFT ??`, `LSHIFT ??`,
+  `EXP ??`, e.g. `SR = LSHIFT ?? (HI), DM(I4,M4) = AX0`. This is the worse of the
+  two classes: the line looks like a complete instruction and is not.
+
+**We cannot yet tell which of the 224 are data and which are code MAME cannot
+decode**, and that distinction matters — the native model must reproduce the data
+tables regardless, but a real undecoded instruction needs our own decoder.
+
+Both are resolvable by observation now that we hold the program and can execute
+it, which is the route the 22 shift/normalize forms should take first.
+
+### 85.3 An unexplained discrepancy, recorded not reconciled
+
+§"Completed baseline slices" records this tool capturing "a repeatable full ADSP
+program image at frame 600 (**2,718 nonzero words**)". Today's fresh capture of
+the same tool, same frame, same ROM set, reads **4,356**. The image is otherwise
+consistent — 32,768 bytes, origin `0x0`, entry `0x0004`.
+
+Most likely this is §81's non-interchangeable MAME binaries: the recorded figure
+predates the Oct 14 rebuild of `mame-ref`, and `analysis/mame-local-patches.md`
+says explicitly that the two binaries are not interchangeable. That is a
+hypothesis, not a measurement. **Neither number should be trusted until it is
+reconciled**, and `raw_artifacts_kept_local` means the image itself is not
+committed to compare.
