@@ -1,0 +1,51 @@
+{
+  "schema": "stunrun-reference-experiment/v1",
+  "experiment": "service-f2-3600-staged-screens-isolated",
+  "authority": "controlled-replay",
+  "rom_set": "stunrun rev 6",
+  "rom_manifest": {
+    "path": "roms/stunrun.manifest.json",
+    "sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d"
+  },
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "sha256": "55956f2b26c0d5caeb86f346e6247ded04428eae07465d35470dea77d6bf4045",
+    "version": "0.289 (mame0289-dirty)"
+  },
+  "command": "tools/mame-gsp-state-snapshot roms reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2 --mame /mnt/build/mame-ref/mame --input service --frames 3600 --targets 120,300,600,900,1200,1500,1800,2100,2400,2700,3000,3300,3600 --nothrottle --screen-dir /home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens",
+  "start": "power_on with mame_launch per-run cfg, NVRAM, and state directories",
+  "input": {
+    "mode": "service",
+    "events": [
+      {"frame": 60, "port": ":mainpcb:IN0", "field": "Service Mode", "action": "press"},
+      {"frame": 120, "port": ":mainpcb:IN0", "field": "Service Mode", "action": "release"}
+    ]
+  },
+  "repeatability": {
+    "runs_per_binary": 5,
+    "binaries": ["55956f2b26c0d5caeb86f346e6247ded04428eae07465d35470dea77d6bf4045", "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06"],
+    "result": "all five runs on each binary produced identical 13-screen hash sets; both binaries produced the same set"
+  },
+  "comparison_to_prior": {
+    "path": "reference/experiments/stunrun/service-f2-3600-stages/",
+    "result": "only frame-002400.png matches among 13 targets; the older frame-000300.png is not reproduced by either named binary under isolated default state",
+    "interpretation": "The old bundle's effective MAME cfg/NVRAM/input state is not recorded. Binary choice is not the differentiator in fresh captures; do not treat the older and current timelines as equivalent."
+  },
+  "artifacts": [
+    {"path":"mame.log","sha256":"84e33cee12de7796a1af834c3ecaf3597ae84072e1dd05728484f4002ea4bb61"},
+    {"path":"result.json","sha256":"405bf8cc93445fdbb6a5a8e3d770a34dd01ae7eda6db958c66f09d643344bf44"},
+    {"path":"screens/frame-000120.png","sha256":"33480a9e484faba8828502301a0ee8759b3908e628f23ccb2676d6d1c4b699d0"},
+    {"path":"screens/frame-000300.png","sha256":"33480a9e484faba8828502301a0ee8759b3908e628f23ccb2676d6d1c4b699d0"},
+    {"path":"screens/frame-000600.png","sha256":"6c754821135a5ed1f5d3e3130f8ba3e126a0ffd6287e8bdbabbf051f21b531ec"},
+    {"path":"screens/frame-000900.png","sha256":"291ce42d1964ddc85dfc65c0e99c898731c9300fe8b5ee75557b1b1632545a63"},
+    {"path":"screens/frame-001200.png","sha256":"69499db38bff5b58a394124c1ab3062b37902f7cb7d732432c4580887c5c1f36"},
+    {"path":"screens/frame-001500.png","sha256":"b0790b2ce2f7261ea5ee80113bd78ad636e89f0994db44d9582248453fca5618"},
+    {"path":"screens/frame-001800.png","sha256":"6c7a4d00c91a7bdfbb95c0816023c44f07e9f565783cd8364f7238300008248a"},
+    {"path":"screens/frame-002100.png","sha256":"e04fecb8660a32cf0e5eb7e17c283f45e8b57179db852f4c9b7396f3c0763d0b"},
+    {"path":"screens/frame-002400.png","sha256":"df5f2d61d6e55c20a2cf517d6393a1ac733d44e696e6fdbfb3b4590a1fefb00f"},
+    {"path":"screens/frame-002700.png","sha256":"df5f2d61d6e55c20a2cf517d6393a1ac733d44e696e6fdbfb3b4590a1fefb00f"},
+    {"path":"screens/frame-003000.png","sha256":"399d87e8ab9bd60dfad0c3f447fd580b6445a4a69bdfc6c351bac7b0a89d51f4"},
+    {"path":"screens/frame-003300.png","sha256":"9db379fa0ce7193406626e599b74a726e1b99678885c9fbd3fb272e0d3aeb9ac"},
+    {"path":"screens/frame-003600.png","sha256":"e9e7e4f771b46b4fd178934a85be8e26daf10e2505d85d71fbf233b5913af02f"}
+  ]
+}

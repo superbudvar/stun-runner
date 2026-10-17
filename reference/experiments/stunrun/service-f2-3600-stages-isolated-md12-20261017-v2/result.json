@@ -1,0 +1,260 @@
+{
+  "schema": "stunrun-gsp-state-snapshot-result/v1",
+  "frames": 3600,
+  "targets": "120,300,600,900,1200,1500,1800,2100,2400,2700,3000,3300,3600",
+  "input": "service",
+  "load_state": null,
+  "nothrottle": true,
+  "returncode": 0,
+  "snapshots": [
+    {
+      "frame": 120,
+      "pc": 0,
+      "st": 16,
+      "control_lo_sum32": 0,
+      "control_hi_sum32": 524280,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 0,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-000120.png"
+    },
+    {
+      "frame": 300,
+      "pc": 0,
+      "st": 16,
+      "control_lo_sum32": 0,
+      "control_hi_sum32": 524280,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 0,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-000300.png"
+    },
+    {
+      "frame": 600,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 30840,
+      "control_hi_sum32": 1841176,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 57568,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-000600.png"
+    },
+    {
+      "frame": 900,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 30840,
+      "control_hi_sum32": 1841176,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 188638,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-000900.png"
+    },
+    {
+      "frame": 1200,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 30840,
+      "control_hi_sum32": 1841176,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 188638,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-001200.png"
+    },
+    {
+      "frame": 1500,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 30840,
+      "control_hi_sum32": 1841176,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 188638,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-001500.png"
+    },
+    {
+      "frame": 1800,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 30840,
+      "control_hi_sum32": 1841176,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 319708,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-001800.png"
+    },
+    {
+      "frame": 2100,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 0,
+      "control_hi_sum32": 1333240,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 6029220,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-002100.png"
+    },
+    {
+      "frame": 2400,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 0,
+      "control_hi_sum32": 1333240,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 28180050,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-002400.png"
+    },
+    {
+      "frame": 2700,
+      "pc": 4294285600,
+      "st": 16,
+      "control_lo_sum32": 0,
+      "control_hi_sum32": 1333240,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 17956590,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-002700.png"
+    },
+    {
+      "frame": 3000,
+      "pc": 4294836656,
+      "st": 3221225472,
+      "control_lo_sum32": 454376,
+      "control_hi_sum32": 1333256,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 11466944,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-003000.png"
+    },
+    {
+      "frame": 3300,
+      "pc": 4294836224,
+      "st": 16,
+      "control_lo_sum32": 326904,
+      "control_hi_sum32": 524288,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 2688,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-003300.png"
+    },
+    {
+      "frame": 3600,
+      "pc": 4294836224,
+      "st": 16,
+      "control_lo_sum32": 326904,
+      "control_hi_sum32": 524288,
+      "vram_low_sum32": 0,
+      "vram_high_sum32": 2688,
+      "display": {
+        "dpyadr": 64622,
+        "dpytap": 0,
+        "dpystart": 65535,
+        "heblnk": 55,
+        "hsblnk": 311,
+        "dpyctl": 61456,
+        "fine_scroll": 7
+      },
+      "screen": "/home/budvar/projects/decomp/stun-runner/reference/experiments/stunrun/service-f2-3600-stages-isolated-md12-20261017-v2/screens/frame-003600.png"
+    }
+  ],
+  "lua_errors": [],
+  "canonical_log_sha256": "5ce58fd1e69c860f1e4d0aba895d6d51ceaab617e15c2d68994286f267e29ec4"
+}

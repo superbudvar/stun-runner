@@ -36,6 +36,8 @@ for token in string.gmatch(read_pc_text, '[^,]+') do
 end
 local capture_order = os.getenv('STUNRUN_RAM_TRACE_ORDER') == '1'
 local frame = 0
+local primary_screen = assert(machine.screens[':mainpcb:screen'], 'primary screen not found')
+local screen_frame_origin = nil
 local events = {}
 local read_events = {}
 local next_event = 1
@@ -187,6 +189,17 @@ end
 
 emu.register_frame_done(function()
     frame = frame + 1
+    -- `frame_done` runs between screen frames. Assert that the screen counter
+    -- advances once per callback, relative to the first callback (which also
+    -- works for a loaded state with a nonzero screen frame number). Input
+    -- events labelled N are applied here before the next screen frame N runs.
+    local completed_screen_frame = primary_screen:frame_number()
+    if screen_frame_origin == nil then
+        screen_frame_origin = completed_screen_frame
+    elseif completed_screen_frame ~= screen_frame_origin + frame - 1 then
+        error(string.format('frame hook mismatch: callback frame=%d screen frame=%d (expected %d)',
+            frame, completed_screen_frame, screen_frame_origin + frame - 1))
+    end
     if frame == tap_frame then install_tap() end
     -- `<=`, not `==` (stun-runner-0p0). `frame` is a CALLBACK counter, not the
     -- machine's frame number, so if the counter ever steps past an event's

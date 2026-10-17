@@ -1,0 +1,46 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "experiments/stunrun/service-f2-text-host-writes-frameclock-20261017",
+  "tool": "tools/mame-ram-write-trace",
+  "mame": {
+    "path": "/mnt/build/mame-ref/mame",
+    "version": "0.289 (mame0289-dirty)",
+    "sha256": "55956f2b26c0d5caeb86f346e6247ded04428eae07465d35470dea77d6bf4045"
+  },
+  "rom_manifest": {
+    "path": "roms/stunrun.manifest.json",
+    "sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d"
+  },
+  "start_condition": "power_on with mame_launch per-run cfg, NVRAM, and state directories",
+  "input": {
+    "mode": "service_f2",
+    "events": [
+      {"frame": 60, "port": ":mainpcb:IN0", "field": "Service Mode", "action": "press"},
+      {"frame": 120, "port": ":mainpcb:IN0", "field": "Service Mode", "action": "release"}
+    ],
+    "timing": "Applied at the frame-done callback for the preceding screen frame; callback/screen-frame cadence assertion enabled"
+  },
+  "capture": {
+    "frames_requested": 900,
+    "capture_start_frame": 60,
+    "capture_end_frame": 705,
+    "device": ":mainpcb:maincpu",
+    "space": "program",
+    "range": "0x00c00000-0x00c00020",
+    "pc": "0x00002656",
+    "registers": true,
+    "event_count": 1040,
+    "events_sha256": "b524ce11bf77dda1f4300bd4c159388fd96dc8225f464ac995bd828577b05109",
+    "mame_log_sha256": "b0c7478896554944de9cc71586f2b7a85c232b1dec48e4791efb76fb9e565c5f",
+    "canonical_log_hash_scope": "output-path-scoped; compare only in the same output directory"
+  },
+  "comparison": {
+    "prior_capture": "experiments/stunrun/service-f2-text-host-writes",
+    "result": "1040 event payloads match after excluding the frame field; current frame labels are 275 or 276 later than the prior result",
+    "interpretation": "The current isolated capture is repeatable, but the prior/current frame-label offset is unresolved; do not treat the two frame timelines as interchangeable."
+  },
+  "limitations": [
+    "Five identical invocations in this session produced identical event streams; raw repeat runs are session-local under /tmp/opencode/0p0-framecheck-1..5.",
+    "This trace covers one service_f2 schedule, not all input modes or wrappers."
+  ]
+}
