@@ -12,7 +12,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors
+from mame_launch import mame_launch
 
 
 def lua_string(value: str) -> str:
@@ -141,7 +143,6 @@ def main() -> int:
     parser.add_argument("--rompath", required=True, type=pathlib.Path)
     parser.add_argument("--mame", default="mame")
     parser.add_argument("--output", type=pathlib.Path, required=True)
-    parser.add_argument("--cfg-dir", type=pathlib.Path, default=pathlib.Path("/tmp/stunrun-mame-cfg"))
     parser.add_argument("--exact-frame", action="store_true",
                         help="snapshot and stop on the experiment's expected frame")
     parser.add_argument("--nothrottle", action="store_true",
@@ -158,6 +159,9 @@ def main() -> int:
             raise SystemExit(
                 "initial_events cannot be used with --load-state; use relative events")
     args.output.mkdir(parents=True, exist_ok=True)
+    # This tool's bound has always been max(2, ceil((frame + 1 or 120) / 60)),
+    # which is NOT the shared seconds_for_frames. Preserved verbatim -- see
+    # tools/mame_launch.py.
     seconds = (86400 if args.load_state else
                max(2, math.ceil((experiment["expect"]["frame"] +
                                  (1 if args.exact_frame else 120)) / 60)))
@@ -167,32 +171,30 @@ def main() -> int:
         log = pathlib.Path(temp_dir) / "mame.log"
         snapshot = args.output / f"{experiment['id']}-exact.png" if args.exact_frame else None
         script.write_text(lua_script(experiment, snapshot), encoding="utf-8")
-        state_directory = pathlib.Path(temp_dir) / "states"
+        state_directory = None
         if args.load_state:
+            state_directory = pathlib.Path(temp_dir) / "states"
             slot_directory = state_directory / "stunrun"
             slot_directory.mkdir(parents=True)
             shutil.copy2(args.load_state, slot_directory / "1.sta")
-        command = [
-            args.mame, "-rompath", str(args.rompath), "stunrun",
-            "-video", "soft", "-sound", "none", "-skip_gameinfo",
-            "-noreadconfig", "-nowriteconfig", "-cfg_directory", str(args.cfg_dir),
-            "-nonvram_save", "-debug", "-debugger", "none",
-        ]
-        if args.load_state:
-            command += ["-state_directory", str(state_directory),
-                        "-statename", "%g", "-state", "1"]
-        if args.nothrottle:
-            command.append("-nothrottle")
-        command += [
-            "-seconds_to_run", str(seconds),
-            "-snapname", experiment["id"], "-snapshot_directory", str(args.output),
-            "-autoboot_script", str(script),
-        ]
         environment = dict(os.environ)
         environment.setdefault("SDL_VIDEODRIVER", "dummy")
-        with log.open("w", encoding="utf-8") as handle:
-            completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT, check=False, env=environment)
-        text = log.read_text(encoding="utf-8")
+        # -video soft, not none: --exact-frame calls machine.video:snapshot()
+        # and with no video driver there is nothing to render.
+        extra: list[str] = ["-debug", "-debugger", "none"]
+        if args.nothrottle:
+            extra.append("-nothrottle")
+        if args.load_state:
+            extra += ["-state", "1"]
+        with mame_launch(mame=args.mame, rompath=args.rompath, seconds=seconds,
+                         state_directory=state_directory,
+                         video="soft", autoboot=script,
+                         extra=tuple(extra) + (
+                             "-snapname", experiment["id"],
+                             "-snapshot_directory", str(args.output))) as launch:
+            with log.open("w", encoding="utf-8") as handle:
+                completed = subprocess.run(launch.argv, stdout=handle, stderr=subprocess.STDOUT, check=False, env=environment)
+            text = log.read_text(encoding="utf-8")
         published_log = args.output / "mame.log"
         published_log.write_text(text, encoding="utf-8")
         result_lines = [line.removeprefix("MAME_REPLAY_JSON ") for line in text.splitlines() if line.startswith("MAME_REPLAY_JSON ")]

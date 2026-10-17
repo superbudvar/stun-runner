@@ -13,7 +13,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors
+from mame_launch import mame_launch
 
 
 MARKER = re.compile(r"MAME_MEMORY_SNAPSHOT frame=(\d+) path=(.+) nonzero=(\d+)")
@@ -52,7 +54,6 @@ def main() -> int:
         args.nvram_directory.mkdir(parents=True, exist_ok=True)
     log = args.output / "mame.log"
     state_stage = None
-    state_directory = "/tmp/stunrun-state-dir"
     if args.load_state:
         if not args.load_state.is_file():
             raise SystemExit(f"save state does not exist: {args.load_state}")
@@ -60,7 +61,6 @@ def main() -> int:
         slot_directory = state_stage / "stunrun"
         slot_directory.mkdir()
         shutil.copy2(args.load_state, slot_directory / "1.sta")
-        state_directory = str(state_stage)
     if args.load_state and args.playback:
         parser.error("--load-state and --playback are mutually exclusive")
     playback = None
@@ -70,42 +70,11 @@ def main() -> int:
         playback = args.playback.resolve()
         if args.input != "none":
             parser.error("--playback requires --input none")
-    # Per-run cfg directory.  MAME writes stunrun.cfg there at exit INCLUDING
-    # current input-port (DIP switch) state, and -noreadconfig does not stop it
-    # from being READ on the next run.  A shared /tmp/stunrun-mame-cfg meant one
-    # run that toggled a DIP -- service_probe presses "Service Mode" on
-    # :mainpcb:IN0 -- silently forced that DIP off in every later run: main RAM
-    # stayed all-0xFF and the tool still reported success.  Observed directly
-    # while sweeping input modes; it corrupts a whole sweep and looks like a
-    # clean null result.  See docs/mc68010-boot-findings.md section 74.
-    cfg_directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-mame-cfg-"))
-    config_args = ["-noreadconfig", "-nowriteconfig",
-                   "-cfg_directory", str(cfg_directory), "-nonvram_save"]
-    if args.nvram_directory:
-        config_args += ["-nvram_directory", str(args.nvram_directory)]
-        config_args.remove("-nonvram_save")
-    playback_args = []
-    if playback is not None:
-        config_args = []
-        if args.nvram_directory:
-            config_args = ["-nvram_directory", str(args.nvram_directory)]
-        playback_args = ["-input_directory", str(playback.parent),
-                         "-playback", playback.name]
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
-        "-sound", "none", "-skip_gameinfo", *config_args,
-        *playback_args,
-        "-state_directory", state_directory, "-statename", "%g",
-        "-seconds_to_run",
-        str(86400 if args.load_state else max(2, (args.frames + 59) // 60 + 1)),
-        "-autoboot_script",
-        str(pathlib.Path(__file__).resolve().parents[1] / "mame/lua/memory-snapshot.lua"),
-    ]
+    extra: list[str] = []
     if args.nothrottle:
-        command.insert(command.index("-seconds_to_run"), "-nothrottle")
+        extra.append("-nothrottle")
     if args.load_state:
-        command.insert(command.index("-seconds_to_run"), "-state")
-        command.insert(command.index("-seconds_to_run"), "1")
+        extra += ["-state", "1"]
     environment = {
         **os.environ,
         "STUNRUN_MEMORY_DEVICE": args.device,
@@ -126,22 +95,40 @@ def main() -> int:
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
     try:
-        with log.open("w", encoding="utf-8") as handle:
-            completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,
-                                       env=environment, check=False)
-        text = log.read_text(encoding="utf-8")
+        # Per-run cfg directory. MAME writes stunrun.cfg there at exit INCLUDING
+        # current input-port (DIP switch) state, and -noreadconfig does not stop
+        # it from being READ on the next run. A shared cfg directory meant one
+        # run that toggled a DIP -- service_probe presses "Service Mode" on
+        # :mainpcb:IN0 -- silently forced that DIP off in every later run: main
+        # RAM stayed all-0xFF and the tool still reported success. Observed
+        # directly while sweeping input modes; it corrupts a whole sweep and
+        # looks like a clean null result. See docs/mc68010-boot-findings.md
+        # section 74 and AGENTS.md trap 12.
+        #
+        # --nvram-directory is the one deliberate exception: it names a store
+        # the CALLER owns and wants MAME to keep writing, so the launcher is
+        # told to point at it and to stop suppressing the save.
+        with mame_launch(mame=args.mame, rompath=args.rompath,
+                         seconds=86400 if args.load_state else None,
+                         frames=args.frames,
+                         state_directory=state_stage,
+                         nvram_directory=args.nvram_directory,
+                         playback=playback,
+                         autoboot=pathlib.Path(__file__).resolve().parents[1]
+                         / "mame/lua/memory-snapshot.lua",
+                         extra=tuple(extra)) as launch:
+            # Recorded for provenance: the path was unique per run, so no
+            # input-port state carried between captures. The directory itself is
+            # removed when the block exits; the path is kept because that is what
+            # proves isolation to a later reader.
+            cfg_directory = str(launch.cfg_directory)
+            with log.open("w", encoding="utf-8") as handle:
+                completed = subprocess.run(launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                                           env=environment, check=False)
+            text = log.read_text(encoding="utf-8")
     finally:
         if state_stage is not None:
             shutil.rmtree(state_stage, ignore_errors=True)
-        # The per-run cfg directory held this run's input-port state. Leaving
-        # it behind would be harmless now that the path is unique, but the
-        # stale /tmp/stunrun-mame-cfg from older versions is NOT: remove it so
-        # a contaminated file cannot be inherited by a later tool that still
-        # points there.
-        shutil.rmtree(cfg_directory, ignore_errors=True)
-        stale_cfg = pathlib.Path("/tmp/stunrun-mame-cfg")
-        if stale_cfg.is_dir() and not any(stale_cfg.iterdir()):
-            stale_cfg.rmdir()
     matches = MARKER.findall(text)
     expected = [int(value) for value in targets.split(',')]
     snapshots = []

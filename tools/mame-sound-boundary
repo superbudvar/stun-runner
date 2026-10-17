@@ -11,7 +11,9 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors
+from mame_launch import mame_launch
 
 
 EVENT = re.compile(
@@ -32,24 +34,21 @@ def main() -> int:
         parser.error("--frames must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     log = args.output / "mame.log"
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
-        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save", "-debug",
-        "-debugger", "none", "-seconds_to_run", str(max(2, (args.frames + 59) // 60 + 1)),
-        "-autoboot_script", str(pathlib.Path(__file__).resolve().parents[1] / "mame/lua/sound-boundary.lua"),
-    ]
     environment = {
         "STUNRUN_SOUND_BOUNDARY_FRAMES": str(args.frames),
         "STUNRUN_SOUND_BOUNDARY_INPUT": args.input,
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
-    with log.open("w", encoding="utf-8") as handle:
-        completed = subprocess.run(
-            command, stdout=handle, stderr=subprocess.STDOUT,
-            env={**os.environ, **environment}, check=False,
-        )
-    text = log.read_text(encoding="utf-8")
+    with mame_launch(mame=args.mame, rompath=args.rompath, frames=args.frames,
+                     autoboot=pathlib.Path(__file__).resolve().parents[1]
+                     / "mame/lua/sound-boundary.lua",
+                     extra=("-debug", "-debugger", "none")) as launch:
+        with log.open("w", encoding="utf-8") as handle:
+            completed = subprocess.run(
+                launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                env={**os.environ, **environment}, check=False,
+            )
+        text = log.read_text(encoding="utf-8")
     events = [
         {"direction": match.group(1).lower(), "label": match.group(2),
          "frame": int(match.group(3)), "pc": int(match.group(4), 16),

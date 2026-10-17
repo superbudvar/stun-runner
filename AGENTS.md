@@ -170,17 +170,40 @@ Each of these has already cost real time here.
     a tool's output is a count, a total, or a "N instructions" claim, check the
     count against the capture's own metadata before repeating it.
 
-12. **`tools/mame-memory-snapshot` used to leak input-port state between
-    runs.** MAME writes `stunrun.cfg` at exit including current DIP state, and
-    `-noreadconfig` does not stop the next run reading it. A run that toggles a
-    DIP — `service_probe` presses "Service Mode" on `:mainpcb:IN0` — silently
-    forced it off in every later run: main RAM stayed all-`0xFF`, the exit
-    status was still 0, and the tool reported success. A whole input-mode sweep
-    was corrupted this way and looked like clean null results. Fixed by giving
-    each run its own `-cfg_directory`; guarded by
-    `MameCfgIsolationTests`. If you add a capture tool, do not hardcode a
-    shared cfg path, and re-run a known-good capture after any run that touches
-    an input port. Findings §74.
+12. **MAME state is per-RUN, and `tools/mame_launch.py` is the only place that
+    is decided.** MAME writes `stunrun.cfg` at exit including current input-port
+    (DIP) state, and `-noreadconfig` does not stop the next run reading it —
+    that file is read and written through `options().cfg_directory()` and
+    nothing else (`src/emu/config.cpp`), so the two `-no*config` flags do not
+    control it at all. `tools/mame-memory-snapshot` used to leak input-port
+    state between runs: `service_probe` presses "Service Mode" on
+    `:mainpcb:IN0`, which silently forced that DIP off in every later run —
+    main RAM stayed all-`0xFF`, the exit status was still 0, and the tool
+    reported success. A whole input-mode sweep was corrupted this way and looked
+    like clean null results. Fixed by giving each run its own
+    `-cfg_directory` (`MameCfgIsolationTests`, findings §74).
+
+    The same defect was still live in **20 of the 27 launchers** when measured
+    at `a9a9776`: 12 Python tools carried a byte-identical
+    `"-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save"` line and 3
+    shell tools the same sequence in shell quoting; 22 named the literal at
+    all; 8 also shared `/tmp/stunrun-state-dir`; `-statename` appeared in only
+    10. Separately **18** passed `-nonvram_save` with no `-nvram_directory`
+    anywhere: in `src/emu/machine.cpp` that flag gates only the *write*
+    (`if (options().nvram_save()) nvram_save();`) while the read is
+    unconditional and served from `options().nvram_directory()`, so those runs
+    inherited `~/.mame/nvram/stunrun/` and produced a capture of exactly the
+    right size holding stale or zeroed bytes.
+
+    **Every MAME argv now comes from `mame_launch()`**: per-run cfg, nvram and
+    state directories made with `tempfile.mkdtemp` and removed in a `finally`,
+    on the exception path too — `/tmp` is ~92% full and disk-full has already
+    produced exit code 120 with *empty* output files. Do not hand-roll an argv
+    and do not hardcode a shared directory. `MameCfgIsolationTests` discovers
+    the launchers itself instead of from a list, and its controls break copies
+    of real tools to show it can fail; a guard that only looks where it already
+    looked is the same failure as the bug. If you add a capture tool, re-run a
+    known-good capture after any run that touches an input port.
 
 ---
 

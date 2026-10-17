@@ -25,7 +25,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
+from mame_launch import mame_launch
 
 
 EVENT = re.compile(
@@ -104,16 +106,7 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     log = args.output / "mame.log"
     last_frame = args.frames
-    seconds = max(2, (last_frame + 59) // 60 + 1)
     script = pathlib.Path(__file__).resolve().parents[1] / "mame/lua/adsp-som-transaction.lua"
-    command = [
-        str(mame), "-rompath", str(rompath), "stunrun", "-video", "none",
-        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save",
-        "-state_directory", "/tmp/stunrun-state-dir", "-statename", "%g",
-        "-debug", "-debugger", "none", "-nothrottle", "-seconds_to_run", str(seconds),
-        "-autoboot_script", str(script),
-    ]
     environment = {
         **os.environ,
         "STUNRUN_ADSP_TX_OUT": str(args.output.resolve()),
@@ -123,10 +116,16 @@ def main() -> int:
         "STUNRUN_ADSP_TX_MAX_EVENTS": str(args.max_events),
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
-    with log.open("w", encoding="utf-8") as handle:
-        completed = run_mame(command, env=environment, stdout=handle,
-                             stderr=-2, timeout=args.timeout)
-    text = log.read_text(encoding="utf-8", errors="replace")
+    # This tool passed a SHARED -state_directory as well as a shared
+    # -cfg_directory. Both are the trap-12 shape; the launcher gives each run
+    # its own of each, and the bound is unchanged.
+    with mame_launch(mame=mame, rompath=rompath, frames=last_frame,
+                     autoboot=script,
+                     extra=("-debug", "-debugger", "none", "-nothrottle")) as launch:
+        with log.open("w", encoding="utf-8") as handle:
+            completed = run_mame(launch.argv, env=environment, stdout=handle,
+                                 stderr=-2, timeout=args.timeout)
+        text = log.read_text(encoding="utf-8", errors="replace")
     lua_errors = find_lua_errors(text)
     check_lua_errors(text, log)
     done = DONE.findall(text)

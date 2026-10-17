@@ -19,7 +19,12 @@ import subprocess
 import sys
 import tempfile
 
-from process import run_mame
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "tools"))
+from mame_launch import mame_launch  # noqa: E402  (needs the sys.path lines above)
+
+from process import run_mame  # noqa: E402  (this directory is script-dir 0)
 
 LUA_SCRIPT = """
 -- mame_oracle.lua: drive MAME as a frame-accurate oracle for STUN Runner
@@ -192,48 +197,51 @@ def run_oracle(mame_path: str, roms_dir: str, outdir: str, frames: int = 600,
         f.write(lua_script)
         lua_path = f.name
 
+    # MAME passes args to lua via this env-var approach, but we bake them
+    # into the script above instead.
+    env = os.environ.copy()
+    env["MAME_ORACLE_FRAMES"] = str(frames)
+    env["MAME_ORACLE_OUTDIR"] = outdir
+
     try:
-        # MAME command:
-        #   -nodisp     : no display (headless)
-        #   -monitor    : dummy monitor (not needed for headless)
-        #   -throttle   : throttle to real time (disable for oracle)
-        #   -script     : run lua script file
-        cmd = [
-            mame_path,
-            "stunrun",
-            "-config", "none",           # no ini
-            "-once",                      # stop after attract/coin
-            "-waitnone",                  # no wait for input
-            "-rompath", roms_dir,
-            "-throttle",                  # throttle (keep frames deterministic)
-            "-script", lua_path,
-            # MAME passes args to lua via this env-var approach, but we bake them
-            # into the script above instead.
-        ]
+        # MAME command, through the shared launcher so this file cannot become
+        # the place an isolation flag is spelled a different way from the tools
+        # (AGENTS.md trap 12). It used to pass no -cfg_directory and no
+        # -nvram_directory at all, so a run read and rewrote the operator's
+        # ~/.mame/stunrun.cfg -- including current input-port (DIP) state --
+        # and inherited ~/.mame/nvram/stunrun/.
+        #
+        # The remaining flags are this module's own and are NOT verified: the
+        # Lua below is generated with str.format() on a string containing `{}`,
+        # which raises IndexError before MAME is ever spawned, and `-script`,
+        # `-once` and `-waitnone` are not how MAME 0.289 takes a script. This
+        # module is a stale prototype that nothing calls (see mame_oracle.sh's
+        # hardcoded, nonexistent $PROJECT_ROOT/mame-ref/mame); migrating its argv
+        # removes a shared-state exposure, it does not make the module work.
+        #
+        # `-seconds_to_run` is NEW: this module had no run bound at all, so a
+        # Lua that failed to reach its own exit would have run forever. The bound
+        # is frames//60 + 60 seconds, the same generous shape
+        # tools/mame-play-capture uses for a human session.
+        with mame_launch(mame=mame_path, rompath=roms_dir, seconds=frames // 60 + 60,
+                         extra=("-once", "-waitnone", "-throttle", "-script", lua_path)) as launch:
+            print(f"oracle: spawning MAME with {frames} frames...")
+            print(f"oracle: rompath={roms_dir}")
+            print(f"oracle: lua script:\n{lua_script[:200]}...")
 
-        # Also pass frame count and outdir via environment
-        env = os.environ.copy()
-        env["MAME_ORACLE_FRAMES"] = str(frames)
-        env["MAME_ORACLE_OUTDIR"] = outdir
+            result = run_mame(
+                launch.argv,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+            )
 
-        print(f"oracle: spawning MAME with {frames} frames...")
-        print(f"oracle: rompath={roms_dir}")
-        print(f"oracle: outdir={outdir}")
-        print(f"oracle: lua script:\n{lua_script[:200]}...")
-
-        result = run_mame(
-            cmd,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
-
-        print(f"oracle: MAME exit code = {result.returncode}")
-        if result.stdout:
-            print("stdout:", result.stdout[:2000])
-        if result.stderr:
-            print("stderr:", result.stderr[:2000])
+            print(f"oracle: MAME exit code = {result.returncode}")
+            if result.stdout:
+                print("stdout:", result.stdout[:2000])
+            if result.stderr:
+                print("stderr:", result.stderr[:2000])
 
     except subprocess.TimeoutExpired:
         print(f"oracle: TIMEOUT after {timeout}s", file=sys.stderr)

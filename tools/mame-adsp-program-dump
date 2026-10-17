@@ -12,7 +12,9 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors
+from mame_launch import mame_launch, seconds_for_frames
 
 
 WORD = re.compile(r"M3_ADSP_WORD address=([0-9A-Fa-f]+) value=([0-9A-Fa-f]+)")
@@ -30,23 +32,22 @@ def main() -> int:
         parser.error("--frame must be positive")
     args.output.mkdir(parents=True, exist_ok=True)
     log = args.output / "mame.log"
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
-        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save", "-seconds_to_run",
-        str(max(3, (args.frame + 59) // 60 + 1)), "-autoboot_script",
-        str(pathlib.Path(__file__).resolve().parents[1] / "mame/lua/adsp-program-dump.lua"),
-    ]
     environment = {
         **os.environ,
         "STUNRUN_ADSP_DUMP_FRAMES": str(args.frame),
         "STUNRUN_ADSP_DUMP_TARGET": str(args.frame),
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
-    with log.open("w", encoding="utf-8") as handle:
-        completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,
-                                   env=environment, check=False)
-    text = log.read_text(encoding="utf-8")
+    # max(3, ...) is this tool's own floor, not the shared max(2, ...); the two
+    # differ by one second below frame 61. See tools/mame_launch.py.
+    with mame_launch(mame=args.mame, rompath=args.rompath,
+                     seconds=max(3, seconds_for_frames(args.frame)),
+                     autoboot=pathlib.Path(__file__).resolve().parents[1]
+                     / "mame/lua/adsp-program-dump.lua") as launch:
+        with log.open("w", encoding="utf-8") as handle:
+            completed = subprocess.run(launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                                       env=environment, check=False)
+        text = log.read_text(encoding="utf-8")
     words = {int(match.group(1), 16): int(match.group(2), 16)
              for match in WORD.finditer(text)}
     dumps = DUMP.findall(text)

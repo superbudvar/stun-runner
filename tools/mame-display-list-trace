@@ -12,7 +12,9 @@ import sys
 import subprocess
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
+from mame_launch import mame_launch
 
 
 CALL = re.compile(
@@ -271,20 +273,6 @@ def main() -> int:
 
     args.output.mkdir(parents=True, exist_ok=True)
     log = args.output / "mame.log"
-    cfg_directory = args.output / "mame-config"
-    nvram_directory = args.output / "mame-nvram"
-    cfg_directory.mkdir(parents=True, exist_ok=True)
-    nvram_directory.mkdir(parents=True, exist_ok=True)
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
-        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", str(cfg_directory), "-nvram_directory", str(nvram_directory),
-        "-nonvram_save", "-debug",
-        "-debugger", "none", "-seconds_to_run",
-        str(max(2, (args.frames + 59) // 60 + 1)), "-autoboot_script",
-        str(pathlib.Path(__file__).resolve().parents[1] /
-            "mame/lua/display-list-trace.lua"),
-    ]
     environment = {
         **os.environ,
         "STUNRUN_GSP_DL_TRACE_OUT": str(args.output),
@@ -297,11 +285,18 @@ def main() -> int:
         "STUNRUN_GSP_DL_TRACE_MAX_FIFO": str(args.max_fifo_words),
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
-    with log.open("w", encoding="utf-8") as handle:
-        completed = run_mame(command, stdout=handle, stderr=subprocess.STDOUT,
-                             env=environment,
-                             timeout=max(30, args.frames / 10 + 30))
-    text = log.read_text(encoding="utf-8")
+    # cfg, nvram and state get a fresh per-run directory from
+    # tools/mame_launch.py. This tool used `<output>/mame-config` and
+    # `<output>/mame-nvram`, which are per-CAPTURE rather than per-RUN.
+    with mame_launch(mame=args.mame, rompath=args.rompath, frames=args.frames,
+                     autoboot=pathlib.Path(__file__).resolve().parents[1]
+                     / "mame/lua/display-list-trace.lua",
+                     extra=("-debug", "-debugger", "none")) as launch:
+        with log.open("w", encoding="utf-8") as handle:
+            completed = run_mame(launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                                 env=environment,
+                                 timeout=max(30, args.frames / 10 + 30))
+        text = log.read_text(encoding="utf-8")
     lua_errors = find_lua_errors(text)
     parsed = parse_log(text)
     calls = parsed["calls"]

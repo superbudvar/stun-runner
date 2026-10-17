@@ -697,10 +697,10 @@ def run_mame_oracle(rompath: pathlib.Path, mame: pathlib.Path, frame: int,
         "returncode": completed.returncode,
         "log": str(log_path),
         "captured": str(screen),
-        "note": "tools/mame-gsp-state-snapshot passes -cfg_directory "
-                "/tmp/stunrun-mame-cfg. This run uses --input none, so it "
-                "touches no input port and cannot leak DIP state into a later "
-                "run (AGENTS.md trap 10).",
+        "note": "tools/mame-gsp-state-snapshot gets a fresh per-run cfg and "
+                "nvram directory from tools/mame_launch.py, so no input-port "
+                "state can be inherited from an earlier run (AGENTS.md trap 12). "
+                "This run uses --input none as well.",
         "_path": screen,
     }
 

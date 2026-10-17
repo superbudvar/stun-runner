@@ -1,14 +1,18 @@
 import json
 import hashlib
 import pathlib
+import re
+import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import unittest
 import zlib
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
 
 
 class PublicToolTests(unittest.TestCase):
@@ -629,7 +633,13 @@ class PublicToolTests(unittest.TestCase):
     def test_memory_snapshot_exposes_isolated_nvram_directory(self):
         tool = (ROOT / "tools" / "mame-memory-snapshot").read_text()
         self.assertIn("--nvram-directory", tool)
-        self.assertIn("-nvram_directory", tool)
+        # The flag itself now lives in tools/mame_launch.py, which emits it
+        # unconditionally. Asserting the literal in the wrapper would have
+        # failed the moment the wrapper stopped hand-rolling the argv, which is
+        # the whole point of the launcher -- so the property is asserted here
+        # and the spelling is asserted in MameLauncherBehaviourTests.
+        self.assertTrue(routes_through_launcher(ROOT / "tools" / "mame-memory-snapshot"))
+        self.assertEqual(shared_state_literals(ROOT / "tools" / "mame-memory-snapshot"), [])
         self.assertIn('"nvram_directory"', tool)
 
     def test_gsp_state_snapshot_can_pair_screen_output(self):
@@ -703,11 +713,20 @@ class PublicToolTests(unittest.TestCase):
         # -nonvram_save stops MAME writing NVRAM but not loading it, so a run
         # without an explicit directory inherits ~/.mame/nvram/stunrun/ and the
         # share reads as 262144 zero words at the correct size.
-        tool = (ROOT / "tools" / "mame-gsp-vram-dump").read_text(encoding="utf-8")
-        self.assertIn('"-nvram_directory"', tool)
-        self.assertIn('"-cfg_directory"', tool)
-        self.assertNotIn('"/tmp/stunrun-mame-cfg"', tool)
-        self.assertIn("mame-state", tool)
+        #
+        # The directory used to be `<output>/mame-state`, which is per-CAPTURE
+        # rather than per-RUN: two runs into one output directory still shared
+        # it. It is now supplied by tools/mame_launch.py, so the assertion is
+        # that the wrapper delegates and that nothing in it can reintroduce a
+        # fixed path.
+        tool = ROOT / "tools" / "mame-gsp-vram-dump"
+        self.assertTrue(routes_through_launcher(tool))
+        self.assertEqual(shared_state_literals(tool), [])
+        source = tool.read_text(encoding="utf-8")
+        self.assertNotIn('"/tmp/stunrun-mame-cfg"', source)
+        # The staged --load-state slot stays under <output>/mame-state, because
+        # that one is an input the operator staged and may want to look at.
+        self.assertIn("mame-state", source)
 
     def test_gsp_vram_dump_agrees_with_state_snapshot_input_modes(self):
         wrapper = (ROOT / "tools" / "mame-gsp-vram-dump").read_text(encoding="utf-8")
@@ -1415,11 +1434,12 @@ class PublicToolTests(unittest.TestCase):
     def test_mirror_probe_always_sets_an_nvram_directory(self):
         # Same trap as mame-gsp-vram-dump: -nonvram_save stops MAME writing
         # NVRAM but not loading it, so an unpinned directory silently
-        # contaminates the machine state under measurement.
-        tool = (ROOT / "tools" / "mame-gsp-mirror-probe").read_text(encoding="utf-8")
-        self.assertIn('"-nvram_directory"', tool)
-        self.assertIn('"-cfg_directory"', tool)
-        self.assertNotIn('"/tmp/stunrun-mame-cfg"', tool)
+        # contaminates the machine state under measurement. The flag now comes
+        # from tools/mame_launch.py, which emits it unconditionally; the
+        # wrapper-level assertion is that it delegates and carries no literal.
+        tool = ROOT / "tools" / "mame-gsp-mirror-probe"
+        self.assertTrue(routes_through_launcher(tool))
+        self.assertEqual(shared_state_literals(tool), [])
 
     def test_mirror_probe_fails_when_the_probe_did_not_run(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -1852,8 +1872,25 @@ class AdspSomFixtureCheckTests(unittest.TestCase):
         self.assertIn("missing", r.stderr)
 
 
+# The MAME-launcher discovery and checks live in tests/mame_launch_guards.py
+# so tests/test_mame_trace_wrapper.py can use the same ones; see that module
+# for what the guard does and does not cover.
+from mame_launch_guards import (  # noqa: E402
+    MAME_LAUNCH_ALLOWLIST,
+    MAME_LAUNCH_MODULE,
+    MAME_META_TOOLS,
+    _live_source,
+    _python_heredocs,
+    discover_mame_launching_tools,
+    imports_the_launcher,
+    launcher_binding_is_used,
+    routes_through_launcher,
+    shared_state_literals,
+)
+
+
 class MameCfgIsolationTests(unittest.TestCase):
-    """tools/mame-memory-snapshot must not share a cfg directory between runs.
+    """No MAME-launching tool may share emulator state with another run.
 
     MAME writes stunrun.cfg at exit including current input-port (DIP) state,
     and -noreadconfig does not prevent the next run reading it back. With one
@@ -1864,38 +1901,514 @@ class MameCfgIsolationTests(unittest.TestCase):
     capture returned nonzero=1536 (all 0xFF) after contamination and nonzero=1262
     after the cfg was deleted. See findings section 74.
 
-    These are source-level guards because the bug needs a real MAME run to
-    reproduce, and the public suite is ROM-free by rule.
+    `-nonvram_save` is the second half of the same hazard and fails just as
+    quietly: in the pinned MAME, `machine.cpp` gates only the WRITE
+    (`if (options().nvram_save()) nvram_save();`) while the read is
+    unconditional and is served from `options().nvram_directory()`. Eighteen
+    tools passed `-nonvram_save` with no `-nvram_directory` anywhere in the
+    file, so they inherited `~/.mame/nvram/stunrun/` and produced a capture of
+    exactly the right size holding stale or zeroed bytes.
+
+    WHY THIS CLASS LOOKS THE WAY IT DOES. Its previous version inspected
+    exactly one tool -- the one whose bug had been reported -- so it stayed
+    green while twenty others carried the same defect. That is the failure this
+    rewrite exists to prevent, which is why the tool set is DISCOVERED here and
+    why the controls below deliberately break a copy of a real tool and require
+    this class's own checker to notice. A guard that can only pass is not a
+    guard.
+
+    These are source-level checks because the bug needs a real MAME run to
+    reproduce, and the public suite is ROM-free by rule. The launcher's own
+    behaviour (per-run directories, the frames->seconds bound, cleanup on the
+    error path) is covered by MameLauncherBehaviourTests below.
     """
 
-    TOOL = ROOT / "tools" / "mame-memory-snapshot"
+    TOOLS = ROOT / "tools"
+
+    # ---- discovery --------------------------------------------------------
 
     def test_tool_exists(self):
-        self.assertTrue(self.TOOL.is_file())
+        self.assertTrue((self.TOOLS / "mame-memory-snapshot").is_file())
 
-    def test_cfg_directory_is_not_a_shared_hardcoded_path(self):
-        """A fixed -cfg_directory is the bug itself; it must be unique per run."""
-        text = self.TOOL.read_text()
-        offenders = [
-            line.strip() for line in text.splitlines()
-            if "-cfg_directory" in line and "/tmp/stunrun-mame-cfg" in line
-        ]
-        self.assertEqual(
-            offenders, [],
-            "cfg directory must not be a shared fixed path: %s" % offenders)
+    def test_discovery_finds_the_launchers(self):
+        """Discovery must not silently shrink to nothing.
 
-    def test_cfg_directory_is_created_per_run(self):
-        text = self.TOOL.read_text()
-        self.assertIn("tempfile.mkdtemp(prefix=", text,
-                      "cfg directory must be created uniquely per invocation")
-        self.assertIn('"cfg_directory": str(cfg_directory)', text,
-                      "result must record the cfg directory for provenance")
-        self.assertIn('"cfg_directory_isolated": True', text)
+        A checker that returns an empty list passes every per-tool assertion
+        below, so the size of the set is itself asserted. 27 is the measured
+        count at this revision; the floor is 25 so a single tool that changes
+        shape cannot turn the guard off.
+        """
+        found = discover_mame_launching_tools(self.TOOLS)
+        self.assertGreaterEqual(
+            len(found), 25,
+            "discovery found only %d tools: %s"
+            % (len(found), [path.name for path in found]))
+        self.assertIn(self.TOOLS / "mame-ram-write-trace", found)
+        self.assertIn(self.TOOLS / "mame-trace", found)
+        self.assertIn(self.TOOLS / "mame-listings", found)
+        # tools/analyze-track-tables resolves a ROM directory and spawns
+        # nothing; it must not be swept in by a loose rule.
+        self.assertNotIn(self.TOOLS / "analyze-track-tables", found)
 
-    def test_cfg_directory_is_cleaned_up(self):
-        text = self.TOOL.read_text()
-        self.assertIn("shutil.rmtree(cfg_directory, ignore_errors=True)", text,
-                      "per-run cfg directory must be removed in the finally block")
+    def test_allowlist_is_not_stale(self):
+        """Every allowlist entry must still be discovered, or it is dead weight."""
+        discovered = {path.name for path in discover_mame_launching_tools(self.TOOLS)}
+        stale = sorted(set(MAME_LAUNCH_ALLOWLIST) - discovered)
+        self.assertEqual(stale, [],
+                         "allowlist names tools discovery no longer finds: %s" % stale)
+
+    def test_allowlist_entries_are_justified(self):
+        for name, reason in MAME_LAUNCH_ALLOWLIST.items():
+            with self.subTest(tool=name):
+                self.assertGreater(len(reason), 40,
+                                   "an allowlist entry needs a real reason")
+
+    def test_meta_tools_delegate_to_a_covered_launcher(self):
+        """A tool that spawns a tool inherits its isolation only if it is covered."""
+        discovered = {path.name for path in discover_mame_launching_tools(self.TOOLS)}
+        for name, delegate in MAME_META_TOOLS.items():
+            with self.subTest(tool=name):
+                self.assertTrue((self.TOOLS / name).is_file())
+                self.assertTrue((self.TOOLS / delegate).is_file())
+                self.assertIn(delegate, discovered,
+                              f"{name}'s delegate is not covered by this guard")
+                self.assertTrue(
+                    routes_through_launcher(self.TOOLS / delegate),
+                    f"{name} inherits isolation from {delegate}, but {delegate} "
+                    f"does not route through mame_launch")
+
+    # ---- the two rules ----------------------------------------------------
+
+    def test_every_launcher_routes_through_the_shared_launcher(self):
+        for path in discover_mame_launching_tools(self.TOOLS):
+            if path.name in MAME_LAUNCH_ALLOWLIST:
+                continue
+            with self.subTest(tool=path.name):
+                self.assertTrue(
+                    routes_through_launcher(path),
+                    f"{path.name} builds its own MAME argv; it must call "
+                    f"mame_launch() from tools/mame_launch.py so the cfg, "
+                    f"nvram and state directories cannot be shared")
+
+    def test_no_launcher_carries_a_literal_shared_state_path(self):
+        for path in discover_mame_launching_tools(self.TOOLS):
+            with self.subTest(tool=path.name):
+                offenders = shared_state_literals(path)
+                self.assertEqual(
+                    offenders, [],
+                    "%s names a fixed /tmp path in executable source; MAME state "
+                    "directories must be created per run" % path.name)
+
+    def test_launcher_is_the_only_place_the_directories_are_created(self):
+        """`mkdtemp` for cfg/nvram belongs to the launcher, not to a tool.
+
+        A tool that makes its own cfg directory has re-introduced the decision
+        the launcher exists to hold, even though its path happens to be unique.
+        """
+        for path in discover_mame_launching_tools(self.TOOLS):
+            if path.name in MAME_LAUNCH_ALLOWLIST:
+                continue
+            with self.subTest(tool=path.name):
+                code = _live_source(path)
+                for marker in ('"stunrun-cfg', '"stunrun-nvram',
+                               "stunrun-mame-cfg", "stunrun-state-dir"):
+                    self.assertNotIn(marker, code,
+                                     f"{path.name} names its own cfg/nvram "
+                                     f"directory ({marker})")
+
+    def test_every_launcher_uses_the_binding_it_asked_for(self):
+        """`as launch` has to survive the edit that produced the call.
+
+        Dropping `as launch` while the body still reads `launch.argv` compiles,
+        parses, routes through the launcher, and raises NameError only when a
+        human runs it. That is exactly what happened to
+        tools/mame-adsp-init-listing during this migration.
+        """
+        for path in discover_mame_launching_tools(self.TOOLS):
+            if path.name in MAME_LAUNCH_ALLOWLIST:
+                continue
+            with self.subTest(tool=path.name):
+                self.assertTrue(
+                    launcher_binding_is_used(path),
+                    f"{path.name} binds the launcher but never reads it")
+
+    def test_guard_notices_a_dropped_launcher_binding(self):
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-guard-"))
+        self.addCleanup(_remove_tree, directory)
+        target = directory / "mame-dropped-binding"
+        target.write_text(
+            "#!/usr/bin/env python3\n"
+            '"""Bound but unread."""\n'
+            "MACHINE = 'stunrun'\n"
+            "from mame_launch import mame_launch\n"
+            "with mame_launch(mame=mame, rompath=roms, frames=600):\n"
+            "    run(launch.argv)\n", encoding="utf-8")
+        target.chmod(0o755)
+        self.assertTrue(routes_through_launcher(target))
+        self.assertFalse(launcher_binding_is_used(target))
+
+    def test_every_launcher_imports_the_launcher(self):
+        """A call to a name that was never imported fails on the first run only.
+
+        This is not hypothetical: tools/mame-gsp-vram-dump reached
+        `mame_launch(...)` without importing it during this migration, and every
+        other check in this class still passed -- the call is there, the
+        isolation flags are all emitted by the launcher, and there is no shared
+        path. Only running the tool with a stub emulator found it.
+        """
+        for path in discover_mame_launching_tools(self.TOOLS):
+            if path.name in MAME_LAUNCH_ALLOWLIST:
+                continue
+            with self.subTest(tool=path.name):
+                self.assertTrue(
+                    imports_the_launcher(path),
+                    f"{path.name} calls mame_launch but never imports it")
+
+    def test_guard_notices_a_call_with_no_import(self):
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-guard-"))
+        self.addCleanup(_remove_tree, directory)
+        target = directory / "mame-no-import"
+        target.write_text(
+            "#!/usr/bin/env python3\n"
+            '"""Calls it without importing it."""\n'
+            "MACHINE = 'stunrun'\n"
+            "with mame_launch(mame=mame, rompath=roms, frames=600) as launch:\n"
+            "    run(launch.argv)\n", encoding="utf-8")
+        target.chmod(0o755)
+        self.assertTrue(routes_through_launcher(target))
+        self.assertTrue(launcher_binding_is_used(target))
+        self.assertFalse(imports_the_launcher(target))
+
+    # ---- controls: the guard must be able to fail --------------------------
+
+    def _copy_into_temp(self, name):
+        """A writable copy of a real launcher, with nothing else beside it."""
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-guard-"))
+        self.addCleanup(_remove_tree, directory)
+        target = directory / name
+        target.write_text((self.TOOLS / name).read_text(encoding="utf-8"),
+                          encoding="utf-8")
+        target.chmod(0o755)
+        return directory, target
+
+    def test_guard_notices_a_tool_that_reintroduces_a_shared_cfg_path(self):
+        """A real tool, mutated to point at a fixed directory again.
+
+        The mutation keeps the launcher call, so it isolates the SECOND rule:
+        routing through the launcher does not excuse a literal path.
+        """
+        directory, target = self._copy_into_temp("mame-ram-write-trace")
+        broken = target.read_text(encoding="utf-8").replace(
+            "run_mame(launch.argv", 'run_mame(["/tmp/stunrun-mame-cfg", "stunrun"]', 1)
+        self.assertNotEqual(broken, target.read_text(encoding="utf-8"),
+                            "the control did not actually break the tool")
+        target.write_text(broken, encoding="utf-8")
+
+        self.assertIn(target, discover_mame_launching_tools(directory),
+                      "a broken copy must still be discovered, or the next "
+                      "assertion is testing nothing")
+        self.assertTrue(routes_through_launcher(target),
+                        "the control was supposed to keep using the launcher")
+        self.assertTrue(shared_state_literals(target),
+                        "a fixed /tmp cfg path must be reported")
+
+    def test_guard_notices_a_real_tool_that_stops_using_the_launcher(self):
+        """This repository's OWN pre-migration tools, replayed as input.
+
+        Synthetic fixtures prove the checker reacts to a shape. This proves it
+        reacts to the actual defect: the sources at a9a9776 are exactly what
+        twenty tools looked like while this guard was green, so if the checker
+        waves them through then the guard is the same guard that failed before,
+        with more words around it.
+        """
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-guard-"))
+        self.addCleanup(_remove_tree, directory)
+        # Two different shapes: a Python wrapper that hand-rolled the argv, and
+        # a shell wrapper that did the same in a plain command line.
+        wanted = ("tools/mame-sound-boundary", "tools/mame-trace")
+        checked = 0
+        for name in wanted:
+            source = subprocess.run(
+                ["git", "-C", str(ROOT), "show", "a9a9776:" + name],
+                capture_output=True, text=True, check=False)
+            if source.returncode != 0:
+                self.skipTest(f"git cannot show a9a9776:{name}")
+            target = directory / pathlib.Path(name).name
+            target.write_text(source.stdout, encoding="utf-8")
+            target.chmod(0o755)
+            checked += 1
+            with self.subTest(tool=name):
+                self.assertIn(target, discover_mame_launching_tools(directory),
+                              f"{name} as it was before the migration is not "
+                              f"even discovered")
+                self.assertFalse(
+                    routes_through_launcher(target),
+                    f"{name} as it was before the migration hand-rolled its argv "
+                    f"and the guard did not notice")
+                self.assertTrue(
+                    shared_state_literals(target),
+                    f"{name} as it was before the migration carried a shared "
+                    f"/tmp path and the guard did not notice")
+        self.assertEqual(checked, len(wanted))
+
+    def test_guard_notices_a_tool_that_hand_rolls_the_argv_again(self):
+        """A tool that never calls mame_launch, but still names the machine."""
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-guard-"))
+        self.addCleanup(_remove_tree, directory)
+        target = directory / "mame-new-capture"
+        target.write_text(
+            "#!/usr/bin/env python3\n"
+            '"""A brand new tool."""\n'
+            "import subprocess\n"
+            "command = [mame, '-rompath', roms, 'stunrun', '-video', 'none',\n"
+            "           '-cfg_directory', '/tmp/stunrun-mame-cfg']\n"
+            "subprocess.run(command)\n", encoding="utf-8")
+        target.chmod(0o755)
+
+        self.assertIn(target, discover_mame_launching_tools(directory))
+        self.assertFalse(routes_through_launcher(target))
+        self.assertTrue(shared_state_literals(target))
+
+    def test_guard_stays_quiet_on_a_docstring_mentioning_the_old_path(self):
+        """Comments and docstrings record WHY a literal was retired.
+
+        If they counted, this guard would fail on the tools that correctly
+        explain their own history, and the cheapest fix would be to delete the
+        explanation.
+        """
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-guard-"))
+        self.addCleanup(_remove_tree, directory)
+        target = directory / "mame-history"
+        target.write_text(
+            "#!/usr/bin/env python3\n"
+            '"""This tool used to pass /tmp/stunrun-mame-cfg; see findings 74.\n\n'
+            "    tools/mame-gsp-vram-dump roms /tmp/stunrun-oracle\n"
+            '    """\n'
+            "MACHINE = 'stunrun'\n"
+            "from mame_launch import mame_launch\n"
+            "with mame_launch(mame=mame, rompath=roms, frames=600):\n"
+            "    pass  # and /tmp/stunrun-state-dir here too\n", encoding="utf-8")
+        target.chmod(0o755)
+
+        self.assertIn(target, discover_mame_launching_tools(directory))
+        self.assertTrue(routes_through_launcher(target))
+        self.assertEqual(shared_state_literals(target), [])
+
+    def test_guard_notices_a_shared_path_hidden_in_a_plain_string(self):
+        """A prose string is not a docstring, so a path in one still counts."""
+        directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-guard-"))
+        self.addCleanup(_remove_tree, directory)
+        target = directory / "mame-note"
+        target.write_text(
+            "#!/usr/bin/env python3\n"
+            '"""Clean."""\n'
+            "MACHINE = 'stunrun'\n"
+            "from mame_launch import mame_launch\n"
+            "NOTE = 'cfg lives in /tmp/stunrun-mame-cfg'\n"
+            "with mame_launch(mame=mame, rompath=roms, frames=600):\n"
+            "    pass\n", encoding="utf-8")
+        target.chmod(0o755)
+
+        self.assertTrue(shared_state_literals(target))
+
+
+class MameLauncherBehaviourTests(unittest.TestCase):
+    """tools/mame_launch.py: the argv, the bound, and cleanup on both paths.
+
+    Source-level guards cannot show that the directories are removed when the
+    `with` body raises, which is the half that matters on this machine: /tmp is
+    around 92% full and a full disk has already produced exit code 120 with
+    EMPTY output files, which reads exactly like a clean null result.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "tools"))
+        cls.launch = __import__("mame_launch")
+        cls.Launch = cls.launch.Launch
+
+    # ---- the frames -> seconds bound --------------------------------------
+
+    def test_frames_bound_is_the_arithmetic_the_tools_spelled_out(self):
+        # max(3, seconds_for_frames(n)) is what tools/mame-adsp-init-listing,
+        # tools/mame-adsp-program-dump and tools/mame-replacement-image now
+        # write; the two forms must agree for every frame count, because the
+        # bound decides whether a capture collected everything it was asked for.
+        for frames in list(range(1, 400)) + [600, 1200, 2400, 4800]:
+            self.assertEqual(
+                max(3, self.launch.seconds_for_frames(frames)),
+                max(3, (frames + 59) // 60 + 1),
+                f"bound changed at {frames} frames")
+
+    def test_mame_traces_own_bash_bound_still_agrees(self):
+        """tools/mame-trace computes its -seconds_to_run in bash, not in Python.
+
+        It keeps `$(( (frames + 59) / 60 + 1 ))` because the shell wrapper has
+        to pass a number to its embedded python before the launcher is reached.
+        That is the same value as `seconds_for_frames`, and it has to stay so:
+        a trace whose wall bound silently changed would compare against
+        recordings made under a different one.
+        """
+        import importlib.util as util
+        spec = util.spec_from_file_location(
+            "mame_launch_under_test",
+            ROOT / "tools" / "mame_launch.py")
+        module = util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for frames in list(range(1, 400)) + [600, 1200, 2400]:
+            bash = (frames + 59) // 60 + 1     # bash $(( )) floors, as Python //
+            self.assertEqual(module.seconds_for_frames(frames), bash,
+                             f"mame-trace's bound diverges at {frames} frames")
+
+    def test_frames_bound_never_drops_below_two_seconds(self):
+        for frames in (1, 2, 30, 60):
+            self.assertGreaterEqual(self.launch.seconds_for_frames(frames), 2)
+
+    def test_a_run_bound_is_required(self):
+        with self.assertRaises(ValueError):
+            with self.launch.mame_launch(mame="mame", rompath="roms"):
+                pass
+
+    # ---- the argv ---------------------------------------------------------
+
+    def _argv(self, **kwargs):
+        kwargs.setdefault("mame", "mame")
+        kwargs.setdefault("rompath", "roms")
+        kwargs.setdefault("frames", 600)
+        with self.launch.mame_launch(**kwargs) as launch:
+            return list(launch.argv)
+
+    def test_isolation_flags_are_always_present(self):
+        argv = self._argv()
+        for flag in ("-noreadconfig", "-nowriteconfig", "-skip_gameinfo",
+                     "-nonvram_save", "-cfg_directory", "-nvram_directory",
+                     "-state_directory", "-statename", "-sound", "-video",
+                     "-seconds_to_run", "-rompath", "stunrun"):
+            self.assertIn(flag, argv, f"{flag} missing from the argv")
+
+    def test_cfg_and_nvram_are_per_run_and_distinct_from_each_other(self):
+        with self.launch.mame_launch(mame="mame", rompath="roms", frames=600) as launch:
+            self.assertTrue(launch.cfg_directory.is_dir())
+            self.assertTrue(launch.nvram_directory.is_dir())
+            self.assertNotEqual(launch.cfg_directory, launch.nvram_directory)
+            self.assertTrue(str(launch.cfg_directory).startswith(
+                str(pathlib.Path(tempfile.gettempdir()))))
+
+    def test_two_runs_never_share_a_directory(self):
+        with self.launch.mame_launch(mame="mame", rompath="roms", frames=600) as first, \
+             self.launch.mame_launch(mame="mame", rompath="roms", frames=600) as second:
+            self.assertNotEqual(first.cfg_directory, second.cfg_directory)
+            self.assertNotEqual(first.nvram_directory, second.nvram_directory)
+            self.assertNotEqual(first.state_directory, second.state_directory)
+
+    def test_an_explicit_nvram_directory_is_kept_and_saving_is_allowed(self):
+        """The one deliberate escape: a store the caller owns and wants kept."""
+        with tempfile.TemporaryDirectory() as directory:
+            store = pathlib.Path(directory) / "nvram"
+            argv = self._argv(nvram_directory=store)
+            self.assertIn("-nvram_directory", argv)
+            self.assertEqual(argv[argv.index("-nvram_directory") + 1], str(store))
+            # A store the caller wants to keep needs MAME able to write it.
+            self.assertNotIn("-nonvram_save", argv)
+
+    def test_playback_drops_only_the_three_flags_it_conflicts_with(self):
+        with tempfile.TemporaryDirectory() as directory:
+            recording = pathlib.Path(directory) / "run.inp"
+            recording.write_bytes(b"")
+            argv = self._argv(playback=recording)
+            for flag in ("-noreadconfig", "-nowriteconfig", "-nonvram_save"):
+                self.assertNotIn(flag, argv, f"{flag} should go for playback")
+            self.assertIn("-playback", argv)
+            self.assertEqual(argv[argv.index("-playback") + 1], "run.inp")
+            self.assertEqual(argv[argv.index("-input_directory") + 1], directory)
+            # The cfg directory is the DIP leak. It stays, and it stays unique,
+            # even on the playback path.
+            self.assertIn("-cfg_directory", argv)
+            self.assertIn("-nvram_directory", argv)
+
+    def test_playback_never_leaves_a_bare_path_in_the_argv(self):
+        """mame-ram-read-trace and mame-rom-read-trace used to do exactly this.
+
+        They removed the `-cfg_directory` token from the argv list and left its
+        path value behind as a positional argument, which MAME reads as a
+        second machine name. The directory therefore appeared TWICE: once as an
+        orphan and once, correctly, as `-input_directory`'s value.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            recording = pathlib.Path(directory) / "run.inp"
+            recording.write_bytes(b"")
+            argv = self._argv(playback=recording)
+            self.assertEqual(argv.count(directory), 1,
+                             "the input directory appears more than once, so an "
+                             "option value is sitting in the argv unclaimed")
+            self.assertEqual(argv[argv.index("-input_directory") + 1], directory)
+
+    def test_extra_is_appended_after_the_isolation_flags(self):
+        extra = ("-debug", "-debugger", "none", "-nothrottle")
+        argv = self._argv(extra=extra)
+        self.assertEqual(argv[-len(extra):], list(extra))
+        self.assertLess(argv.index("-cfg_directory"), len(argv) - len(extra),
+                        "extra must not be able to displace the isolation flags")
+
+    def test_video_is_overridable_for_the_tools_that_render(self):
+        self.assertIn("soft", self._argv(video="soft"))
+        self.assertIn("none", self._argv())
+
+    # ---- cleanup ----------------------------------------------------------
+
+    def test_directories_are_removed_on_the_success_path(self):
+        with self.launch.mame_launch(mame="mame", rompath="roms", frames=600) as launch:
+            kept = (launch.cfg_directory, launch.nvram_directory,
+                    launch.state_directory)
+            for path in kept:
+                self.assertTrue(path.is_dir())
+        for path in kept:
+            self.assertFalse(path.exists(), f"{path} outlived the block")
+
+    def test_directories_are_removed_when_the_body_raises(self):
+        """Both exception kinds the wrappers actually raise.
+
+        `check_lua_errors` raises SystemExit, which is a BaseException and not
+        an Exception; a `finally` written against Exception would leak a
+        directory on the path that matters most.
+        """
+        for raised in (RuntimeError("mame failed"), SystemExit("observer died")):
+            with self.subTest(exception=type(raised).__name__):
+                kept = {}
+                with self.assertRaises(type(raised)):
+                    with self.launch.mame_launch(mame="mame", rompath="roms",
+                                                 frames=600) as launch:
+                        kept = {"cfg": launch.cfg_directory,
+                                "nvram": launch.nvram_directory,
+                                "state": launch.state_directory}
+                        raise raised
+                for name, path in kept.items():
+                    self.assertFalse(path.exists(),
+                                     f"{name} directory {path} outlived a "
+                                     f"failed run")
+
+    def test_a_caller_owned_state_directory_is_not_removed(self):
+        """--load-state stages the slot; the caller owns and removes it."""
+        with tempfile.TemporaryDirectory() as directory:
+            staged = pathlib.Path(directory) / "states"
+            (staged / "stunrun").mkdir(parents=True)
+            (staged / "stunrun" / "1.sta").write_bytes(b"slot")
+            with self.launch.mame_launch(mame="mame", rompath="roms", frames=600,
+                                         state_directory=staged):
+                pass
+            self.assertTrue((staged / "stunrun" / "1.sta").is_file())
+
+    def test_cleanup_also_removes_what_mame_wrote(self):
+        with self.launch.mame_launch(mame="mame", rompath="roms", frames=600) as launch:
+            # What MAME writes at exit, which is the whole point of the file.
+            (launch.cfg_directory / "stunrun.cfg").write_text("<game/>")
+            (launch.nvram_directory / "stunrun").mkdir()
+            cfg = launch.cfg_directory
+        self.assertFalse(cfg.exists())
+
+
+def _remove_tree(path):
+    shutil.rmtree(path, ignore_errors=True)
 
 
 class GeometryFixtureCommittabilityTests(unittest.TestCase):

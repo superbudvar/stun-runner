@@ -31,12 +31,18 @@ class MameProcessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_snapshot_exposes_windowed_mode(self):
-        tool = (ROOT / "tools" / "mame-gsp-state-snapshot").read_text(encoding="utf-8")
-        self.assertIn("--windowed", tool)
-        self.assertIn('video_args = ["-video", "sdl", "-window"]', tool)
-        self.assertIn("--screen-dir", tool)
-        self.assertIn("--isolated-display", tool)
-        self.assertIn('"service"', tool)
+        # The windowed video flags are now supplied to tools/mame_launch.py
+        # rather than spelled out here, so the assertion is that the tool still
+        # offers the mode and still asks for a real video driver and a window
+        # when it is selected.
+        tool = ROOT / "tools" / "mame-gsp-state-snapshot"
+        source = tool.read_text(encoding="utf-8")
+        self.assertIn("--windowed", source)
+        self.assertIn('video="sdl" if args.windowed else "none"', source)
+        self.assertIn('("-window",) if args.windowed', source)
+        self.assertIn("--screen-dir", source)
+        self.assertIn("--isolated-display", source)
+        self.assertIn('"service"', source)
 
 
 if __name__ == "__main__":

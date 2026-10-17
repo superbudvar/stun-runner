@@ -43,8 +43,19 @@ case "$cpu" in
 esac
 
 trace="$output/$id.trace"
+# The MAME invocation goes through tools/mame_launch.py so this shell wrapper
+# cannot be the place an isolation flag is spelled a seventh way. The wrapper
+# has no Python of its own, so it calls python3 once. cfg/nvram/state get a
+# fresh per-run directory from the launcher, which is what stops one run reading
+# the previous run's stunrun.cfg (AGENTS.md trap 12); the staged load-state
+# directory stays caller-owned and is removed by the EXIT trap below.
+#
+# `seconds_to_run` keeps this tool's own bound, $(( (frames + 59) / 60 + 1 )),
+# which equals mame_launch.seconds_for_frames(frames): bash integer division
+# floors exactly as Python's // does, and the max(2, ...) clamp is redundant
+# for frames >= 1. With --load-state it is 86400, because the observers count
+# RELATIVE frames and a pre-advanced state needs an effectively unbounded run.
 state_directory=
-state_args=()
 seconds_to_run=$(( (frames + 59) / 60 + 1 ))
 if [[ -n "$load_state" ]]; then
     state_directory=$(mktemp -d /tmp/stunrun-trace-state.XXXXXX)
@@ -55,15 +66,7 @@ if [[ -n "$load_state" ]]; then
         rmdir "$state_directory/stunrun" "$state_directory" 2>/dev/null || true
     }
     trap cleanup_state EXIT
-    state_args=(-state_directory "$state_directory" -statename %g -state 1)
     seconds_to_run=86400
-fi
-playback_args=()
-config_args=(-noreadconfig -nowriteconfig -cfg_directory /tmp/stunrun-mame-cfg -nonvram_save)
-if [[ -n "$playback" ]]; then
-    playback_dir=$(CDPATH= cd -- "$(dirname -- "$playback")" && pwd)
-    playback_args=(-input_directory "$playback_dir" -playback "$(basename -- "$playback")")
-    config_args=()
 fi
 STUNRUN_TRACE_OUT="$trace" \
 STUNRUN_TRACE_CPU="$cpu" \
@@ -72,11 +75,36 @@ STUNRUN_TRACE_INPUT="$input_mode" \
 STUNRUN_TRACE_START_FRAME="$trace_start_frame" \
 STUNRUN_TRACE_PLAYBACK="$playback" \
 SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-dummy}" \
-"$mame_exe" -rompath "$rompath" stunrun \
-    -video none -sound none -skip_gameinfo "${config_args[@]}" \
-    "${state_args[@]}" "${playback_args[@]}" -debug -debugger none -seconds_to_run "$seconds_to_run" \
-    -autoboot_script "$repo_dir/mame/lua/trace.lua" \
-    >"$output/mame.log" 2>&1
+python3 - "$repo_dir" "$rompath" "$mame_exe" "$seconds_to_run" "$state_directory" \
+         "$playback" "$output/mame.log" <<'PY'
+import pathlib
+import subprocess
+import sys
+
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / "tools"))
+from mame_launch import mame_launch
+from mame_harness.process import run_mame
+
+repo_dir, rompath, mame_exe = sys.argv[1], sys.argv[2], sys.argv[3]
+seconds = int(sys.argv[4])
+state_directory = sys.argv[5] or None
+playback = pathlib.Path(sys.argv[6]).resolve() if sys.argv[6] else None
+log_path = pathlib.Path(sys.argv[7])
+
+# run_mame does not raise on a nonzero exit; `set -e` used to abort on one
+# directly, so the code is passed out explicitly or a dead emulator reads as a
+# clean run.
+with mame_launch(mame=mame_exe, rompath=rompath, seconds=seconds,
+                 state_directory=state_directory,
+                 playback=playback,
+                 autoboot=pathlib.Path(repo_dir) / "mame" / "lua" / "trace.lua",
+                 extra=("-debug", "-debugger", "none") +
+                       (("-state", "1") if state_directory else ())) as launch:
+    with log_path.open("w", encoding="utf-8") as handle:
+        status = run_mame(launch.argv, stdout=handle, stderr=subprocess.STDOUT)
+sys.exit(status.returncode)
+PY
 
 # MAME reports a failed `-autoboot_script` as a line in its own output and then
 # carries on, exiting 0. A trace that stopped collecting therefore looks like a

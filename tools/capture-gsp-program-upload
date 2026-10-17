@@ -62,7 +62,9 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors, run_mame
+from mame_launch import mame_launch
 
 SCHEMA = "stunrun-gsp-program-upload-result/v2"
 
@@ -149,19 +151,6 @@ def sha256_of(path):
 
 
 def run_event_capture(args, output, log):
-    cfg_directory = output / "mame-config"
-    nvram_directory = output / "mame-nvram"
-    cfg_directory.mkdir(parents=True, exist_ok=True)
-    nvram_directory.mkdir(parents=True, exist_ok=True)
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
-        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", str(cfg_directory), "-nvram_directory", str(nvram_directory),
-        "-nonvram_save", "-nothrottle", "-seconds_to_run",
-        str(max(2, (args.frames + 59) // 60 + 1)), "-autoboot_script",
-        str(pathlib.Path(__file__).resolve().parents[1] /
-            "mame/lua/gsp-program-upload.lua"),
-    ]
     environment = {
         **os.environ,
         "STUNRUN_GSP_UPLOAD_OUT": str(output),
@@ -169,9 +158,16 @@ def run_event_capture(args, output, log):
         "STUNRUN_GSP_UPLOAD_CAP": str(args.cap),
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
-    with log.open("w", encoding="utf-8") as handle:
-        return run_mame(command, stdout=handle, stderr=subprocess.STDOUT,
-                        env=environment, timeout=max(120, args.frames / 5 + 120))
+    # cfg, nvram and state get a fresh per-run directory from
+    # tools/mame_launch.py. This tool used `<output>/mame-config` and
+    # `<output>/mame-nvram`, which are per-CAPTURE rather than per-RUN.
+    with mame_launch(mame=args.mame, rompath=args.rompath, frames=args.frames,
+                     autoboot=pathlib.Path(__file__).resolve().parents[1]
+                     / "mame/lua/gsp-program-upload.lua",
+                     extra=("-nothrottle",)) as launch:
+        with log.open("w", encoding="utf-8") as handle:
+            return run_mame(launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                            env=environment, timeout=max(120, args.frames / 5 + 120))
 
 
 def run_vram_image(args, output, frame, name):

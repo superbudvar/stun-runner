@@ -21,10 +21,14 @@ import json
 import pathlib
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+from mame_launch_guards import routes_through_launcher  # noqa: E402
+
 CAPTURE = ROOT / "tools" / "capture-gsp-program-upload"
 DIFF = ROOT / "tools" / "diff-gsp-upload-images"
 LUA = ROOT / "mame" / "lua" / "gsp-program-upload.lua"
@@ -172,7 +176,11 @@ class ProgramUploadCaptureTests(unittest.TestCase):
         # Phase 2 must go through the proven consecutive-share reader rather
         # than re-implementing a VRAM read inside the tap script.
         self.assertIn('with_name("mame-gsp-vram-dump")', tool)
-        self.assertIn('"-nvram_directory"', tool)
+        # -nvram_directory now comes from tools/mame_launch.py, which emits it
+        # unconditionally. Asserting the literal in this tool would fail the
+        # moment it stopped hand-rolling the argv, which is the point of the
+        # launcher; the property is asserted at the launcher instead.
+        self.assertTrue(routes_through_launcher(CAPTURE))
 
     def test_boundary_beyond_the_ring_is_reported_not_truncated_away(self):
         # The ring keeps the FIRST cap events. A 600-frame run needs 701877 of

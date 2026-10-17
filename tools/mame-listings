@@ -14,12 +14,35 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 mkdir -p "$output"
 
-STUNRUN_LISTING_DIR="$output" "$mame_exe" -rompath "$rompath" stunrun \
-    -video none -sound none -skip_gameinfo -noreadconfig -nowriteconfig \
-    -cfg_directory /tmp/stunrun-mame-cfg -nonvram_save \
-    -debug -debugger none -seconds_to_run 2 \
-    -autoboot_script "$repo_dir/mame/lua/listings.lua" \
-    >"$output/mame.log" 2>&1
+# The MAME invocation goes through tools/mame_launch.py so this shell wrapper
+# cannot be the place an isolation flag is spelled a seventh way. The wrapper
+# has no Python of its own, so it calls python3 once and reads the log back
+# below; the cfg/nvram/state directories are per-run and removed by the
+# launcher, which is what stops one run reading the previous run's
+# stunrun.cfg (AGENTS.md trap 12). The stdout of MAME stays in the log exactly
+# as before, so the lua_errors line below is unchanged.
+STUNRUN_LISTING_DIR="$output" python3 - "$repo_dir" "$rompath" "$output" "$mame_exe" <<'PY'
+import pathlib
+import subprocess
+import sys
+
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / "tools"))
+from mame_launch import mame_launch
+from mame_harness.process import run_mame
+
+rompath, output, mame_exe = sys.argv[2], sys.argv[3], sys.argv[4]
+# -seconds_to_run 2 is this tool's own bound: listings.lua disassembles and
+# calls machine:exit() immediately, and two seconds covers a cold MAME start.
+with mame_launch(mame=mame_exe, rompath=rompath, seconds=2,
+                 autoboot=pathlib.Path(sys.argv[1]) / "mame" / "lua" / "listings.lua",
+                 extra=("-debug", "-debugger", "none")) as launch:
+    with (pathlib.Path(output) / "mame.log").open("w", encoding="utf-8") as handle:
+        status = run_mame(launch.argv, stdout=handle, stderr=subprocess.STDOUT)
+# `set -e` used to abort on a nonzero MAME exit. run_mame does not raise, so the
+# code is passed out explicitly or a dead emulator reads as a clean run.
+sys.exit(status.returncode)
+PY
 
 for listing in maincpu-68010 gsp-tms34010 adsp2100 sound-6502; do
     file="$output/$listing.lst"

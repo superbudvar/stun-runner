@@ -9,7 +9,9 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors
+from mame_launch import mame_launch
 
 
 FIXTURES = {
@@ -43,16 +45,16 @@ def main() -> int:
     env = {
         "STUNRUN_EMIT_VALIDATION_DIR": str(args.output),
     }
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun",
-        "-video", "none", "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save",
-        "-debug", "-debugger", "none", "-seconds_to_run", "1",
-        "-autoboot_script", str(pathlib.Path(__file__).parent.parent / "mame/lua/emit-validation.lua"),
-    ]
     log = args.output / "mame.log"
-    with log.open("w", encoding="utf-8") as handle:
-        completed = subprocess.run(command, env={**__import__("os").environ, **env}, stdout=handle, stderr=subprocess.STDOUT, check=False)
+    # One second is this tool's own bound: emit-validation.lua disassembles
+    # four instructions and calls machine:exit() long before that, and the
+    # second is headroom for a cold MAME start on a loaded machine.
+    with mame_launch(mame=args.mame, rompath=args.rompath, seconds=1,
+                     autoboot=pathlib.Path(__file__).parent.parent
+                     / "mame/lua/emit-validation.lua",
+                     extra=("-debug", "-debugger", "none")) as launch:
+        with log.open("w", encoding="utf-8") as handle:
+            completed = subprocess.run(launch.argv, env={**__import__("os").environ, **env}, stdout=handle, stderr=subprocess.STDOUT, check=False)
     # This tool does capture a Lua log -- it wrote one above and never read it
     # back. emit-validation.lua writes the four listings and then exits, so a
     # throw after the last `dasm` leaves four decodable listings and a return

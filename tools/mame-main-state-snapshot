@@ -13,7 +13,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors
+from mame_launch import mame_launch
 
 
 SNAPSHOT = re.compile(
@@ -40,7 +42,6 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     log = args.output / "mame.log"
     state_stage = None
-    state_directory = "/tmp/stunrun-state-dir"
     if args.load_state:
         if not args.load_state.is_file():
             raise SystemExit(f"save state does not exist: {args.load_state}")
@@ -48,22 +49,11 @@ def main() -> int:
         slot_directory = state_stage / "stunrun"
         slot_directory.mkdir()
         shutil.copy2(args.load_state, slot_directory / "1.sta")
-        state_directory = str(state_stage)
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
-        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save",
-        "-state_directory", state_directory, "-statename", "%g",
-        "-seconds_to_run",
-        str(86400 if args.load_state else max(2, (args.frames + 59) // 60 + 1)),
-        "-autoboot_script",
-        str(pathlib.Path(__file__).resolve().parents[1] / "mame/lua/main-state-snapshot.lua"),
-    ]
+    extra: list[str] = []
     if args.load_state:
-        command.insert(command.index("-seconds_to_run"), "-state")
-        command.insert(command.index("-seconds_to_run"), "1")
+        extra += ["-state", "1"]
     if args.nothrottle:
-        command.insert(command.index("-seconds_to_run"), "-nothrottle")
+        extra.append("-nothrottle")
     environment = {
         **os.environ,
         "STUNRUN_MAIN_STATE_OUT": str(args.output),
@@ -73,10 +63,20 @@ def main() -> int:
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
     try:
-        with log.open("w", encoding="utf-8") as handle:
-            completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,
-                                       env=environment, check=False)
-        text = log.read_text(encoding="utf-8")
+        # state_stage is caller-owned and removed below; with no --load-state
+        # the launcher makes a fresh per-run directory rather than the shared
+        # /tmp/stunrun-state-dir this tool used to pass.
+        with mame_launch(mame=args.mame, rompath=args.rompath,
+                         seconds=86400 if args.load_state else None,
+                         frames=args.frames,
+                         state_directory=state_stage,
+                         autoboot=pathlib.Path(__file__).resolve().parents[1]
+                         / "mame/lua/main-state-snapshot.lua",
+                         extra=tuple(extra)) as launch:
+            with log.open("w", encoding="utf-8") as handle:
+                completed = subprocess.run(launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                                           env=environment, check=False)
+            text = log.read_text(encoding="utf-8")
     finally:
         if state_stage is not None:
             shutil.rmtree(state_stage, ignore_errors=True)

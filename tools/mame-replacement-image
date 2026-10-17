@@ -12,7 +12,9 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors
+from mame_launch import mame_launch, seconds_for_frames
 
 
 RESULT = re.compile(
@@ -140,17 +142,17 @@ def main() -> int:
         script = pathlib.Path(temp) / "replacement.lua"
         script.write_text(lua_script(image, payload, args.install_frame, args.settle_frames, data_probe), encoding="utf-8")
         log = args.output / "mame.log"
-        command = [
-            args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
-            "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-            "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save", "-seconds_to_run",
-            str(max(3, (args.install_frame + args.settle_frames + 59) // 60 + 1)),
-            "-autoboot_script", str(script),
-        ]
-        with log.open("w", encoding="utf-8") as handle:
-            completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,
-                                       env={**os.environ, "SDL_VIDEODRIVER": "dummy"}, check=False)
-    text = log.read_text(encoding="utf-8")
+        # max(3, ...) is this tool's own floor, not the shared max(2, ...), and
+        # its frame count is install+settle rather than one argument. Both are
+        # preserved exactly; see tools/mame_launch.py.
+        with mame_launch(mame=args.mame, rompath=args.rompath,
+                         seconds=max(3, seconds_for_frames(
+                             args.install_frame + args.settle_frames)),
+                         autoboot=script) as launch:
+            with log.open("w", encoding="utf-8") as handle:
+                completed = subprocess.run(launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                                           env={**os.environ, "SDL_VIDEODRIVER": "dummy"}, check=False)
+        text = log.read_text(encoding="utf-8")
     matches = RESULT.findall(text)
     # The loader is a generated script, so a throw in it is our own dead
     # observer: MAME prints `[LUA ERROR]`, carries on and exits 0. The RESULT

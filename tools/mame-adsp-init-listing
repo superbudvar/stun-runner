@@ -11,7 +11,9 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from mame_harness.process import check_lua_errors, find_lua_errors
+from mame_launch import mame_launch, seconds_for_frames
 
 
 DONE = re.compile(r"M3_ADSP_LISTING frame=(\d+) output=(.+)")
@@ -29,23 +31,25 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     listing = args.output / "adsp2100-init.lst"
     log = args.output / "mame.log"
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun", "-video", "none",
-        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", "/tmp/stunrun-mame-cfg", "-nonvram_save", "-debug",
-        "-debugger", "none", "-seconds_to_run", str(max(3, (args.frame + 59) // 60 + 1)),
-        "-autoboot_script", str(pathlib.Path(__file__).resolve().parents[1] / "mame/lua/adsp-init-listing.lua"),
-    ]
-    environment = {
-        **os.environ,
-        "STUNRUN_ADSP_LISTING_FRAME": str(args.frame),
-        "STUNRUN_ADSP_LISTING_OUT": str(listing),
-        "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
-    }
-    with log.open("w", encoding="utf-8") as handle:
-        completed = subprocess.run(command, stdout=handle, stderr=subprocess.STDOUT,
-                                   env=environment, check=False)
-    text = log.read_text(encoding="utf-8")
+    # This tool's bound has always been max(3, ...), not the shared max(2, ...);
+    # the two agree for every frame count this tool is given a reason to use
+    # (the default is 412) and differ by one second below frame 61, so the
+    # floor is stated here rather than inherited. See tools/mame_launch.py.
+    with mame_launch(mame=args.mame, rompath=args.rompath,
+                     seconds=max(3, seconds_for_frames(args.frame)),
+                     autoboot=pathlib.Path(__file__).resolve().parents[1]
+                     / "mame/lua/adsp-init-listing.lua",
+                     extra=("-debug", "-debugger", "none")) as launch:
+        environment = {
+            **os.environ,
+            "STUNRUN_ADSP_LISTING_FRAME": str(args.frame),
+            "STUNRUN_ADSP_LISTING_OUT": str(listing),
+            "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
+        }
+        with log.open("w", encoding="utf-8") as handle:
+            completed = subprocess.run(launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                                       env=environment, check=False)
+        text = log.read_text(encoding="utf-8")
     matches = DONE.findall(text)
     if completed.returncode or not matches or not listing.is_file() or not listing.stat().st_size:
         raise SystemExit(f"ADSP listing failed; see {log}")

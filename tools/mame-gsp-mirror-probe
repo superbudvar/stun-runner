@@ -62,7 +62,9 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "mame_harness"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from process import check_lua_errors, find_lua_errors, run_mame
+from mame_launch import mame_launch
 
 HEADER = re.compile(r"M1_MIRROR base=([0-9A-Fa-f]+) step=([0-9A-Fa-f]+) "
                     r"count=(\d+) frame=(\d+) pc=([0-9A-Fa-f]+)")
@@ -234,31 +236,26 @@ def main() -> int:
 
     args.output.mkdir(parents=True, exist_ok=True)
     log = args.output / "mame-mirror.log"
-    run_dir = args.output / "mame-mirror-cfg"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    video_args = ["-video", "sdl", "-window"] if args.windowed else ["-video", "none"]
-    command = [
-        args.mame, "-rompath", str(args.rompath), "stunrun", *video_args,
-        "-sound", "none", "-skip_gameinfo", "-noreadconfig", "-nowriteconfig",
-        "-cfg_directory", str(run_dir), "-nvram_directory", str(run_dir),
-        "-nonvram_save",
-        "-seconds_to_run", str(max(2, (args.frames + 59) // 60 + 1)),
-        "-autoboot_script",
-        str(pathlib.Path(__file__).resolve().parents[1] / "mame/lua/gsp-mirror-probe.lua"),
-    ]
-    if args.nothrottle:
-        command.insert(command.index("-seconds_to_run"), "-nothrottle")
     environment = {
         **os.environ,
         "STUNRUN_MIRROR_FRAME": str(args.target),
         "STUNRUN_MIRROR_INPUT": args.input,
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "x11") if args.windowed else "dummy",
     }
-    with log.open("w", encoding="utf-8") as handle:
-        completed = run_mame(command, stdout=handle, stderr=subprocess.STDOUT,
-                             env=environment, isolated_display=args.isolated_display)
+    # cfg, nvram and state get a fresh per-run directory from
+    # tools/mame_launch.py. This tool used `<output>/mame-mirror-cfg`, which is
+    # per-CAPTURE rather than per-RUN.
+    with mame_launch(mame=args.mame, rompath=args.rompath, frames=args.frames,
+                     video="sdl" if args.windowed else "none",
+                     autoboot=pathlib.Path(__file__).resolve().parents[1]
+                     / "mame/lua/gsp-mirror-probe.lua",
+                     extra=(("-window",) if args.windowed else ())
+                     + (("-nothrottle",) if args.nothrottle else ())) as launch:
+        with log.open("w", encoding="utf-8") as handle:
+            completed = run_mame(launch.argv, stdout=handle, stderr=subprocess.STDOUT,
+                                 env=environment, isolated_display=args.isolated_display)
 
-    text = log.read_text(encoding="utf-8", errors="replace")
+        text = log.read_text(encoding="utf-8", errors="replace")
     (header, baseline, writes, reads, share, offsets) = parse_matrix(text)
     # The probe is an observer, and MAME reports a failed `-autoboot_script` as a
     # line in its own output and then carries on, exiting 0. `capture` below only
