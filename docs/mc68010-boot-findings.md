@@ -13291,3 +13291,75 @@ says explicitly that the two binaries are not interchangeable. That is a
 hypothesis, not a measurement. **Neither number should be trusted until it is
 reconciled**, and `raw_artifacts_kept_local` means the image itself is not
 committed to compare.
+
+## 86. MD-12 does not fire on the paths we run — and the frozen oracle cannot answer its own triage
+
+The question behind §83's MD-12 correction and the whole "which binary is the
+oracle" debate was: **does the defect matter for S.T.U.N. Runner?** Answered by
+running MAME's own MD-12 triage hook.
+
+### 86.1 The hook, and why it runs on the wrong binary to begin with
+
+`STUNRUN_GSP_IOBREPORT` (patch `STUNRUN-IOB`, added to `mame-ref` on 2026-10-14)
+arms inside `tms34010_device::io_register_w` on `offset >= 64` and writes a line
+per out-of-bounds write: the offset, the value, the byte delta from
+`m_IOregs[0]`, and what that address lands on in `m_shiftreg`. The report file is
+created **lazily, on the first such write**, so *no file at all* is the negative
+result.
+
+First finding, before any run: **the frozen oracle binary does not contain this
+hook.** `strings` finds `STUNRUN_GSP_IOBREPORT` in `/mnt/build/mame-ref/mame` and
+not one occurrence in `/mnt/build/mame-oracle/mame`. The hook was added after the
+oracle was frozen, so the oracle cannot be triaged with the tool written for its
+own defect.
+
+That turns out not to matter, because the question does not require the oracle.
+
+### 86.2 The measurement
+
+The hook keys on the **map** exposing offsets `0x00`–`0x1ff`, not on the array
+being too small — so it arms identically on both builds, and on the md12-fixed
+observer it answers the only question that matters: *does the GSP ever write at
+offset ≥ 0x40?* If never, the oracle's `m_IOregs[64]` overflow never happened
+during our captures and the fix changed nothing we have recorded.
+
+| run | binary | input | frames | out-of-bounds writes |
+|---|---|---|---|---|
+| 1 | `mame-ref/mame` | power-on, none | 600 | **none** — report file never created |
+| 2 | `mame-ref/mame` | `--input service` | 600 | **none** — report file never created |
+
+Run 2 completed (`M1_GSP_STATE_DONE frames=600` in `mame.log`); the tool's rc=1
+is its own post-run check, not a failed emulation.
+
+**Scope, stated weakly because it must be:** two paths, 600 frames each, from
+power-on, on one ROM set. Service mode is included because MD-09's "BAD GSP
+VRAM" symptom lives there, which is the path most likely to stray. Gameplay past
+the title is not covered. So: **MD-12 does not fire on the title path or the
+service path**, not "MD-12 never fires".
+
+### 86.3 What this settles, and what it does not
+
+- **It settles** that the oracle's memory-safety defect is not the reason its
+  frame-600 output differs from the observer's. That difference has another
+  cause, still unidentified (§80/§81 recorded the images without a cause; DIP,
+  input and NVRAM state were ruled out by mtimes, and a frame offset was ruled
+  out because the captures agree exactly).
+- **It settles** that the defect is not a reason to distrust the oracle's
+  committed captures. §85.3's remaining worry is about *which* binary, not
+  about *whether* this bug bit.
+- **It does not settle** why two binaries from the same tree disagree at all.
+  `analysis/mame-local-patches.md` records the observer as "MD-12 fixed, not a
+  behavioural substitute", and MD-12 is now excluded as the cause. Something in
+  the 9 Oct → 14 Oct delta still differs, and that is now the open question.
+
+### 86.4 A housekeeping failure, recorded because it nearly corrupted a result
+
+Run 2's first attempt returned rc=120 with **empty output files** and an empty
+`mame.log`. That was not a crash: `/tmp` (tmpfs, 16 GB) was at **100%**, and
+`/home` was at 99%. A full disk produces zero-byte captures and a tool that
+reports failure without saying why — the same shape as a capture artifact that
+reads as a successful empty result. Freed 2.3 GB of unrelated build trees and
+re-ran.
+
+**A capture of zero bytes is a disk problem until proven otherwise.** Check free
+space before concluding anything from an empty artifact.

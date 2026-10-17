@@ -89,6 +89,22 @@ Each of these has already cost real time here.
    `/mnt/build/mame-oracle/mame` is the frozen oracle binary (sha256 recorded in
    `analysis/mame-local-patches.json`); `mame/system-baseline.json` still names
    `/usr/lib/mame/mame`, which no longer exists — trust the patches inventory.
+
+    **There are three MAME binaries, and "the oracle" is not one of their
+    names.** Call them by what they are:
+
+    | name | path | sha256 | use it for |
+    |---|---|---|---|
+    | **`md12-fixed`** (DEFAULT) | `/mnt/build/mame-ref/mame` | `55956f2b…` | **all new work.** Upstream MAME with MD-12 fixed, plus every observation hook, including `STUNRUN_GSP_IOBREPORT`. |
+    | `stock-behaviour` | `/mnt/build/mame-oracle/mame` | `75b09ee4…` | **only** re-reproducing a capture recorded under it. Predates the MD-12 fix and lacks every hook added after 2026-10-09. |
+    | *unrecorded* | — | `fcb54790…` | produced committed captures and is in neither recorded slot. See `stun-runner-w55`. |
+
+    Why `md12-fixed` is the default, measured: **MD-12 never fires on the paths
+    we run** — 600 frames power-on and 600 frames of service mode produced zero
+    out-of-bounds GSP register writes (findings §86.2). The fix therefore changes
+    nothing we have recorded, and `md12-fixed` is simply the more capable build.
+    The oracle's defect is real but inert here. **Never compare a capture across
+    binaries**; record the sha256 with the capture.
 3. **The oracle is patched MAME, and a guard enforces it.**
    `/mnt/build/mame-ref` is a git tree on branch `stunrun-observe` carrying
    observation hooks. `tests/test_mame_local_patches.py` diffs it against
