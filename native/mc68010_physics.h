@@ -1,4 +1,4 @@
-/* MC68010 speed-update routine at ROM $03ABDE.
+/* MC68010 motion-field update block at ROM $03AB7A-$03ABEC.
  *
  * Source chip: STUN Runner maincpu program ROM, assembled flat by
  * `tools/build-maincpu-image` from the six 136070-210x/300x/5xxx/6xxx pairs.
@@ -7,23 +7,15 @@
  *   sha256 29c911a21d1abe780419cd3a924080756490f2d008776995dd48c7b2bedc5b6c
  *
  * This routine is embedded inside the larger function that starts at $039B82.
- * The speed-update block at $03AB7A-$03ABDE implements:
- *
- *   if (timer != 0 && speed < 0x0B00)
- *       speed += 0x40;
- *   else if (speed > (local_limit + 0x40))
- *       speed -= 0x20;
- *   else
- *       speed = source_a + source_b;
- *
  * Three callers invoke $039B82 with different argument sets:
  *   $02587C: pushes (0, byte from $FFDD82)
  *   $0280FE: pushes (byte from ROM table $04EECC[$FFDE72], $FFDD82)
  *   $02853A: pushes (byte from record, 0x38)
  *
- * The function also writes the updated speed to $FFDBFE (accumulates it).
- * This slice only covers the speed-field update; the caller context is not
- * modelled here.
+ * The block also adds the sign-extended updated word to $FFDBFE.
+ * The value-only adapter below calls the canonical stateful implementation in
+ * reproduction/maincpu/motion_update.c. It returns the motion word but not the
+ * timer/flag side effects; the reproduction slice exposes all outputs.
  *
  * Provenance: /tmp/opencode/stunrun-listings-current/maincpu-68010.lst,
  * lines 69590-69619.
@@ -32,6 +24,7 @@
 #define STUNRUN_MC68010_PHYSICS_H
 
 #include <stdint.h>
+#include "../reproduction/maincpu/motion_update.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,24 +32,21 @@ extern "C" {
 
 /* ── Constants from the ROM listing ──────────────────────────────────── */
 
-#define STUNRUN_MOTION_RAMP_LIMIT 0x0B00u
-#define STUNRUN_MOTION_RAMP_STEP  0x0040u
-#define STUNRUN_MOTION_DECAY_STEP 0x0020u
-
 /* ── Mechanism-level speed update ─────────────────────────────────────── */
 
-/* Apply the observed branch order to raw 16-bit fields.  The caller's timer,
+/* Convenience adapter over the canonical motion-update slice. The caller's timer,
  * local limit, and source words have not been assigned gameplay semantics;
  * they are mechanism-level inputs only.
  *
  * Parameters:
- *   current    - current speed value (written to 0xFFDD16 by the ROM)
+ *   current    - current motion word (written to 0xFFDD16 by the ROM)
  *   timer      - timer field (0xFFDD4E); nonzero enables ramp-up
  *   local_limit - caller-supplied limit; compared as (local_limit + 0x40)
  *   source_a   - added to source_b when neither ramp applies (0xFFDD1E)
  *   source_b   - added to source_a when neither ramp applies (0xFFDD1A)
  *
- * Returns the updated speed value.
+ * Returns the updated motion word. The field's gameplay semantics are not
+ * assigned by this mechanism-level adapter.
  */
 int16_t stunrun_mc68010_speed_update(int16_t current, uint16_t timer,
                                      int16_t local_limit, int16_t source_a,

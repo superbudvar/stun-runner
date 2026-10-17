@@ -1,14 +1,18 @@
 /* MC68010 speed-update tests.  See mc68010_physics.h for provenance.
  *
  * Test vectors transcribed from the ROM listing at $03AB7A-$03ABDE.
- * The three branches are:
+ * The timer and timer-zero paths are distinct:
  *
- *   1. timer != 0 && speed < 0x0B00  → speed += 0x40
- *   2. timer == 0 && speed > (limit+0x40) → speed -= 0x20
- *   3. otherwise → speed = source_a + source_b
+ *   1. timer != 0: decrement; if motion < 0x0B00, add 0x40; otherwise
+ *      preserve motion and skip the timer-zero path
+ *   2. timer == 0 && unsigned(EXT.L motion) > unsigned(EXT.L limit + 0x40)
+ *      → motion -= 0x20
+ *   3. timer == 0 and the unsigned BLS comparison is taken
+ *      → motion = sign-extended source_a + sign-extended source_b
  *
  * local_limit in these tests is 0x07E0, matching the value set at
- * $039C16 before the update block is entered.
+ * $039C16 before the update block is entered. Stateful timer/flag effects are
+ * asserted in reproduction/maincpu/motion_update_test.c.
  */
 #include "mc68010_physics.h"
 
@@ -29,11 +33,11 @@ int main(void)
     assert(stunrun_mc68010_speed_update(0x0100, 1u, 0x07E0, 0, 0) ==
            (int16_t)0x0140);
 
-    /* Branch 2: timer != 0 but speed == 0x0B00 (not < 0x0B00), falls to
-     * else-if: speed (0x0B00 = 2816) > (0x07E0 + 0x40 = 0x0820 = 2080)?
-     * Yes → decay: 0x0B00 - 0x20 = 0x0AE0 */
+    /* The timer path has its own exit: at/above 0x0B00 the ROM skips ramp-up
+     * and goes directly to the accumulator update. It does not enter the
+     * timer-zero decay branch. */
     assert(stunrun_mc68010_speed_update(0x0B00, 1u, 0x07E0, 0, 0) ==
-           (int16_t)0x0AE0);
+           (int16_t)0x0B00);
 
     /* Branch 2: timer == 0 and speed (0x0900 = 2304) > (0x07E0 + 0x40 = 0x0820 = 2080)
      * → decay: 0x0900 - 0x20 = 0x08E0 */
@@ -108,22 +112,22 @@ static void test_wrapper_ramp_up(void)
 }
 
 /* Test: caller 2 path ($0280FE): timer != 0, speed >= 0x0B00
- * → decay path (speed at cap, decays).
+ * → timer path bypasses ramp and decay, preserving the word.
  * Args: arg1=$FFDD82 byte, arg2=ROM table byte, speed=0x0B00, timer=1,
  *       source_a=0x0010, source_b=0x0020, accumulator=0x1000
- * Expected: speed_write=0x0AE0 (decay: 0x0B00 - 0x20),
- *          accumulator_write=0x1000 + 0x0AE0 = 0x1AE0
+ * Expected: speed_write=0x0B00 (unchanged),
+ *          accumulator_write=0x1000 + 0x0B00 = 0x1B00
  */
-static void test_wrapper_decay(void)
+static void test_wrapper_timer_cap_hold(void)
 {
     struct stunrun_speed_outputs out = stunrun_mc68010_speed_routine(
             0x12, 0x34,   /* arg1, arg2: caller 2 pattern */
             0x0B00, 1u,   /* speed=0x0B00 (at cap), timer=1 */
-            0x0010, 0x0020, /* source_a, source_b (not used in decay path) */
+            0x0010, 0x0020, /* source_a, source_b (timer path does not use them) */
             0x1000         /* accumulator=0x1000 */
     );
-    assert(out.speed_write == (int16_t)0x0AE0);  /* decay: 0x0B00 - 0x20 */
-    assert(out.accumulator_write == (int32_t)0x1000 + 0x0AE0); /* 0x1AE0 */
+    assert(out.speed_write == (int16_t)0x0B00);
+    assert(out.accumulator_write == (int32_t)0x1B00);
 }
 
 /* Test: timer == 0, speed > (local_limit + 0x40)
@@ -199,7 +203,7 @@ static void test_wrapper_ramp_just_below_cap(void)
 int main_wrapper_tests(void)
 {
     test_wrapper_ramp_up();
-    test_wrapper_decay();
+    test_wrapper_timer_cap_hold();
     test_wrapper_decay_timer_zero();
     test_wrapper_base_plus_offset();
     test_wrapper_exact_boundary();

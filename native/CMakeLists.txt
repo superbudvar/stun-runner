@@ -205,6 +205,7 @@ add_executable(stunrun-native-shell
   state_watch.c
   ../reproduction/maincpu/trajectory_state.c
   ../reproduction/maincpu/state_dispatch.c
+  ../reproduction/maincpu/motion_update.c
   ../reproduction/maincpu/geom_upload.c
   ../reproduction/maincpu/road_fifo.c
   render.c
@@ -280,7 +281,10 @@ add_test(NAME mc68010-object-writer-slice-c COMMAND stunrun-mc68010-object-write
 
 # Agent 2: Vehicle physics (speed update, input handling, trajectory)
 add_executable(stunrun-mc68010-physics-test
-  mc68010_physics.c mc68010_physics_test.c)
+  mc68010_physics.c mc68010_physics_test.c
+  ../reproduction/maincpu/motion_update.c)
+target_include_directories(stunrun-mc68010-physics-test PRIVATE
+  ../reproduction/maincpu)
 set_target_properties(stunrun-mc68010-physics-test PROPERTIES C_STANDARD 99)
 add_test(NAME mc68010-physics-slice-c COMMAND stunrun-mc68010-physics-test)
 
@@ -654,8 +658,8 @@ target_include_directories(stunrun-trajectory-state-slice-test PRIVATE
   ../reproduction/maincpu)
 set_target_properties(stunrun-trajectory-state-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME trajectory-state-slice-c COMMAND stunrun-trajectory-state-slice-test)
-# Literal motion-field branch order from the 0x03ABDE update path. Caller
-# inputs remain mechanism-level until their producers are traced.
+# Stateful motion-field transition and timer side effects from 0x03AB7A-0x03ABEC.
+# Caller inputs remain mechanism-level until their producers are traced.
 add_executable(stunrun-motion-update-slice-test
   ../reproduction/maincpu/motion_update.c
   ../reproduction/maincpu/motion_update_test.c)
@@ -705,7 +709,8 @@ add_test(NAME road-buffer-math-slice-c COMMAND stunrun-road-buffer-math-slice-te
 add_executable(stunrun-award-path-slice-test
   ../reproduction/maincpu/award_path.c
   ../reproduction/maincpu/award_path_test.c
-  mc68010_physics.c)
+  mc68010_physics.c
+  ../reproduction/maincpu/motion_update.c)
 target_include_directories(stunrun-award-path-slice-test PRIVATE
   . ../reproduction/maincpu)
 set_target_properties(stunrun-award-path-slice-test PROPERTIES C_STANDARD 99)

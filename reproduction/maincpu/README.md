@@ -28,10 +28,12 @@ semantics Agent 1 left open.
   signed step, one-bit ROM-sourced delta filter, and clamp mechanism for the
   trajectory coordinate at `0xFFDCC6`. The physical axis and effect/object
   identity remain unknown; this is not an ammo or weapon-inventory model.
-- `motion_update.h` / `motion_update.c` — literal branch order and constants
-  for the `0x03ABDE` update of the anonymous `0xFFDD16` field. Timer, local
-  limit, and source-word arguments remain mechanism-level until their callers
-  are traced; this module does not name the field as speed.
+- `motion_update.h` / `motion_update.c` — the stateful literal transition at
+  `0x03AB7A–0x03ABEC`: timer decrement and expiry writes, ramp/decay/base-sum
+  branch behavior, 16-bit word effects, and the sign-extended long accumulator
+  update. The `0xFFDD16` field and caller values remain mechanism-level; this
+  module does not establish vehicle-speed semantics or include the wrapper's
+  caller-specific precomputation.
 - `road_fifo.h` / `road_fifo.c` — complete and bounded partial forms of the
   observed base-buffer to GSP FIFO lane: every other source word is emitted.
   The range form models bursts split across adjacent frames without assigning

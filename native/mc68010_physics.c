@@ -12,8 +12,8 @@
  *  03AB7A: tst.w   $ffdd4e.l      ; timer != 0?
  *  03AB80: beq     $3abac          ; no: branch to timer==0 path
  *  03AB82: subq.w  #1, $ffdd4e.l  ; decrement timer
- *  03AB88: bne     $3ab98          ; timer still nonzero after decrement?
- *  03AB8A: clr.w   $ffdd50.l       ; yes: clear secondary timer
+ *  03AB88: bne     $3ab98          ; still nonzero: skip expiry writes
+ *  03AB8A: clr.w   $ffdd50.l       ; decrement reached zero: clear secondary timer
  *  03AB90: move.b  #$ff, $ffdd0a.l
  *  03AB98: cmpi.w  #$b00, $ffdd16.l ; speed >= 0x0B00?
  *  03ABA0: bcc     $3abaa          ; yes: skip ramp-up
@@ -42,26 +42,12 @@ int16_t stunrun_mc68010_speed_update(int16_t current, uint16_t timer,
                                      int16_t local_limit, int16_t source_a,
                                      int16_t source_b)
 {
-    int32_t value = current;
-
-    /* Branch order transcribed verbatim from $03AB7A-$03ABDE:
-     * if (timer != 0 && current < RAMP_LIMIT) current += RAMP_STEP;
-     * else if (current > (local_limit + RAMP_STEP)) current -= DECAY_STEP;
-     * else current = source_a + source_b;
-     *
-     * Note: the ROM tests timer != 0 first, then checks speed < 0x0B00.
-     * The timer decrement at $03AB82 is a side effect; it is NOT part of
-     * the update logic itself (this function models the value computation,
-     * not the timer state change).
-     */
-    if (timer != 0u && value < (int32_t)STUNRUN_MOTION_RAMP_LIMIT)
-        value += (int32_t)STUNRUN_MOTION_RAMP_STEP;
-    else if (value > (int32_t)local_limit + (int32_t)STUNRUN_MOTION_RAMP_STEP)
-        value -= (int32_t)STUNRUN_MOTION_DECAY_STEP;
-    else
-        value = (int32_t)source_a + source_b;
-
-    return (int16_t)value;
+    stunrun_motion_update_state_t state = {
+        (uint16_t)current, timer, 0u, 0u, local_limit,
+        source_a, source_b, 0u
+    };
+    state = stunrun_motion_update_step(state);
+    return (int16_t)state.motion_word;
 }
 
 /* ── The speed/routine wrapper at $039B82 ───────────────────────────────── */
@@ -152,16 +138,15 @@ stunrun_mc68010_speed_routine(int16_t arg1, int16_t arg2,
 
     int16_t local_limit = 0x07E0;  /* set at $039C16 */
 
-    /* Run the embedded speed update block */
-    int16_t updated = stunrun_mc68010_speed_update(
-            speed, timer, local_limit, source_a, source_b);
-
-    /* Accumulator update: speed += accumulator ($03ABE4-$03ABEC) */
-    int32_t new_accumulator = accumulator + (int32_t)updated;
+    stunrun_motion_update_state_t state = {
+        (uint16_t)speed, timer, 0u, 0u, local_limit,
+        source_a, source_b, (uint32_t)accumulator
+    };
+    state = stunrun_motion_update_step(state);
 
     struct stunrun_speed_outputs out;
-    out.speed_write       = updated;
-    out.accumulator_write = new_accumulator;
+    out.speed_write       = (int16_t)state.motion_word;
+    out.accumulator_write = (int32_t)state.accumulator;
     return out;
 }
 
