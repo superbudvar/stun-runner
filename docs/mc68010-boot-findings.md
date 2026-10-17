@@ -13195,6 +13195,13 @@ The frame-404 image (GSP still halted, program intact) swept through the decoder
 
 | | |
 |---|---|
+> **SUPERSEDED 2026-10-17 — these numbers were measured at the wrong stride.**
+> `tools/disasm-gsp` used `WORD_STRIDE = 16`, correct for the superseded 4 MiB
+> window captures, but the 512 KiB PHYSICAL share is **dense**: a 2-byte sweep
+> of the file finds exactly the **81,899 nonzero words** the capture metadata
+> records, while a 16-byte stride sees only 10,989 of them. Every count below
+> therefore describes one word in eight. Correct totals are in §87.
+
 | cells | 32,768 |
 | **real instructions** | **7,411** |
 | distinct mnemonics | **85** |
@@ -13378,3 +13385,69 @@ re-ran.
 
 **A capture of zero bytes is a disk problem until proven otherwise.** Check free
 space before concluding anything from an empty artifact.
+
+## 87. The GSP share is DENSE: `WORD_STRIDE = 16` was wrong, and §85.1's numbers described one word in eight
+
+### 87.1 The measurement that settles it
+
+`tools/disasm-gsp` used `WORD_STRIDE = 16`, derived when the tool (wrongly)
+believed the share was a 4 MiB window with each instruction word replicated
+eight times. §84 corrected the share size to 512 KiB but did not revisit the
+stride, and the stride is what decides which words are even looked at.
+
+The capture is unambiguous. `tools/capture-gsp-program-upload` reports
+`words=262144, nonzero_words=81899` — MAME counting nonzero `uint16_t` in the
+share. Reading the same file:
+
+| stride | nonzero words found |
+|---|---|
+| **dense, 2 bytes** | **81,899** — exact match |
+| 16 bytes | 10,989 — one word in eight |
+
+512 KiB is 262,144 words at 2 bytes. The share is **dense**, full stop. Every
+§85.1 count was taken over one word in eight.
+
+### 87.2 What that invalidates
+
+§85.1's "7,411 real instructions / 24,182 DW / 85 mnemonics" describe a
+subsample, not the program. The corrected totals, over the dense sweep, are
+**253,231 slots, 60,576 non-`DW`, 192,655 `DW`, 98 distinct mnemonics, 1,258
+JR/JA-family instructions rendering 18 distinct names covering all 16 condition
+codes**.
+
+The good news inside the bad news: **the §85.1 conclusion survives and strengthens.**
+"Zero unknown encodings" was true of the subsample and is true of the whole
+share. And "all 18 JR condition variants appear" is a property of the *correct*
+stride — at the wrong stride the tool yields 17, which is what made the
+discrepancy visible.
+
+`tests/test_disasm_gsp.py` pins the 16-byte model, so the constant cannot be
+changed without changing that file too. Filed P1.
+
+### 87.3 The address arithmetic does not follow, and that is a separate open question
+
+The dense layout has a consequence that is *not* resolved by the stride fix.
+MAME hardcodes `m_gsp_speedup_pc = 0xfff41070` for stunrun. Folding that with the
+obvious rule, `(addr - 0xff800000) & 0x7ffff`, gives share word offset `0x41070`,
+which at a dense 2-byte stride is byte `0x820E0` — **8,160 bytes past the end of a
+524,288-byte share.**
+
+So either the address-to-offset fold is not that rule, or `0xfff41070` genuinely
+lives in the mirrored region rather than the captured bank. `harddriv.cpp:628`
+maps a 4 MiB window with `.mirror(0x0400000)`, and how MAME's mirror folds a
+32-bit address onto a 512 KiB store is precisely what `stun-runner-47h` asks and
+has not answered. **The stride question and the fold question are separate, and
+fixing the first does not answer the second.** Do not let a green test on the
+first imply the second.
+
+### 87.4 The transferable lesson
+
+A structural constant and a layout assumption were coupled: changing the size
+without revisiting the stride left the tool reading a ninth of its input while
+every test stayed green, because **the tests were written against the same wrong
+model**. `tests/test_disasm-gsp.py` builds its images with
+`share(cells)` — a helper that encodes the assumption, so it could never catch it.
+
+The check that would have caught it is cheap and belongs here: **a share sweep's
+nonzero-word count must equal the count the capture metadata reports.** That
+number was sitting in `result.json` the whole time.
