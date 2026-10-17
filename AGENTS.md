@@ -23,7 +23,7 @@ Do not bulk-load these. Read `STATUS.md` plus the contract your role needs.
 | `TESTING.md` · `LCOV.md` · `PREFLIGHT.md` · `MILESTONES.md` | test strategy, coverage, readiness gates |
 | `EVIDENCE.md` | required provenance fields for any captured artifact |
 | `BUGS.md` | defects in the **1989 game** and in **MAME** (never ours) |
-| `docs/sources.md` | the citation register (`S1`…`S8`) and the rule for using it |
+| `docs/sources.md` | the citation register (`S1`…`S9`) and the rule for using it |
 | `CREDITS.md` | who made the original game, from the ROM's own credits table |
 | `QUESTIONS.md` | unresolved cross-agent requests — use it for handoffs |
 | `docs/mc68010-boot-findings.md` | running log of readings, inferences, and **our own refutations** |
@@ -38,7 +38,7 @@ ownership boundaries; hand off through `QUESTIONS.md`.
 
 ```bash
 ./bootstrap          # tools/env-check + the ROM-free public suite
-./test               # public suite: python3 -m unittest discover -s tests  (235 tests, ~15 s)
+./test               # public suite: python3 -m unittest discover -s tests  (362 tests, ~85 s idle)
 ./build.sh && ./run.sh          # build + launch the live native shell (SDL/OpenGL windows)
 STUNRUN_LIVE_VIDEO=0 STUNRUN_FRAMES=600 ./run.sh     # bounded headless native run
 
@@ -105,7 +105,7 @@ Each of these has already cost real time here.
     nothing we have recorded, and `md12-fixed` is simply the more capable build.
     The oracle's defect is real but inert here. **Never compare a capture across
     binaries**; record the sha256 with the capture.
-3. **The oracle is patched MAME, and a guard enforces it.**
+3. **The pinned MAME tree is patched, and a guard enforces it.**
    `/mnt/build/mame-ref` is a git tree on branch `stunrun-observe` carrying
    observation hooks. `tests/test_mame_local_patches.py` diffs it against
    `analysis/mame-local-patches.json` and fails on any unrecorded source change.
@@ -142,7 +142,35 @@ Each of these has already cost real time here.
    with the emulator and compare — do not assume "it was in RAM" means "it is
    not ROM". `tools/check-roms` will not catch this. Findings §74.
 
-10. **`tools/mame-memory-snapshot` used to leak input-port state between
+10. **`/mnt/build/mame-ref` is a SHALLOW clone — one commit. History queries
+    lie.** `git log -S "<string>"`, `git blame`, anything reaching further back
+    than `HEAD` returns **nothing**, and nothing looks like proof: "the string was
+    never added or removed in any commit" is what a search returns whether the
+    string is ours or upstream's. It nearly produced a confident wrong answer
+    about MD-12 today. To tell a local edit from an upstream one, use
+    `git diff HEAD -- <file>` against the pinned base `e4c1c2b5` — that is the
+    comparison that works. (`git rev-list --count HEAD` returns `1`; say so in
+    the findings whenever a history query is untrustworthy.)
+
+11. **Reconcile any share sweep against `nonzero_words` in the capture's
+    `result.json`.** This is the cheapest guard in the repository and it is not
+    automated anywhere. The 512 KiB physical GSP share is **dense** — 262,144
+    words at 2 bytes — and a 2-byte sweep of the frame-404 image returns exactly
+    the **81,899** nonzero words the metadata records. A 16-byte stride decodes
+    only **10,539** of them, about **one in eight**. Two nearby numbers get
+    confused here, so state which you mean: **10,539** nonzero *instruction
+    words* (what `disasm-gsp` actually decodes, one word per 16-byte cell) and
+    **10,989** 16-byte *cells* containing any nonzero byte. Same image, both
+    correct, different questions. `tools/disasm-gsp` carries
+    `WORD_STRIDE = 16`, derived when the share was wrongly believed to be a 4 MiB
+    window with 8x replication; §84 fixed the size and missed the stride
+    (`stun-runner-a9q`). Every test stayed green, because
+    `tests/test_disasm_gsp.py` builds its fixtures with a `share()` helper that
+    **encodes the same assumption** — so the suite could not have caught it. When
+    a tool's output is a count, a total, or a "N instructions" claim, check the
+    count against the capture's own metadata before repeating it.
+
+12. **`tools/mame-memory-snapshot` used to leak input-port state between
     runs.** MAME writes `stunrun.cfg` at exit including current DIP state, and
     `-noreadconfig` does not stop the next run reading it. A run that toggles a
     DIP — `service_probe` presses "Service Mode" on `:mainpcb:IN0` — silently
