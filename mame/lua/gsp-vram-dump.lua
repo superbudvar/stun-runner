@@ -156,6 +156,83 @@ emu.register_frame_done(function()
     if pending > 0 then file:write(table.concat(chunk)) end
     file:close()
 
+    -- Palette banks, same capture moment as the VRAM above.
+    --
+    -- gsp_render.py reads gsp_pal_lo.bin / gsp_pal_hi.bin from the dumpdir and
+    -- builds the pens with harddriv_v.cpp:326 gsp_palette_change()
+    -- (red=(lo>>8)&0xff, green=lo&0xff, blue=hi&0xff).  Without these a
+    -- dumpdir cannot be rendered, so every VRAM-only capture had to be paired
+    -- with a capture from a different tool at a possibly different frame --
+    -- which is not a comparison, it is a coincidence.  See findings section 81.
+    --
+    -- Written only when STUNRUN_GSP_DUMP_PALETTE is set, so an existing
+    -- invocation that expects one output file still gets one.
+    if os.getenv('STUNRUN_GSP_DUMP_PALETTE') then
+        -- The palette is NOT in VRAM.  The 68010 writes it through the GSP
+        -- palette windows at 0xF5000000 (red+green) and 0xF5800000 (blue);
+        -- reading it out of the VRAM space yields 1024 all-zero pens and the
+        -- render comes out uniformly black, which looks like "empty VRAM"
+        -- rather than "wrong address space".  See findings section 81.
+        --
+        -- Stride and window, from harddriv_v.cpp:
+        --   hdgsp_paletteram_lo_r(offs_t offset)  -- a BYTE offset
+        --       offset = m_gfx_palettebank * 0x100 + (offset & 0xff);
+        --       return m_gsp_paletteram_lo[offset];
+        -- So 256 consecutive 16-bit entries, not a 4-byte stride, and only the
+        -- first 256 are reachable without a palette bank.  gsp_render.py's
+        -- build_palette wants red=(lo>>8), green=lo&0xff, blue=hi&0xff over the
+        -- whole array, so dump the whole 1024-entry backing array with the
+        -- handler's own indexing: bank 0 for entries 0-255 and bank 1 for
+        -- 256-511 is NOT how this ROM works, so read the backing store.
+        --
+        -- Read through the MAINCPU space, which is where those windows are
+        -- mapped (hd68k_gsp_io_r/w).
+        local cpu_space = assert(machine.devices[':mainpcb:maincpu'].spaces['program'],
+                                 'no maincpu program space')
+        -- Read the backing store, not the window.  harddriv.cpp:399-400 declares
+        --   m_gsp_paletteram_lo(*this, "gsp_palram_lo", 1024*2, LITTLE)
+        --   m_gsp_paletteram_hi(*this, "gsp_palram_hi", 1024*2, LITTLE)
+        -- i.e. 1024 little-endian 16-bit pens each.  The 68010 window at
+        -- 0xf5000000-0xf5000fff goes through hdgsp_paletteram_lo_r, which does
+        --   offset = m_gfx_palettebank * 0x100 + (offset & 0xff)
+        --   return m_gsp_paletteram_lo[offset];
+        -- so the window can only ever reach 256 entries at whatever bank the
+        -- driver currently holds, and reading it for pen N>255 is not possible
+        -- without driving the bank register.  gsp_render.py wants all 1024.
+        local lo_share = machine.memory.shares[':gsp_palram_lo']
+        local hi_share = machine.memory.shares[':gsp_palram_hi']
+        if lo_share and hi_share then
+            local PENS = 1024
+            local function dump_pal(path, share)
+                local pf = assert(io.open(path, 'wb'), 'cannot open ' .. path)
+                local c, p = {}, 0
+                for i = 0, PENS - 1 do
+                    local v = share:read_u16(i * 2)
+                    c[#c + 1] = string.char(v & 0xff, (v >> 8) & 0xff)
+                    p = p + 1
+                    if p == 4096 then pf:write(table.concat(c)); c = {}; p = 0 end
+                end
+                if p > 0 then pf:write(table.concat(c)) end
+                pf:close()
+            end
+            dump_pal(out_path:gsub('gsp_vram%.bin$', 'gsp_pal_lo.bin'), lo_share)
+            dump_pal(out_path:gsub('gsp_vram%.bin$', 'gsp_pal_hi.bin'), hi_share)
+        else
+            -- KNOWN LIMITATION, recorded rather than papered over.  harddriv.cpp
+            -- 399-400 declares the palette as address_space MEMBERS
+            -- (m_gsp_paletteram_lo/hi), not memory shares, so Lua cannot reach
+            -- the backing store and the 0xf5000000 window cannot address entry
+            -- 256+ without driving m_gfx_palettebank.  Dumping through the
+            -- window instead produces a plausible-looking but WRONG palette,
+            -- which is worse than not dumping one.  Getting the real thing
+            -- needs a small C++ observer in the driver; until then a dumpdir
+            -- carries VRAM only and must be paired with a palette from the same
+            -- capture moment.  See findings section 81.
+            print('M1_GSP_PALETTE unavailable shares -- VRAM dumped without palette')
+            local _unused = cpu_space
+        end
+    end
+
     print(string.format('M1_GSP_VRAM frame=%d base=%08X words=%d nonzero=%d out=%s pc=%08X',
                         frame, base, words, nonzero, out_path, gsp.state['PC'].value))
     machine:exit()

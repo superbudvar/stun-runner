@@ -86,8 +86,10 @@
 #define STUNRUN_DPYCTL_NIL 0x8000u  /* display enable */
 
 typedef struct stunrun_gsp_display_regs {
-    uint16_t dpyadr;  /* SRFADR: refresh start address, pre-complement */
-    uint16_t dpystrt;
+    uint16_t dpyadr;  /* SRFADR as OBSERVED mid-frame; NOT an input (see below) */
+    uint16_t dpystrt; /* SRFADR at frame start: the timing generator reloads
+                       * DPYADR from this at vcount == VSBLNK, every frame
+                       * (tms34010.cpp:1321-1327), so this is the frame origin */
     uint16_t dpytap;
     uint16_t dpyctl;
     uint16_t heblnk;  /* horizontal blank start, in PIXELS (register 0x37 * 2) */
@@ -119,8 +121,10 @@ unsigned stunrun_gsp_display_row_base_word(unsigned rowaddr);
 unsigned stunrun_gsp_display_word_from_bit_address(uint32_t gsp_bit_address);
 
 /* Diagnostic bridge from a physical share byte offset to the TMS34010's
- * packed DPYADR/DPYTAP refresh registers. `byte_offset` must be in the
- * 512-KiB share. */
+ * packed DPYSTRT/DPYTAP refresh registers. `byte_offset` must be in the
+ * 512-KiB share. DPYSTRT, not DPYADR, because DPYADR is reloaded from DPYSTRT
+ * at the top of every frame and a caller-supplied DPYADR cannot be the frame
+ * origin (stunrun_gsp_display_rasterise ignores it). */
 int stunrun_gsp_display_force_byte_offset(stunrun_gsp_display_regs_t *regs,
                                           uint32_t byte_offset);
 

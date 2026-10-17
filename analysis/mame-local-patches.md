@@ -159,3 +159,59 @@ trace instruction fetch from the debugger. Both would be reasonable upstream
 pull requests. Neither has been submitted: this investigation has not yet
 established which of the two offset readings is correct, and upstreaming a probe
 built on an unsettled premise costs more credibility than it buys.
+## Which binary produced the committed oracle, and why frame 600 differs today
+
+**Recorded 2026-10-17 after a session that chased this for several hours and got
+it wrong twice before landing here.**
+
+`reference/experiments/stunrun/normal-frames-1-600/screens/frame-000600.png`
+and `fixtures/oracle/frame_600/frame_600_screen.png` are **byte-identical**
+(`sha256 6d46e033e29b049e…`) and both show the game in **self-play** — 3D tunnel,
+ship, HUD. `fixtures/oracle/frame_600/metadata.json` nevertheless describes that
+same frame as *"INSERT 1 COIN title/attract screen"*. The description is wrong;
+the pixels are not in question.
+
+Running `tools/mame-gsp-state-snapshot` with the same `--input none` and the
+same frame targets against **either** MAME binary today produces a **title
+screen** at frame 600 (`sha256 29f95e8820efecde…`), not self-play.
+
+### Cause
+
+The two binaries are not interchangeable, and this file already said so:
+
+> The frozen oracle predates MD-12 and is behaviourally stock MAME plus
+> observation hooks only. The stunrun-observe build at `/mnt/build/mame-ref/mame`
+> includes the MD-12 fix, so it is NOT a behavioural substitute for the oracle.
+
+| binary | sha256 | mtime |
+|---|---|---|
+| `/mnt/build/mame-oracle/mame` (oracle) | `75b09ee422732ebc…` | 2026-10-09 |
+| `/mnt/build/mame-ref/mame` (stunrun-observe, MD-12 fixed) | `55956f2b26c0d5ca…` | 2026-10-14 |
+
+**The committed captures predate the `mame-ref` rebuild (2026-10-09 and
+2026-10-10).** MD-12 is a defect in the *driver's* GSP register write path —
+`internal_regs_map` maps `0xc0000000–0xc00001ff` but `m_IOregs` is shorter, so
+GSP register writes past `$C000003F` run off the end of the array. A fix there
+changes GSP I/O behaviour on exactly the hardware the title screen depends on.
+
+**So the committed frame is valid evidence of the frozen oracle, and the
+title-screen capture is valid evidence of the MD-12-fixed build. Neither is
+wrong; they are different machines.** Any comparison must state which binary
+produced each side, or it is meaningless.
+
+### Two refutations of my own hypotheses
+
+**Not NVRAM.** I claimed the captures loaded stale `nvram/stunrun/` state. The
+mtimes forbid it: fixture 2026-10-09, screen series 2026-10-10, the `nvram/`
+files 2026-10-13. On 10 October no `nvram/` directory existed, so that run was
+effectively a cold boot — the same condition as an isolated run today.
+
+**Not the frame index.** The screen series and the fixture agree exactly; no
+offset reconciles them. Same tool, same input, same frames, two binaries, two
+different pictures.
+
+### Recording
+
+The oracle's provenance now belongs next to it. `reference/checkpoints/title/
+metadata.json` should name the binary that produced its capture, so the next
+reader does not spend an afternoon rediscovering this.

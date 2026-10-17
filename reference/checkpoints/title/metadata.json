@@ -15,5 +15,29 @@
     "filename": "title.png",
     "sha256": "e11398c9813010f7cfa17350c74f7a6053a9132c82277827d2c0f994b3602ac6",
     "kept_local": true
-  }
+  },
+  "oracle_provenance": {
+    "note": "The screenshot sha256 recorded in this file (e11398c9813010f7...) matches neither capture variant. Do not trust it; see analysis/mame-local-patches.md, 'Which binary produced the committed oracle'.",
+    "screen_png_sha256_reproducible": false,
+    "known_capture_variants": {
+      "self-play_f600": {
+        "sha256": "6d46e033e29b049e55be06aab19afd44042bd5e2f7002f0a9aac9285e37e07f3",
+        "description": "3D tunnel, ship, HUD",
+        "matches": [
+          "fixtures/oracle/frame_600/frame_600_screen.png",
+          "reference/experiments/stunrun/normal-frames-1-600/screens/frame-000600.png"
+        ],
+        "captured_with": "MAME binary sha256 55956f2b26c0d5ca... (stunrun-observe, MD-12 fixed) or the frozen oracle; see analysis note -- UNRESOLVED which",
+        "confidence": "OBSERVED-IN-CAPTURE; BINARY-OF-RECORD UNRESOLVED"
+      },
+      "title_f600": {
+        "sha256": "29f95e8820efecde99ee238b62e71189debfed24d504ee5bcbe49ade2d6fbfb7",
+        "description": "STUN RUNNER logo + ship + Credits: 0 title screen",
+        "reproduces_from": "tools/mame-gsp-state-snapshot --input none --frames 600, both binaries, 2026-10-17",
+        "confidence": "OBSERVED-IN-TRACE, REPRODUCIBLE"
+      }
+    },
+    "this_files_description_is_wrong": "The selector_status field says 'INSERT 1 COIN title/attract screen'. The committed PNG at frame 600 is SELF-PLAY, not a title screen."
+  },
+  "description_corrected": "Captured frame 600 is the game in SELF-PLAY (3D tunnel, ship, HUD). The selector_status text describing an INSERT 1 COIN attract screen does not match the image and should not be relied on."
 }

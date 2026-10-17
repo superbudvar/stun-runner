@@ -68,15 +68,21 @@ def get_display_params(dpyadr, dpystrt=DPYSTRT, dpytap=DPYTAP, dpyctl=DPYCTL):
 
 
 def rasterise(vram, palette, nframes=None, dpystrt=DPYSTRT, dpyctl=DPYCTL,
-              dputap=DPYTAP, heblnk=HEBLNK * PIXPERCLOCK,
+              dpytap=DPYTAP, heblnk=HEBLNK * PIXPERCLOCK,
               hsblnk=HSBLNK * PIXPERCLOCK, veblnk=VEBLNK, vsblnk=VSBLNK,
               finescroll=FINESCROLL, palbank=PALBANK):
-    """Port of harddriv_state::scanline_multisync() over the whole visible area."""
+    """Port of harddriv_state::scanline_multisync() over the whole visible area.
+
+    The frame origin is DPYSTRT, not a mid-frame DPYADR read: MAME reloads DPYADR
+    from DPYSTRT at the top of every frame (tms34010.cpp:1321-1327), so using a
+    mid-frame value as the origin shifts a 240-line picture by a whole number of
+    rows and wraps its bottom to the top.  That is the doubled-"Credits: 0"
+    artefact seen at the title screen."""
     fb = bytearray(H_TOTAL * V_TOTAL * 2)
     dpyadr = dpystrt
     dpyctl_dudate = dpyctl & DPYCTL_DUDATE
     for v in range(V_TOTAL):
-        p = get_display_params(dpyadr, dpystrt, dputap, dpyctl)
+        p = get_display_params(dpyadr, dpystrt, dpytap, dpyctl)
         if dpyctl & 0x8000:                      # DPYCTL.NIL = display enabled
             base = (p["rowaddr"] << 10) & VRAM_MASK
             col = (p["yoffset"] << 9) + ((p["coladdr"] & 0xFF) << 3) - 7 \
@@ -194,15 +200,29 @@ def main():
     ap.add_argument("dumpdir")
     ap.add_argument("out")
     ap.add_argument("--frame", type=int, default=600)
+    # Register overrides.  The constants above are the frame-600 values, so
+    # rendering any OTHER frame with them produced an all-black framebuffer and
+    # looked like "the VRAM is empty" rather than "these are the wrong
+    # registers".  The registers are part of the capture; make them an input.
+    ap.add_argument("--dpystrt", type=lambda s: int(s, 0), default=None)
+    ap.add_argument("--dpyadr", type=lambda s: int(s, 0), default=None)
+    ap.add_argument("--dpytap", type=lambda s: int(s, 0), default=None)
+    ap.add_argument("--dpyctl", type=lambda s: int(s, 0), default=None)
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args()
+
+    dpystrt = DPYSTRT if a.dpystrt is None else a.dpystrt
+
+    dpytap = DPYTAP if a.dpytap is None else a.dpytap
+    dpyctl = DPYCTL if a.dpyctl is None else a.dpyctl
 
     vram = read_u16_file(os.path.join(a.dumpdir, "gsp_vram.bin"), VRAM_WORDS)
     lo = open(os.path.join(a.dumpdir, "gsp_pal_lo.bin"), "rb").read()
     hi = open(os.path.join(a.dumpdir, "gsp_pal_hi.bin"), "rb").read()
     palette = build_palette(lo, hi)
 
-    fb = rasterise(vram, palette)
+    fb = rasterise(vram, palette, dpystrt=dpystrt, dpytap=dpytap,
+                   dpyctl=dpyctl)
     cropped, w, h = crop_to_visible(fb)
     rgb = to_rgb(cropped, w, h, palette)
     write_png(a.out, rgb, w, h)

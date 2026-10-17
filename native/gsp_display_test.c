@@ -23,10 +23,21 @@
 #include "render.h"
 
 static int g_failures;
+static unsigned g_checks;
+
+/* Every assertion goes through here, and main() checks at the end that a
+ * minimum number of them actually RAN. Without that, a selection bug (a
+ * renamed function, a filter matching nothing, an early return) produces a
+ * binary that exits 0 having asserted nothing -- and on this repository's
+ * gate that is not detectable: `ctest -R <no match>` prints "No tests were
+ * found!!!" and still exits 0, measured. Counting the checks is the only
+ * place a vacuous pass can be turned into a failure. */
+#define GSP_DISPLAY_MIN_CHECKS 40u
 
 static void check(int condition, const char *what)
 {
     printf("  %-58s %s\n", what, condition ? "ok" : "FAIL");
+    g_checks++;
     if (!condition) {
         g_failures++;
     }
@@ -392,23 +403,155 @@ static void test_physical_byte_to_dpyadr(void)
     memset(&regs, 0, sizeof(regs));
     check(stunrun_gsp_display_force_byte_offset(&regs, 0x12C08u),
           "force framebuffer accepts physical byte 0x12C08");
-    check(regs.dpyadr == 0xFDACu,
-          "physical row 0x25 encodes DPYADR row field as 0xFDAC");
+    check(regs.dpystrt == 0xFDACu,
+          "physical row 0x25 encodes DPYSTRT row field as 0xFDAC");
     check(regs.dpytap == 0x81u,
           "byte offset 0x408 within row encodes DPYTAP 0x81");
+    check(regs.dpyadr == 0u,
+          "force framebuffer leaves DPYADR zero (it is not an input)");
     check((regs.dpyctl & STUNRUN_DPYCTL_ORG) == 0u,
           "forced framebuffer uses ORG=0 address complement");
 
-    stunrun_gsp_display_params(&regs, regs.dpyadr, &rowaddr, &coladdr,
+    stunrun_gsp_display_params(&regs, regs.dpystrt, &rowaddr, &coladdr,
                                &yoffset);
     check(rowaddr == 0x25u,
-          "encoded DPYADR decodes back to physical VRAM row 0x25");
+          "encoded DPYSTRT decodes back to physical VRAM row 0x25");
     check(stunrun_gsp_display_row_base_word(rowaddr) * 2u == 0x12800u,
           "decoded row base is physical byte 0x12800");
 
     check(!stunrun_gsp_display_force_byte_offset(
               &regs, STUNRUN_GSP_VRAM_WORDS * 2u),
           "one-past-share byte offset is rejected");
+}
+
+/* ── The frame ORIGIN is DPYSTRT, not an instant sample of DPYADR ───────────
+ *
+ * tms34010.cpp:1321-1327, in scanline_callback():
+ *
+ *     if (vcount == vsblnk)
+ *     {
+ *         /* 34010 loads DPYADR with DPYSTRT, and inverts if the origin is 0 *\/
+ *         if (!m_is_34020) { IOREG(REG_DPYADR) = IOREG(REG_DPYSTRT); }
+ *     }
+ *
+ * The scanline timer walks vcount 0..VTOTAL every frame, so that reload
+ * happens once per frame, before the first visible line (vcount == VEBLNK).
+ * The first visible line is therefore addressed by DPYSTRT and only later
+ * lines by the running DPYADR.
+ *
+ * The check below is deliberately built so that a renderer which ignores
+ * DPYSTRT and starts from DPYADR cannot pass: the two origins are 57 VRAM rows
+ * apart, and the expected pen at output line 0 is the byte the DPYSTRT row
+ * actually holds. A DPYADR-origin renderer lands 57 rows away and reads a
+ * different byte. */
+static void test_frame_origin_is_dpystrt(void)
+{
+    static uint16_t vram[STUNRUN_GSP_VRAM_WORDS];
+    static uint16_t pens[STUNRUN_RENDER_WIDTH * STUNRUN_RENDER_HEIGHT];
+    stunrun_gsp_display_regs_t regs;
+    unsigned rowaddr = 0, coladdr = 0, yoffset = 0;
+    unsigned x;
+    size_t i;
+
+    printf("frame origin is DPYSTRT, not a mid-frame DPYADR sample\n");
+
+    /* word[i] = 0x1000 + (i & 0x0fff): a distinct pen at every cell, so the
+     * expected byte at any position is computable from the contract. */
+    fill_pattern(vram, STUNRUN_GSP_VRAM_WORDS);
+
+    memset(&regs, 0, sizeof(regs));
+    /* MAME's own frame-400 registers (tools/mame-gsp-state-snapshot result.json,
+     * reproducible 5/5). DPYSTRT 0xFC3C ^ 0xFFFC == 0x03C0 -> rowaddr 0x3C. */
+    regs.dpystrt = 0xFC3Cu;
+    regs.dpyadr = 0xF8A4u; /* the mid-frame sample, which must be ignored */
+    regs.dpytap = 0x0000u;
+    regs.dpyctl = 0xF004u;
+    regs.heblnk = 110u;
+    regs.hsblnk = 622u;
+    regs.veblnk = 19u;
+    regs.vsblnk = 259u;
+    regs.finescroll = 7u;
+
+    stunrun_gsp_display_params(&regs, regs.dpystrt, &rowaddr, &coladdr,
+                               &yoffset);
+    check(rowaddr == 0x3Cu, "DPYSTRT 0xFC3C decodes to VRAM row 0x3C");
+
+    if (stunrun_gsp_display_rasterise(pens, sizeof(pens) / sizeof(pens[0]),
+                                      vram, STUNRUN_GSP_VRAM_WORDS,
+                                      &regs) != 0) {
+        check(0, "rasterise returned 0");
+        return;
+    }
+
+    /* Line 0: DUDATE=4 has not stepped yet, coladdr&0xff == 0 -> col starts at
+     * 0 - 7 + 7 = 0, so x = 0 is colour index 0 of VRAM row 0x3C. */
+    {
+        size_t wi = stunrun_gsp_display_row_base_word(rowaddr);
+        unsigned want = (unsigned)(vram[wi] & 0xFFu);
+        check(pen_at(pens, 0, 0) == want,
+              "line 0 x=0 is the DPYSTRT row, not a DPYADR-sample row");
+    }
+    /* The whole line must come from row 0x3C, not row 0x3C+57. */
+    {
+        int from_origin_row = 1;
+        for (x = 0; x < 512u; ++x) {
+            unsigned ci = x & 0x7FFu;
+            size_t wi = stunrun_gsp_display_row_base_word(rowaddr) + (ci >> 1);
+            unsigned want = (ci & 1u) ? ((unsigned)vram[wi] >> 8)
+                                     : ((unsigned)vram[wi] & 0xFFu);
+            if (pen_at(pens, x, 0) != want) {
+                from_origin_row = 0;
+                break;
+            }
+        }
+        check(from_origin_row,
+              "all 512 pixels of line 0 read the DPYSTRT row");
+    }
+
+    /* Negative control: a DPYADR-origin walk is a DIFFERENT walk. If the two
+     * ever became the same, this test would be asserting nothing, so assert
+     * the difference is real and in the measured direction. */
+    {
+        stunrun_gsp_display_regs_t adr_regs = regs;
+        unsigned ar = 0, ac = 0, ay = 0;
+        adr_regs.dpyadr = 0u;
+        stunrun_gsp_display_params(&adr_regs, 0xF8A4u, &ar, &ac, &ay);
+        check(ar == 0x75u,
+              "the mid-frame DPYADR sample decodes to row 0x75 (57 rows on)");
+        check(ar != rowaddr,
+              "DPYADR-as-origin and DPYSTRT-as-origin are distinguishable");
+    }
+
+    /* And the row pitch: DUDATE=4 means four lines per 2048-byte VRAM row, so
+     * output lines 0..3 all read VRAM row 0x3C and line 4 reads row 0x3D.
+     *
+     * fill_pattern gives word[i] = 0x1000 + (i & 0x0fff), so
+     *   row 0x3C base = 0x3C << 10 = 0xF000 -> words 0xF000/0xF100/0xF200/0xF300
+     *   row 0x3D base = 0x3D << 10 = 0xF400
+     * and the four sub-lines of a row start at colour indices 0, 512, 1024,
+     * 1536, i.e. word offsets 0, 0x100, 0x200, 0x300 within the row. Read at
+     * x=1, where the pen is the word's HIGH byte:
+     *   line 0 -> ci 1    -> word 0xF000 -> 0x10
+     *   line 1 -> ci 513  -> word 0xF100 -> 0x11
+     *   line 4 -> ci 1    -> word 0xF400 -> 0x14   (the row has advanced)
+     * These differ from each other, so an implementation that kept one row
+     * for all four lines, or that stepped the row every line, fails here. */
+    check(pen_at(pens, 1, 0) == 0x10u,
+          "line 0 x=1 -> word 0xF000 high byte (0x10)");
+    check(pen_at(pens, 1, 1) == 0x11u,
+          "line 1 x=1 -> word 0xF100 high byte, SAME row 0x3C (0x11)");
+    check(pen_at(pens, 1, 4) == 0x14u,
+          "line 4 x=1 -> row advanced to 0x3D, word 0xF400 (0x14)");
+
+    /* Sanity: the render is not uniformly one value, so the checks above are
+     * discriminating rather than trivially satisfied by an all-anything image. */
+    {
+        int varied = 0;
+        for (i = 1; i < sizeof(pens) / sizeof(pens[0]); ++i) {
+            if (pens[i] != pens[0]) { varied = 1; break; }
+        }
+        check(varied, "rendered pens vary across the frame");
+    }
 }
 
 static uint8_t *read_file(const char *path, size_t *size_out)
@@ -554,8 +697,13 @@ int main(void)
     test_synthetic_addressing();
     test_high_row_base();
     test_physical_byte_to_dpyadr();
+    test_frame_origin_is_dpystrt();
     test_mame_capture_fetch();
     test_acceptance();
+    printf("checks run: %u (minimum %u)\n", g_checks,
+           (unsigned)GSP_DISPLAY_MIN_CHECKS);
+    check(g_checks >= GSP_DISPLAY_MIN_CHECKS,
+          "a run that asserted fewer than the minimum checks FAILS");
     printf("gsp-display-slice: %s\n", g_failures == 0 ? "PASS" : "FAIL");
     return g_failures == 0 ? 0 : 1;
 }

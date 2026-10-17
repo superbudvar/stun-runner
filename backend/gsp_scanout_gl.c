@@ -128,7 +128,7 @@ static void make_line_state(stunrun_gsp_gl_scanout_t *s,
     unsigned y0 = regs->veblnk;
     unsigned y1 = regs->vsblnk > STUNRUN_GSP_DISPLAY_V_TOTAL
                       ? STUNRUN_GSP_DISPLAY_V_TOTAL : regs->vsblnk;
-    uint16_t adr = regs->dpyadr != 0u ? regs->dpyadr : regs->dpystrt;
+    uint16_t adr = regs->dpystrt;
     unsigned v;
 
     memset(s->line_bytes, 0, sizeof(s->line_bytes));

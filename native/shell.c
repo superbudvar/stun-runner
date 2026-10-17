@@ -753,10 +753,19 @@ static int get_live_gsp_state(musashi_gsp_memory_t *mem,
      * fallback frame-600 registers are wrong for the early 68010-only
      * self-test screen. Supplying these values lets us test the captured VRAM
      * through the same CPU scanout without pretending the halted GSP produced
-     * them. Values are hexadecimal, matching the MAME register dump. */
+     * them. Values are hexadecimal, matching the MAME register dump.
+     *
+     * STUNRUN_DPYADR IS NOT IN THIS LIST, and that is deliberate. The frame
+     * origin is DPYSTRT: the TMS34010 loads DPYADR from it at the start of
+     * every frame (tms34010.cpp:1321-1327), so any value a caller supplies for
+     * DPYADR is a MID-FRAME sample and feeding it back as the origin shears
+     * the picture. Measured against MAME's own frame 400, using DPYSTRT as the
+     * origin gives 0/122880 pen-to-colour conflicts and using the mid-frame
+     * sample 0xF8A4 gives 107983. Accepting the variable and ignoring it would
+     * be the worst of both -- it would look like it worked. Say so loudly
+     * instead. */
     {
         const struct { const char *name; uint16_t *field; } regs[] = {
-            { "STUNRUN_DPYADR", &dregs->dpyadr },
             { "STUNRUN_DPYSTRT", &dregs->dpystrt },
             { "STUNRUN_DPYTAP", &dregs->dpytap },
             { "STUNRUN_DPYCTL", &dregs->dpyctl },
@@ -776,6 +785,17 @@ static int get_live_gsp_state(musashi_gsp_memory_t *mem,
             }
         }
         {
+            static int s_warned_dpyadr = 0;
+            const char *text = getenv("STUNRUN_DPYADR");
+            if (text && text[0] && !s_warned_dpyadr) {
+                s_warned_dpyadr = 1;
+                printf("shell: STUNRUN_DPYADR=0x%s IGNORED (once per run): "
+                       "DPYADR is reloaded from DPYSTRT at the top of every "
+                       "frame, so it cannot be the origin. Use "
+                       "STUNRUN_DPYSTRT.\n", text);
+            }
+        }
+        {
             const char *text = getenv("STUNRUN_FINESCROLL");
             if (text && text[0]) {
                 char *end = NULL;
@@ -787,7 +807,7 @@ static int get_live_gsp_state(musashi_gsp_memory_t *mem,
     }
 
     /* STUNRUN_FORCE_FRAMEBUF=<hex>: diagnostic scanout of a physical byte
-     * offset in the 512 KiB share. Keep the byte-offset -> packed DPYADR
+     * offset in the 512 KiB share. Keep the byte-offset -> packed DPYSTRT
      * conversion in gsp_display.c so its row-field encoding is directly tested. */
     {
         static unsigned s_force_row = 0xFFFFu;
@@ -802,8 +822,8 @@ static int get_live_gsp_state(musashi_gsp_memory_t *mem,
                                                            (uint32_t)v)) {
                     if (s_force_row == 0xFFFFu) {
                         printf("shell: force-framebuf=0x%lX byte-base=0x%X "
-                               "row=0x%X dpyadr=0x%04X dpytap=0x%04X\n",
-                               v, row_byte_base, row, dregs->dpyadr,
+                               "row=0x%X dpystrt=0x%04X dpytap=0x%04X\n",
+                               v, row_byte_base, row, dregs->dpystrt,
                                dregs->dpytap);
                     }
                     s_force_row = row;

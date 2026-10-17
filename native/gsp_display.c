@@ -105,10 +105,14 @@ int stunrun_gsp_display_force_byte_offset(stunrun_gsp_display_regs_t *regs,
 
     rowaddr = byte_offset >> 11u; /* 2048 physical bytes per display row */
     row_byte_base = rowaddr << 11u;
-    /* DPYADR[15:4] contains the packed row field. For ORG=0 it is the
-     * one's-complement of SRFADR; encode rowaddr<<4 before complementing.
-     * Using rowaddr directly here silently truncated the row to rowaddr>>4. */
-    regs->dpyadr = (uint16_t)(((rowaddr << 4u) ^ 0xFFFCu) & 0xFFFFu);
+    /* DPYSTRT is the frame ORIGIN: the timing generator loads DPYADR from it
+     * at the start of every frame (tms34010.cpp:1321-1327), so it -- not a
+     * mid-frame sample of DPYADR -- is what has to be encoded here.  For ORG=0
+     * the register holds the one's-complement of SRFADR; encode rowaddr<<4
+     * before complementing. Using rowaddr directly here silently truncated
+     * the row to rowaddr>>4. */
+    regs->dpystrt = (uint16_t)(((rowaddr << 4u) ^ 0xFFFCu) & 0xFFFFu);
+    regs->dpyadr = 0u; /* not an input any more; see stunrun_gsp_display_rasterise */
     regs->dpytap = (uint16_t)((byte_offset - row_byte_base) >> 3u);
     regs->dpyctl &= (uint16_t)~STUNRUN_DPYCTL_ORG;
     return 1;
@@ -191,24 +195,37 @@ int stunrun_gsp_display_rasterise(uint16_t *dest, size_t dest_count,
      * VRAM (addrshift=3). */
     mask = (vram_words > 0u) ? (vram_words - 1u) : (size_t)STUNRUN_GSP_VRAM_MASK;
 
-    /* Frame start address: RESIDUAL KNOWN-WRONG, left in place deliberately.
+    /* Frame start address: DPYSTRT, unconditionally.
      *
-     * The TMS34010 reloads DPYADR from DPYSTRT prior to the start of each
-     * frame (tms34010.cpp:1322-1327, and docs/tms34010-reference.md §1.2
-     * quoting ug.txt:5432-5440: "the starting address points to the location
-     * in memory of the first pixel output to the screen during each frame"),
-     * so the first VISIBLE line is addressed by DPYSTRT and only later lines
-     * by the running DPYADR.  Taking a mid-frame snapshot of DPYADR as the
-     * frame's first address is therefore wrong whenever the caller can observe
-     * DPYADR at an arbitrary instant -- which is exactly what the live RTL
-     * path does.
+     * The TMS34010 reloads DPYADR from DPYSTRT at vcount == VSBLNK, i.e. at
+     * the start of vertical blank and before the first visible line of the
+     * next frame (tms34010.cpp:1321-1327: `if (vcount == vsblnk) { ... 
+     * IOREG(REG_DPYADR) = IOREG(REG_DPYSTRT); }`, reached every frame because
+     * the scanline timer walks 0..VTOTAL).  docs/tms34010-reference.md §1.2
+     * quotes ug.txt:5432-5440 the same way: "the starting address points to the
+     * location in memory of the first pixel output to the screen during each
+     * frame".  So the first VISIBLE line is addressed by DPYSTRT and only
+     * later lines by the running DPYADR.
      *
-     * It is not changed here because the same heuristic is duplicated in
-     * backend/gsp_scanout_gl.c:104 (outside this task's ownership), so
-     * changing one copy alone desynchronises the CPU and GPU scanout windows
-     * and breaks gsp-scanout-gl-parity. Both copies have to move together;
-     * see docs/mc68010-boot-findings.md §38.4. */
-    dpyadr = regs->dpyadr != 0u ? regs->dpyadr : regs->dpystrt;
+     * This used to read `regs->dpyadr != 0u ? regs->dpyadr : regs->dpystrt`,
+     * i.e. it took whatever instant sample of DPYADR the caller happened to
+     * hold as the frame's first address.  That is the same "RESIDUAL
+     * KNOWN-WRONG" this comment used to apologise for.  Measured, against
+     * MAME's own frame-400 VRAM and MAME's own frame-400 PNG, with the frame
+     * origin taken from DPYSTRT the rasteriser produces 201 pen indices with
+     * ZERO conflicts (one pen index never shows two colours) over all 122880
+     * pixels; with the mid-frame sample DPYADR=0xF8A4 as the origin it
+     * produces 107983 conflicts.  The heuristic was wrong, not merely
+     * inelegant, and it is what made a forced-register run look plausible
+     * while being offset by ~57 VRAM rows -- which is where the doubled
+     * "Credits: 0" came from.  Both copies moved together, as
+     * backend/gsp_scanout_gl.c required for gsp-scanout-gl parity.
+     *
+     * `regs->dpyadr` is therefore NOT an input.  A caller that wants to move
+     * the window moves DPYSTRT (and DPYTAP for the tap); see
+     * stunrun_gsp_display_force_byte_offset(). */
+    (void)regs->dpyadr;
+    dpyadr = regs->dpystrt;
     for (v = 0; v < y1; ++v) {
         unsigned rowaddr = 0u, coladdr = 0u, yoffset = 0u;
         unsigned base, col, enabled;

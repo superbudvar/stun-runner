@@ -80,8 +80,11 @@ int main(void)
     for (case_index = 0; case_index < 3u; ++case_index) {
         stunrun_gsp_display_frame600_regs(&regs);
         if (case_index == 1u) {
-            /* Exercise fine scroll, tap offset, and a non-default address. */
-            regs.dpyadr = 0xFC39u;
+            /* Exercise fine scroll, tap offset, and a non-default origin.
+             * The non-default origin goes in DPYSTRT, not DPYADR: DPYADR is
+             * reloaded from DPYSTRT at the top of every frame, so a DPYADR
+             * value is a mid-frame sample and cannot move the window. */
+            regs.dpystrt = 0xFC39u;
             regs.dpytap = 0x001Du;
             regs.finescroll = 3u;
             regs.dpyctl = 0xF008u;

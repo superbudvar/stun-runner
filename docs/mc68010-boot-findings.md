@@ -12277,3 +12277,594 @@ Rebuilt negative control, both passes:
 unobservable") was reported honestly. But 10/11 was asserted, not measured by
 rebuild. Six of the repo's now-known wrong-reason passes came from believing a
 mutation table rather than re-running it.
+
+---
+
+## 79. The side-by-side view: where the two frames actually disagree (`alo` / `1fv`)
+
+`tools/compare-frame` renders MAME's frame N and the native shell's frame N and
+puts them next to each other with a measured difference. The measurement itself
+is in the handback below; two things about *how to produce it* are refutations of
+our own reading, and one provenance claim of ours does not survive.
+
+### 79.1 Refutation: the headless native render is a black frame with a valid hash
+
+`AGENTS.md` and `STATUS.md` present `STUNRUN_LIVE_VIDEO=0 STUNRUN_FRAMES=600
+./run.sh` as "bounded headless native run", and that is what I ran first. It
+succeeds, exits 0, prints `RESULT PASS`, and **writes a capture**:
+
+```text
+render frame=600 width=512 height=240 hash=0x7D611DC5 mode=blank-scaffold lit=0/122880 colours=0
+shell: capture frame=600 path=.../frame_0600.png
+```
+
+`lit=0/122880` is an entirely black frame. The render mode is
+`blank-scaffold`, not `live-gsp-share`, because `g_live_video` is only set when
+`STUNRUN_LIVE_VIDEO` is non-zero and non-`"0"` (shell.c, the `STUNRUN_MC68010`
+block). The GSP RTL core *is* running in that run -- the same log line reports
+`gsp-rtl board vram nonzero words=84787` -- but nothing scans it out, because
+scanout happens only in the `g_live_video` branch.
+
+So the "headless native run" produces a capture that is a real PNG, is the
+right size, has a reproducible hash, and contains nothing. Compared against
+MAME it reads as a ~96% mismatch for a reason that has nothing to do with the
+renderer. **A headless comparison is a comparison against nothing.**
+
+The real frame needs a display and the live-video path:
+
+```bash
+DISPLAY=:93 STUNRUN_LIVE_VIDEO=1 STUNRUN_FRAMES=600 \
+  STUNRUN_CAPTURE_FRAME=600 STUNRUN_CAPTURE_DIR=OUT ./run.sh
+# render frame=600 width=512 height=240 hash=0xFC1E2F7B mode=live-gsp-share lit=41094/122880 colours=252
+```
+
+Two independent native runs produced byte-identical captures
+(`a4ecc44f4128348cdd7a36f01d928e591e6f7f20bfabfc704f1d371b2d01586a`), so this
+side is deterministic and is a stable thing to compare against.
+
+The shell already warns about the black case in prose ("a stable hash here does
+not mean the scanout is working"), and `STATUS.md` §39 says the same. Neither
+said it about `STUNRUN_LIVE_VIDEO=0` specifically, which is the incantation the
+repo documents. That is our documentation gap, not a code defect:
+`tools/compare-frame` now refuses to run the shell without a display (it starts
+its own Xvfb) and fails loudly if no capture appears.
+
+### 79.2 Refutation: the recorded title-checkpoint hash does not reproduce
+
+`reference/checkpoints/title/metadata.json` records
+
+```text
+screenshot.filename : title.png
+screenshot.sha256   : e11398c9813010f7cfa17350c74f7a6053a9132c82277827d2c0f994b3602ac6
+screenshot.kept_local : true
+```
+
+The PNG is not in the tree, and five fresh `--input none` MAME runs at frame 600
+all produce `6d46e033e29b049e55be06aab19afd44042bd5e2f7002f0a9aac9285e37e07f3`
+-- which is also, byte for byte, the committed
+`fixtures/oracle/frame_600/frame_600_screen.png`:
+
+```bash
+tools/mame-gsp-state-snapshot roms OUT --mame /mnt/build/mame-oracle/mame \
+  --input none --frames 600 --targets 600 --screen-dir OUT/screens --nothrottle
+```
+
+Five runs, one hash; `--input none` is the deterministic input mode (AGENTS.md
+trap 4). So the fresh MAME oracle is reproducible and the *recorded checkpoint
+screenshot* is not reproduced by it. `STATUS.md` names `title-attract` at frame
+600 as the "last verified checkpoint", and that name currently points at an
+image nobody in this repository can produce or inspect.
+
+Two candidate explanations, not separated here: the recorded screenshot came
+from a different machine/DIP state (the harness had the `-cfg_directory` DIP
+leak, trap 10, and the checkpoint predates `tools/mame-memory-snapshot` being
+fixed), or it predates a harness change in how the screen was captured. Its own
+`launch` line says `-snapname title -snapshot_directory <output>` with
+`mame/lua/checkpoint.lua`, whereas `frame_600_screen.png` was written by
+`screen:snapshot()` from `mame/lua/gsp-state-snapshot.lua` -- two different
+capture paths. `BUGS.md` MD-01 records that MAME's own snapshot API wrote zero
+files, so the recorded route is itself suspect.
+
+**Recorded as `ASSUMPTION CONFLICT`, not resolved.** `tools/compare-frame`
+prints the mismatch loudly and refuses to let the number below it be read as
+"ours vs that checkpoint". Pinned by
+`test_flags_the_recorded_checkpoint_hash_it_could_not_reproduce`; if a later
+MAME or harness change makes it reproduce, that test failing is the signal to
+re-derive the oracle, not an invitation to relax the comparison.
+
+### 79.3 The fixture's recorded input does not match its pixels
+
+`fixtures/oracle/frame_600/metadata.json` records `"input": "service"` for the
+committed PNG, but that PNG is byte-identical to an `--input none` frame 600.
+So the service-mode press had no visible effect by frame 600, and the two
+labels describe the same image. Recorded because `STATUS.md` §70 shows service
+runs genuinely do alternate at frame 48; at frame 600 they appear to converge.
+Not a defect in the fixture -- the image is right either way -- but the
+provenance field and the pixels disagree about how the image was obtained.
+
+### 79.4 What the comparison actually measures
+
+With that settled, the measurement. Same frame number, both sides, 512x240, no
+resizing:
+
+```text
+oracle  6d46e033e29b049e55be06aab19afd44042bd5e2f7002f0a9aac9285e37e07f3
+native  a4ecc44f4128348cdd7a36f01d928e591e6f7f20bfabfc704f1d371b2d01586a
+render frame=600 ... mode=live-gsp-share lit=41094/122880 colours=252
+
+differing pixels     118195 / 122880 (96.19%)
+agreeing pixels      4685 (4685 of them black on BOTH sides, 0 on drawn content)
+  ^ LOUD: the two frames agree on NO drawn pixel anywhere.
+differing channels   349935   max |error| 255   mean |error| 82.20
+oracle colours       47
+verdict              DIFFERENT
+```
+
+**Zero pixels in the entire frame agree on any drawn content.** Every one of the
+4,685 agreeing pixels is black on both sides. The tool reports that split
+(`agreeing_both_black_pixels` vs `agreeing_lit_pixels`) rather than one number,
+because "they agree on 3.81% of pixels" reads very differently when all of it is
+black agreement, and a single figure would hide it. Per 64-row band:
+
+| rows | agreeing px | both-black | agreeing on drawn content |
+|---|---|---|---|
+| 0–63 | 0 | 0 | 0 |
+| 64–127 | 94 | 94 | 0 |
+| 128–191 | 0 | 0 | 0 |
+| 192–239 | 4,591 | 4,591 | 0 |
+
+So this is not a near miss, not a shift, and not a palette error with correct
+geometry underneath: **there is no shared sub-picture at all.** Where the native
+frame has content and the oracle has content, they never coincide.
+
+The structure, from a row-litness profile taken with the tool's own decoder:
+
+| rows | oracle non-black | native non-black | of 8,192 |
+|---|---|---|---|
+| 0–95 | 8,192 (all six bands) | **0** | oracle full, native empty |
+| 96–111 | 8,151 | **0** | |
+| 112–127 | 8,137 | 4,096 | native begins at row 120 |
+| 128–159 | 8,192 (both bands) | 8,189 / 8,192 | |
+| 160–191 | 7,948 / 8,176 | 8,143 / 6,149 | |
+| 192–207 | 7,946 | 627 | |
+| 208–223 | 5,587 | 5,228 | |
+| 224–239 | 4,852 | **470** | |
+
+Three things fall out of that:
+
+- **Rows 0–119 are entirely black natively** -- 120 of 240 rows, exactly half the
+  screen. MAME has the tunnel mouth and the tan road there. That is the single
+  largest structural disagreement, and it is a whole missing half, not a detail.
+- The native picture's lit region runs rows 120–239 and spans all 512 columns. It
+  contains the logo band and text rows `STATUS.md` §39 already describes, drawn in
+  the wrong colours: 253 distinct colours in the PNG against MAME's 47, including
+  cyan and magenta the game's palette does not contain, and 66.56% of the frame
+  pure black against MAME's 5.33%.
+- The bottom HUD band (rows 224–239) is where MAME has its least content (4,852 of
+  8,192 non-black) and the native frame has almost none (470). That is why those
+  are the *least* changed cells in the block map without being anywhere near
+  agreement: two sparse text rows that do not line up still share some black.
+
+The least-different cells in the whole map are block (31,13)/(31,14) -- x≈248,
+y≈104 -- which is the craft's position in the oracle. It is the one place the
+native picture has non-black content roughly where the oracle does, and even there
+the cell is ~50–75% different rather than agreeing.
+
+This settles the three claims the user was given but could not see. None of them
+is a small disagreement in a picture that is otherwise right: at frame 600 the two
+frames share no drawn pixel.
+
+**One measurement caveat, recorded because it nearly produced a wrong table
+here.** The first version of the per-band agreeing-pixel table was computed by a
+throwaway decoder whose Paeth branch took `upleft` from the *current* row rather
+than the previous one. It reported 4,685 agreeing pixels all black -- the right
+answer, arrived at through a wrong filter -- and a per-band split that was not.
+The numbers above come from `compare-frame`'s own `decode_png`, cross-checked by
+running the tool's `compare()` over that decode and confirming it reproduces
+`changed_pixels == 118195`. A decoder that is wrong in the same direction on both
+images is invisible to any self-consistency check; only reading the tool's PNG
+back through an independent path caught it.
+
+### 79.5 What this comparison cannot say
+
+Stated plainly, because a number this large invites over-reading:
+
+- **Which side is wrong is not decided here.** "These disagree" is all the tool
+  says. It is consistent with the native renderer being wrong, with the two
+  runs being at different points in time, and with both.
+- **Frame 600 is not anchored to frame 600.** Neither side's counter is tied to
+  the other's emulated clock, so a timing offset is indistinguishable from a
+  wrong pixel. The native shadow at frame 600 is
+  `DPYSTRT=0xfffc DPYADR=0xffc3 DPYTAP=0x0200 DPYCTL=0xf010` with
+  `core-set=[DPYSTRT DPYCTL]` (native.log), while MAME's frame-600 display
+  registers are `dpyadr=63612 dpytap=0 dpystart=64572 heblnk=55 hsblnk=311
+  dpyctl=61444 fine_scroll=7`. Those are different values; whether they are a
+  time offset or a register-model error is not settled by a pixel count.
+- **It cannot split scanout from VRAM.** The tool does not read VRAM, palette or
+  registers, so it cannot separate "our scanout of the right VRAM is wrong" from
+  "our VRAM is wrong". `tools/decode-gsp-frame` and `tools/gsp_render.py` are
+  the instruments for that split, and `tools/check-gsp-first-output` is the
+  existing evidence that the core reproduces MAME's first output byte for byte.
+- **One frame is not a trajectory.** A single matching frame would not prove the
+  emulations agree either; a stable hash proves even less, as §79.1 shows.
+
+### 79.6 ROM-verbatim check on the oracle buffers (trap 9)
+
+Before any rendered PNG from these captures is committed, `--check-rom-overlap`
+searches the committed oracle buffers for verbatim ROM runs. The naive form of
+that check is wrong and was caught mid-task: an erased ROM region is a long run
+of one repeated byte, and a sparse buffer is full of `0xFF` fill, so "does any
+run appear in the ROM set" reported **ROM-VERBATIM** on 512 bytes of `0xFF` at
+VRAM offset 43008. A check that fires on fill is a check that gets ignored.
+
+Classifying uniform runs as fills and searching only data runs gives:
+
+| buffer | nonzero | uniform fills skipped | data runs searched | longest verbatim data run | verdict |
+|---|---|---|---|---|---|
+| `frame_600_gsp_vram.bin` | 5058 / 524288 | 97 runs, 1280 B | 10 runs, 1934 B | **510 B** at offset 501538 in `stunrun_maincpu.bin` | `ROM-TABLE-COPIED` |
+| `frame_600_gsp_palette.bin` | 644 / 1024 | 0 | 7 runs, 102 B | 39 B at offset 494 | short coincidence |
+
+The 510-byte match is real and worth naming: it is the ramp
+`01 01 02 02 03 03 04 04 05 05 06 06 07 07 08 08 ...`, a **table the board
+legitimately copies from ROM into VRAM and then draws**. It is not evidence
+that the capture is a mislabelled ROM dump -- 489,230 of the share's 524,288
+bytes are zero, and the buffer is 512 KiB against a ROM set of 5,246,976 bytes,
+so it cannot be a copy of anything wholesale. The palette's 39-byte match is
+`64 8c 78 fa` + 32 bytes of `ff` + `4e 72 27`, i.e. mostly a fill bracketed by
+coincidence; `first_bytes` is printed so this can be judged by eye.
+
+A null control (4 KiB of LCG output with no zero bytes, searched against 8 KiB
+of differently-seeded LCG output) yields zero matches and is asserted in
+`test_rom_overlap_finds_nothing_in_incompressible_data`, so the matcher cannot
+silently degrade into "everything matches".
+
+The rendered PNGs are therefore committable in the same sense as the already
+committed oracle screenshot: they are pictures of the game's screen, not ROM
+bytes.
+
+### 79.7 The mutation battery, because "they differ" is what this tool says
+
+A tool whose output is "the two frames disagree" is worthless if it says that
+unconditionally. `CompareFrameToolTests` in `tests/test_public_tools.py` has 12
+cases, ROM-free and MAME-free, and every direction is pinned: identical frames
+must report zero, and a frame differing by exactly **one** pixel must report
+exactly one. That single-pixel case is the control — a comparator that always
+returned 0, or always returned "different", would satisfy every other case.
+
+Twelve mutations of the tool were each applied to a copy and the suite re-run.
+All twelve were caught; none survived:
+
+| mutation | caught by |
+|---|---|
+| `changed_pixels` forced to 0 | 5 tests |
+| `identical` forced False | 1 test |
+| `agree_lit += 1` removed | 1 test |
+| `agree_lit` forced to every pixel | 1 test |
+| `block_changed[cell] += 1` removed | 1 test |
+| `worst > threshold` -> `>=` | 7 tests |
+| 16-bit PNG accepted instead of rejected | 1 test |
+| recorded checkpoint hash ignored | 1 test |
+| ROM check treats uniform fill as data (trap-9 cry-wolf) | 1 test |
+| ROM check can never match | 1 test |
+| ROM check can only ever match | 1 test |
+| `--block` ignored, fixed 16px cells | 10 tests |
+
+Two of these earned their place by being the failure the task warned about. The
+ROM check "can only ever match" and "can never match" are the same code path in
+opposite directions; between them they pin that the checker is capable of both
+answers, which is what makes `not-rom-derived` a result rather than a default.
+
+---
+
+## 80. The frame-400 scanout fault was the frame ORIGIN, and the "oracle registers" were two different machines
+
+Question put to this investigation: the picture is already in our VRAM, so
+which layer is wrong — the scanout decode (a), the GSP core's register
+computation (b), the shadow readback (c), or the pitch scale (d)?
+
+Answer: none of the four as stated. The scanout decode and the pitch are
+**exactly** MAME's, proven at the pixel; there was one real renderer defect
+(DPYADR used as the frame origin) and it is fixed; and the "oracle registers
+at frame 400" that the forced-register experiment used came from a **different
+machine** than the VRAM dump it was compared against.
+
+### 80.1 The decode is MAME's, verified line for line
+
+`native/gsp_display.c` is a transcription, not a reconstruction. Checked
+against the pinned tree:
+
+| our code | MAME source |
+|---|---|
+| `gsp_display.c:48-68` `stunrun_gsp_display_params()` | `tms34010.cpp:1440-1447` `get_display_params()` |
+| `gsp_display.c:79-82` `row_base_word()` = `(rowaddr << 10) & 0x3FFFF` | `harddriv_v.cpp:451` `&m_gsp_vram[(params->rowaddr << 10) & m_vram_mask]` |
+| `gsp_display.c:142-152` `dpyadr_advance()` | `tms34010.cpp:1394-1401` |
+| `gsp_display.c:219-251` col/byte-pair/palette loop | `harddriv_v.cpp:531-543` |
+| `gsp_display.h:85` `STUNRUN_DPYCTL_DUDATE 0x03FC` | `tms34010.cpp:1399` `IOREG(REG_DPYCTL) & 0x03fc` |
+
+**DUDATE's bit layout, cited rather than guessed:** MAME has no named DPYCTL
+sub-field. It masks the raw register with `0x03fc` (bits 2..9) and uses that
+value directly as the decrement (`tms34010.cpp:1399`). So `DPYCTL 0xF004` is
+DUDATE = 4 units, and with ORG=0 (complement) 4 units per line means
+**four 512-pixel lines per 2048-byte VRAM row**. `DPYCTL 0xF010` is DUDATE = 16,
+i.e. one VRAM row per line. Our header constant already says `0x03FC`; the
+task's "if the DUDATE field differs" hypothesis was refuted before any code
+changed.
+
+### 80.2 The pixel-level proof, and it is not an image comparison
+
+Comparing pictures is weak here: the title screen lights 99% of its pixels, so
+a lit-mask correlation is nearly flat (measured: best band 121,412 matching
+pixels vs 117,248 for the worst — 64% "conflicts" either way, i.e. no signal).
+The palette is also not available (our palette planes are still at 75–77%,
+findings §69), so a raw RGB diff is dominated by colour.
+
+So the test used is palette-free and sharp: **rasterise MAME's own frame-N
+VRAM with MAME's own frame-N registers, and ask whether one pen index ever
+shows two different colours in MAME's own frame-N PNG.** If the addressing is
+right, pen → colour is a function. If it is wrong, it is not.
+
+| frame | DPYSTRT (MAME) | frame origin | pens | conflicts |
+|---|---|---|---:|---:|
+| 400 | `0xFC3C` | VRAM row 60 | 201 | **0 / 122880** |
+| 450 | `0xFC3C` | VRAM row 60 | 201 | **0 / 122880** |
+| 500 | `0xFFFC` | VRAM row 0 | 201 | **0 / 122880** |
+| 550 | `0xFC3C` | VRAM row 60 | 201 | **0 / 122880** |
+| 600 | `0xFC3C` | VRAM row 60 | 48 | **0 / 122880** |
+| 700 | `0xFC3C` | VRAM row 60 | 48 | **0 / 122880** |
+
+Six frames, five of them after the title screen, including two with a
+different scene (48 pens) and one whose origin is a completely different VRAM
+row (500, `DPYSTRT=0xFFFC` → row 0). Zero conflicts everywhere: the row
+address, the column address, `yoffset`, the four-lines-per-row pitch, the
+`(coladdr & 0xff) << 3` sub-line interleave, the low-byte-first word pair and
+the frame origin are all exactly right. **(a) and (d) are refuted.**
+
+### 80.3 The one real renderer defect, and it explains the doubled `Credits: 0`
+
+`stunrun_gsp_display_rasterise()` used to start the frame at
+`regs->dpyadr != 0 ? regs->dpyadr : regs->dpystrt`. MAME never does that:
+
+```c
+/* tms34010.cpp:1321-1327, in scanline_callback(), every frame */
+/* at the start of VBLANK, load the starting display address */
+if (vcount == vsblnk)
+{
+    /* 34010 loads DPYADR with DPYSTRT, and inverts if the origin is 0 */
+    if (!m_is_34020) { IOREG(REG_DPYADR) = IOREG(REG_DPYSTRT); }
+}
+```
+
+The scanline timer walks `vcount` 0..VTOTAL every frame, so that reload
+happens once per frame, before the first visible line. **Any caller-supplied
+DPYADR is a mid-frame sample and cannot be the origin.**
+
+Measured on MAME's own frame-400 data, everything else held constant:
+
+| frame origin | conflicts |
+|---|---:|
+| `DPYSTRT` (`0xFC3C`, the hardware rule) | **0** |
+| the mid-frame sample `DPYADR = 0xF8A4` | **107,983** |
+
+`0xF8A4 ^ 0xFFFC = 0x0758` → VRAM row `0x75` = 117. `DPYSTRT` gives row 60.
+**57 VRAM rows = 228 lines**, and the window is 240 lines — so starting from
+the sample shifted the picture by almost exactly one screen. That is the
+doubled `Credits: 0`: a window slid 228 lines down a 240-line picture wraps,
+so the bottom of the title reappears at the top. It was never a row-pitch
+fault. The HUD-at-top and logo-low symptoms are the same single offset.
+
+Fix, in both copies (`native/gsp_display.c` and
+`backend/gsp_scanout_gl.c:131`, which must move together or
+`gsp-scanout-gl-parity` desynchronises): the frame origin is `regs->dpystrt`,
+unconditionally. `stunrun_gsp_display_force_byte_offset()` now encodes into
+`DPYSTRT` rather than `DPYADR`, and `native/shell.c` prints a loud one-line
+refusal if `STUNRUN_DPYADR` is set — accepting it and ignoring it would look
+like it worked.
+
+### 80.4 Our own refutation: 63612 is 0xF87C, and the task's `0xF8A4` is not it
+
+The brief reported `dpyadr=63612 (0xF8A4)`. 63612 is `0xF87C`. I spent
+measurable time chasing `0xF8A4` (row 117, line 2) as if it were the measured
+value. Both hex values decode to nearly the same row, so the mistake was
+invisible and cost a whole wrong hypothesis. The number MAME prints is
+**decimal** (`print(..., dpyadr, ...)` in `tms34010.cpp:965`, and the Lua
+`M1_GSP_DISPLAY` line), so `result.json` fields read as decimal and must be
+converted, not eyeballed.
+
+### 80.5 The evidence set mixed two machines: `-nvram_directory`, not `-cfg_directory`
+
+This is the finding that makes the original premise unusable, and it is a
+harness defect, not a ROM or MAME one.
+
+`tools/mame-gsp-vram-dump` passes a fresh per-run `-nvram_directory`
+(`tools/mame-gsp-vram-dump:99`). `tools/mame-gsp-state-snapshot` does **not**
+pass one (`tools/mame-gsp-state-snapshot:74-83`), and `-nonvram_save` prevents
+MAME from *writing* NVRAM while still loading what is there. This repository
+has unversioned, gitignored, three-month-old files in `nvram/stunrun/`
+(`mainpcb_200e`, `mainpcb_210e`). So:
+
+| invocation | frame 400 |
+|---|---|
+| private `-cfg_directory` **and** private `-nvram_directory` | black screen; `DPYSTRT=0xFFFF`, `DPYCTL=0xF010`, share rows 8..15, 32..35, 120..187, 200..212 (77,504 nonzero words) — the "DOWNLOADING GSP" screen |
+| private `-cfg_directory`, default NVRAM dir (what the state-snapshot tool does) | the title screen; `DPYSTRT=0xFC3C`, `DPYCTL=0xF004`, `DPYADR=0xF87C`, share rows 0..188 (208,026 nonzero words) |
+
+Isolated by bisecting the command line: `-statename`/`-state_directory` change
+nothing; `-nvram_directory` is the whole difference. Both arms are individually
+deterministic — five runs each, identical registers every time.
+
+Consequences:
+
+1. **The VRAM comparison in the brief compared two different games.** "our VRAM
+   already contains MAME's picture, 0.00% differing over bytes 131072–327680"
+   compared the *NVRAM-empty* machine against our shell. Those bytes are mostly
+   zero-or-identical filler in both; they are not the title picture. The
+   NVRAM-loaded machine's picture lives in rows 0..188, and `DPYSTRT=0xFC3C`
+   points at rows 60..119, which are **empty** in our shell's frame-400 VRAM and
+   populated in MAME's.
+2. **"Forcing the oracle's registers makes the picture appear" was two errors
+   cancelling.** The forced `DPYADR` landed on rows 117..176, which is where
+   our own (mis-positioned) content is; with the frame-origin rule the same
+   forced `DPYSTRT=0xFC3C` renders `lit=0/122880`, because rows 60..119 really
+   are empty in our VRAM.
+3. Trap 10 in `AGENTS.md` is about `-cfg_directory`. The same class of defect
+   exists for `-nvram_directory`, `MameCfgIsolationTests` does not cover it,
+   and the committed evidence does not record which NVRAM state produced which
+   observation. **Any frame number from a tool that does not isolate
+   `-nvram_directory` is not a frame number yet.**
+
+`tools/mame-gsp-vram-dump`'s own docstring already warns that a direct
+`memory_share` capture is authoritative over its program-space read; that is a
+separate, still-open question. `multisync_gsp_map` is
+`map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram")`
+(`harddriv.cpp:628`), a plain share, so `read_u16(0xff800000 + i*0x10)` at
+`addrshift=3` is share word `i` — the program-space read is faithful here and
+the two tools disagree only because they are different machines.
+
+### 80.6 So what is actually left for frame 400
+
+Our shell at frame 400 has share rows 8..11, 120..187, 200..222, 230, 243..245,
+255 populated (84,668 nonzero words); the NVRAM-loaded MAME has rows 0..188
+populated (208,026). The content our GSP *has* drawn sits ~120 rows below where
+`DPYSTRT` points, and it is much smaller. Our core's shadow reads
+`DPYSTRT=0xFFFC`, `DPYCTL=0xF010` — and MAME's own `GSPREG` hook shows those
+exact values early in the same run (`call=1 DPYSTRT=ffff DPYCTL=f010`,
+`call=601 DPYSTRT=fffc DPYCTL=f004`), so the shadow readback (c) is **not**
+wrong: our core has simply not reached the point of the GSP's programming
+sequence where the title is drawn and `DPYSTRT` is set to `0xFC3C`.
+
+The remaining frame-400 gap is therefore (b) — our GSP core's execution — and
+it is not reachable from the renderer. Fixing it means reconstructing more of
+the GSP display-list program (the title-screen geometry/records), which is
+`gsvp.4`'s open "display-list semantics" item in `STATUS.md`, not a scanout
+fault. It is not fixed here and is not claimed to be.
+
+### 80.7 Negative controls, rebuilt not diffed
+
+| control | result |
+|---|---|
+| restore `dpyadr != 0 ? dpyadr : dpystrt` in the renderer | `gsp-display-slice-c` exits **1**, 5 FAILs, incl. "all 512 pixels of line 0 read the DPYSTRT row" |
+| pitch stride 4 → 16 (one VRAM row per line) | exits **1**, 2 FAILs incl. "line 1 x=1 … SAME row 0x3C" |
+| raise `GSP_DISPLAY_MIN_CHECKS` 40 → 400 | exits **1**, "checks run: 48 (minimum 400)" FAIL |
+| `STUNRUN_DPYCTL_DUDATE 0x03FC` → `0x0FFC` | **no effect** — `dpyadr_advance` re-masks with `& 0xFFFC`. Recorded as a control that does **not** work, so nobody re-runs it expecting a signal |
+| restore `STUNRUN_DPYADR` in the GL path only | not attempted; both copies moved in the same edit, and `gsp-scanout-gl-parity` passes |
+
+The zero-match control is a finding in its own right: **`ctest -R <no match>`
+prints "No tests were found!!!" and exits 0.** A mis-registered or
+renamed-target selection is therefore silently green on this gate. The slice
+test now counts its own assertions and fails if fewer than 40 ran, so at least
+this test cannot pass vacuously.
+
+### 80.8 Frame-400 pixel count, honestly
+
+`tools/compare-frame --frame 400` against MAME's frame 400:
+
+| | differing pixels / 122880 |
+|---|---:|
+| before this change (our registers, our VRAM) | **122,626** (99.79%) |
+| after this change, default live path | **122,626** — byte-identical PNG (sha256 `381b93f4…`) |
+
+**The change does not improve our frame 400, and is not expected to.** The
+default live path already passed `dpyadr = 0` (the core never wrote DPYADR,
+`core-set=[DPYSTRT DPYCTL]`), so it was already using `DPYSTRT` and the fix is
+a no-op for it. What the fix removes is the *ability to be wrong*: the
+forced-register experiment that motivated the brief now renders
+`lit=0/122880` instead of a plausible-but-sheared `lit=117517/122880`, which
+is the truthful answer for VRAM whose rows 60..119 are empty.
+
+What does improve, measurably: our scanout now reproduces MAME's own frame
+pixel for pixel from MAME's own inputs at 400/450/500/550/600/700 — 0 of
+122,880 pen-to-colour conflicts at each — where before the frame-origin
+heuristic would have produced 107,983 conflicts at frame 400 for any caller
+that supplied a mid-frame DPYADR.
+
+### 80.9 Not established
+
+- Why our core stops before drawing the title. Not investigated; that is the
+  GSP program, and `STATUS.md` gsvp.4 already carries it as open.
+- Whether our palette planes at frame 400 are wrong or merely read from the
+  wrong bank. Findings §69's 75–77% agreement stands; the `palinv` test shows
+  the *addressing* is exact, so any residual colour error is the palette table
+  or its bank, not the scanout.
+- Whether the repo's stale `nvram/stunrun/mainpcb_200e`/`_210e` are the
+  "correct" title state or an artefact of some earlier experiment. §80.5 shows
+  the tools disagree because of it; deciding which state is canonical is not
+  mine to make.
+- Frame numbers from `tools/mame-gsp-state-snapshot` are currently unsafe as
+  frame numbers at all, until it isolates `-nvram_directory`. **Not fixed here**
+  — it is another agent's tool and changing it invalidates committed evidence.
+
+## 81. The rasteriser is correct; the palette is the fault
+
+### 81.1 The test that isolates it
+
+Rendering **MAME's own frame-400 VRAM** through **our** rasteriser
+(`tools/gsp_render.py`) produces the text correctly:
+
+```
+STUN RUNNER
+PROCESSING BACKGROUNDS
+
+DOWNLOADING GSP
+```
+
+Right glyphs, right positions, right line spacing — and **the background is
+yellow where MAME renders it black.** Every earlier diagnosis this session
+blamed the scanout, the palette, or the VRAM. Feeding the oracle's data through
+our own code says the scanout is right and the palette is wrong. Geometry,
+`DPYSTRT` frame origin, `DUDATE`, and glyph placement are all correct.
+
+This is the separation that mattered: *our data wrong* vs *our renderer wrong*.
+It is the renderer that is fine.
+
+### 81.2 `gsp_render.py` rendered every non-600 frame black
+
+Its display constants are the **frame-600** register values, hardcoded at module
+scope. Rendering frame 400 with them produced an all-black framebuffer — which
+reads as "the VRAM is empty" rather than "these are the wrong registers", and
+cost a cycle chasing an imaginary empty-VRAM bug.
+
+Added `--dpystrt/--dpytap/--dpyctl`. The registers are part of a capture; a
+capture tool must not hardcode one moment's values.
+
+Also fixed `rasterise()`'s keyword `dputap` (typo) -> `dpytap`, and documented
+why the frame origin is `DPYSTRT` and not a mid-frame `DPYADR`: MAME reloads
+`DPYADR` from `DPYSTRT` each frame (tms34010.cpp:1321-1327), so using a
+mid-frame value as the origin shifts a 240-line picture by whole rows and wraps
+its bottom to the top — the doubled `Credits: 0`.
+
+### 81.3 The palette cannot be dumped from Lua — a recorded limitation
+
+`mame/lua/gsp-vram-dump.lua` gained an opt-in `STUNRUN_GSP_DUMP_PALETTE=1`
+palette dump, and **it does not work**, for two distinct reasons found in
+sequence:
+
+1. The palette is **not in VRAM**. Reading it from the VRAM space yields 1024
+   all-zero pens and a uniformly black render.
+2. `harddriv.cpp:399-400` declares the palette as **address_space members**
+   (`m_gsp_paletteram_lo/hi`, 1024 entries), not memory shares — so Lua cannot
+   reach the backing store. The `0xf5000000` window does go through
+   `hdgsp_paletteram_lo_r`, but that handler masks the offset to 8 bits and adds
+   `m_gfx_palettebank * 0x100`, so it cannot address entry 256+ without driving
+   the bank register.
+
+Dumping through the window anyway produces a **plausible-looking but wrong**
+palette — which is worse than none, because it renders something. The Lua now
+reports the limitation instead of silently emitting bad data, and a dumpdir
+carries VRAM only.
+
+Getting the real palette needs a small C++ observer in the driver. Until then
+the frame-400 palette evidence in 81.1 came from a window read that is **not
+trusted**; the renderer result stands, the palette bytes do not.
+
+### 81.4 Refutation: my earlier "palette is collapsed to black" claim
+
+I looked at two palette files of **different sizes** (oracle 1024 bytes, native
+2048+2048) different frames, different layouts) byte-offset against
+byte-offset and concluded the native palette had "collapsed toward zero",
+citing 66.9% black versus saturated colours. Those were two **different capture
+formats**; the comparison was meaningless, and the 66.9% figure was a rendering
+artefact of the wrong register set, not evidence about the palette at all.
+
+Read the formats before comparing them. Twice now in this session a conclusion
+came from comparing things that were not comparable — once palettes, once two
+MAME binaries that `analysis/mame-local-patches.md` explicitly says are not
+interchangeable.

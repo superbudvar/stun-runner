@@ -1920,5 +1920,472 @@ class GeometryFixtureCommittabilityTests(unittest.TestCase):
                       "the twin-equality guard must remain")
 
 
+class CompareFrameToolTests(unittest.TestCase):
+    """The side-by-side frame comparison must be able to say IDENTICAL.
+
+    This tool exists because a hash told two renderers differ and nothing said
+    where. The failure mode to guard against is the mirror image of that one: a
+    tool that always reports a mismatch, or that always reports zero, reads
+    exactly like a working tool. So every case here pins a direction, and the
+    single-pixel case is the sensitivity control -- if the metric cannot see one
+    changed pixel it cannot be trusted when it reports thousands.
+    """
+
+    WIDTH, HEIGHT = 512, 240
+
+    def write_png(self, path, width, height, pixels):
+        """Independent PNG writer.
+
+        The test must not build its input with the tool's own encoder, or a
+        broken encoder hides a broken comparator.
+        """
+        raw = bytearray()
+        stride = width * 3
+        for row in range(height):
+            raw.append(0)
+            raw += pixels[row * stride:(row + 1) * stride]
+
+        def chunk(tag, payload):
+            return (struct.pack(">I", len(payload)) + tag + payload
+                    + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+        blob = b"\x89PNG\r\n\x1a\n"
+        blob += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        blob += chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+        blob += chunk(b"IEND", b"")
+        path.write_bytes(blob)
+
+    def read_png_size(self, path):
+        data = path.read_bytes()
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"), f"{path} is not a PNG")
+        offset, width, height = 8, None, None
+        while offset < len(data):
+            size = struct.unpack_from(">I", data, offset)[0]
+            if data[offset + 4:offset + 8] == b"IHDR":
+                width, height = struct.unpack_from(">II", data, offset + 8)
+            offset += size + 12
+        return width, height
+
+    def gradient(self, width, height):
+        pixels = bytearray(width * height * 3)
+        for y in range(height):
+            for x in range(width):
+                offset = (y * width + x) * 3
+                pixels[offset] = (x * 7 + y * 3) & 0xFF
+                pixels[offset + 1] = (y * 5 + x) & 0xFF
+                pixels[offset + 2] = (x + y * 11) & 0xFF
+        return pixels
+
+    def compare(self, oracle, native, *extra, inspect=None):
+        """Run the tool on two PNGs and return its JSON report.
+
+        `inspect` runs while the output directory still exists, so a case can
+        check the images the tool wrote.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            out = pathlib.Path(temp) / "out"
+            result = subprocess.run(
+                [str(ROOT / "tools/compare-frame"), str(oracle), str(native),
+                 "--out", str(out), "--json", *extra],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0,
+                             f"compare-frame failed:\n{result.stdout}\n{result.stderr}")
+            report = json.loads(result.stdout)
+            self.assertEqual(report["schema"], "stunrun-frame-compare/v1")
+            if inspect is not None:
+                inspect(report, out)
+            return report
+
+    def test_identical_frames_report_zero_differing_pixels(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            frame = temp / "frame.png"
+            self.write_png(frame, self.WIDTH, self.HEIGHT,
+                           self.gradient(self.WIDTH, self.HEIGHT))
+            report = self.compare(frame, frame)
+            comparison = report["comparison"]
+            self.assertTrue(comparison["identical"])
+            self.assertEqual(comparison["changed_pixels"], 0)
+            self.assertEqual(comparison["changed_pixel_fraction"], 0.0)
+            self.assertEqual(comparison["max_abs_error"], 0)
+            self.assertEqual(report["oracle"]["sha256"], report["native"]["sha256"])
+            # Every block must read cold, so a heatmap painted from anything
+            # other than the measurement cannot pass this.
+            self.assertTrue(all(cell == 0.0 for row in comparison["block_fraction"]
+                                for cell in row),
+                            "a zero difference must produce an all-zero block map")
+
+    def test_a_single_changed_pixel_is_detected(self):
+        """Sensitivity control.
+
+        Without this, a comparator that always returned 0 or always returned
+        "different" would satisfy every other case in this class.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            oracle_pixels = self.gradient(self.WIDTH, self.HEIGHT)
+            native_pixels = bytearray(oracle_pixels)
+            target = (self.HEIGHT // 2) * self.WIDTH + self.WIDTH // 2
+            native_pixels[target * 3] ^= 0xFF
+            oracle = temp / "oracle.png"
+            native = temp / "native.png"
+            self.write_png(oracle, self.WIDTH, self.HEIGHT, oracle_pixels)
+            self.write_png(native, self.WIDTH, self.HEIGHT, native_pixels)
+            comparison = self.compare(oracle, native)["comparison"]
+            self.assertFalse(comparison["identical"])
+            self.assertEqual(comparison["changed_pixels"], 1)
+            self.assertAlmostEqual(comparison["changed_pixel_fraction"],
+                                   1.0 / (self.WIDTH * self.HEIGHT), places=12)
+            expected = abs(oracle_pixels[target * 3] - native_pixels[target * 3])
+            self.assertEqual(comparison["max_abs_error"], expected)
+
+    def test_difference_is_located_in_the_right_block(self):
+        """A hash says they differ; the block map says where. That is the whole
+        point of the tool, so a difference in the wrong cell fails the test."""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            oracle_pixels = self.gradient(self.WIDTH, self.HEIGHT)
+            native_pixels = bytearray(oracle_pixels)
+            # Block-aligned, so each affected 8x8 cell is either wholly full
+            # or wholly empty. A square straddling a boundary would only prove
+            # that partial cells are counted, not that they land in the
+            # right cell.
+            left, top, size = 200, 96, 16
+            for y in range(top, top + size):
+                for x in range(left, left + size):
+                    offset = (y * self.WIDTH + x) * 3
+                    native_pixels[offset:offset + 3] = b"\x00\x00\x00"
+            oracle = temp / "oracle.png"
+            native = temp / "native.png"
+            self.write_png(oracle, self.WIDTH, self.HEIGHT, oracle_pixels)
+            self.write_png(native, self.WIDTH, self.HEIGHT, native_pixels)
+            comparison = self.compare(oracle, native)["comparison"]
+            self.assertEqual(comparison["changed_pixels"], size * size)
+            grid = comparison["block_fraction"]
+            block = comparison["block_size"]
+            row, column = top // block, left // block
+            for delta_row in range(size // block):
+                for delta_column in range(size // block):
+                    self.assertEqual(grid[row + delta_row][column + delta_column], 1.0,
+                                     f"block ({row + delta_row},{column + delta_column}) "
+                                     f"must be wholly different")
+            hot = sum(1 for line in grid for cell in line if cell > 0.0)
+            self.assertEqual(hot, 4,
+                             "a 16x16 block-aligned square spans exactly four "
+                             "8x8 cells; anything else means cells are misplaced")
+            worst = comparison["worst_blocks"][0]
+            self.assertEqual((worst["x"], worst["y"]), (column, row))
+            self.assertEqual(worst["changed_pixels"], block * block)
+
+    def test_threshold_is_exact_by_default_and_only_widens_when_asked(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            oracle_pixels = self.gradient(self.WIDTH, self.HEIGHT)
+            native_pixels = bytearray(oracle_pixels)
+            # One 1-LSB perturbation and one 2-LSB perturbation, so the
+            # threshold ladder is distinguishable at 0, 1 and 2.
+            native_pixels[0] = (native_pixels[0] + 1) & 0xFF
+            offset = (7 * self.WIDTH + 9) * 3
+            self.assertNotEqual(oracle_pixels[offset], oracle_pixels[offset] + 2,
+                                "gradient must not already differ by exactly 2 here")
+            native_pixels[offset] = (oracle_pixels[offset] + 2) & 0xFF
+            oracle = temp / "oracle.png"
+            native = temp / "native.png"
+            self.write_png(oracle, self.WIDTH, self.HEIGHT, oracle_pixels)
+            self.write_png(native, self.WIDTH, self.HEIGHT, native_pixels)
+            # A pixel counts as different when its worst channel delta is
+            # STRICTLY greater than the threshold, so the ladder is 2, 1, 0.
+            self.assertEqual(
+                self.compare(oracle, native)["comparison"]["changed_pixels"], 2)
+            self.assertEqual(
+                self.compare(oracle, native, "--threshold", "1"
+                             )["comparison"]["changed_pixels"], 1)
+            self.assertEqual(
+                self.compare(oracle, native, "--threshold", "2"
+                             )["comparison"]["changed_pixels"], 0)
+
+    def test_writes_side_by_side_diff_and_block_map(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            oracle_pixels = self.gradient(self.WIDTH, self.HEIGHT)
+            native_pixels = bytearray(oracle_pixels)
+            for y in range(0, self.HEIGHT, 2):
+                for x in range(0, self.WIDTH, 2):
+                    offset = (y * self.WIDTH + x) * 3
+                    native_pixels[offset:offset + 3] = b"\xff\xff\xff"
+            oracle = temp / "oracle.png"
+            native = temp / "native.png"
+            self.write_png(oracle, self.WIDTH, self.HEIGHT, oracle_pixels)
+            self.write_png(native, self.WIDTH, self.HEIGHT, native_pixels)
+
+            def inspect(report, out):
+                self.assertEqual(report["comparison"]["changed_pixels"],
+                                 (self.WIDTH // 2) * (self.HEIGHT // 2))
+                images = report["images"]
+                side = pathlib.Path(images["side_by_side"])
+                diff = pathlib.Path(images["diff"])
+                block_map = pathlib.Path(images["block_map"])
+                for path in (side, diff, block_map):
+                    self.assertTrue(path.is_file(), f"{path} was not written")
+                gap = 10
+                self.assertEqual(self.read_png_size(side),
+                                 (2 * self.WIDTH + gap, self.HEIGHT))
+                self.assertEqual(self.read_png_size(diff), (self.WIDTH, self.HEIGHT))
+                # The block map is a heatmap drawn at block resolution but
+                # full frame size, so it lines up with the frames above it.
+                self.assertEqual(self.read_png_size(block_map),
+                                 (self.WIDTH, self.HEIGHT))
+
+            self.compare(oracle, native, "--gap", "10", inspect=inspect)
+
+    def test_rejects_a_size_mismatch_instead_of_resizing(self):
+        """A resized comparison hides the shear this tool exists to find."""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            big = temp / "big.png"
+            small = temp / "small.png"
+            self.write_png(big, 512, 240, self.gradient(512, 240))
+            self.write_png(small, 256, 120, self.gradient(256, 120))
+            result = subprocess.run(
+                [str(ROOT / "tools/compare-frame"), str(big), str(small),
+                 "--out", str(temp / "out")],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("frame size mismatch", result.stderr)
+            self.assertFalse((temp / "out/diff.png").exists(),
+                             "a rejected comparison must not leave a diff behind")
+
+    def test_rejects_a_png_it_cannot_decode_honestly(self):
+        """A 16-bit PNG must fail loudly, not be silently misread."""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            good = temp / "good.png"
+            self.write_png(good, 16, 16, self.gradient(16, 16))
+            raw = bytearray()
+            for _ in range(16):
+                raw.append(0)
+                raw += bytes(16 * 6)
+
+            def chunk(tag, payload):
+                return (struct.pack(">I", len(payload)) + tag + payload
+                        + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+            bad = temp / "bad.png"
+            bad.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                + chunk(b"IHDR", struct.pack(">IIBBBBB", 16, 16, 16, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+                + chunk(b"IEND", b""))
+            result = subprocess.run(
+                [str(ROOT / "tools/compare-frame"), str(good), str(bad),
+                 "--out", str(temp / "out")],
+                cwd=ROOT, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("unsupported PNG", result.stderr)
+
+    def test_agreeing_pixels_are_split_into_black_and_drawn(self):
+        """'They agree on 3.81% of pixels' means nothing without this split.
+
+        Two frames can agree almost entirely on background black and still share
+        no drawn content at all -- which is exactly the case this tool exists to
+        expose, and exactly the case a single agreeing-pixel figure hides. The
+        band here is shifted by one row AND each row's colour comes from the
+        source row, so even the rows that overlap disagree: otherwise the shift
+        would leave most of the band identical.
+        """
+        top, rows = 120, 80
+
+        def band(y):
+            # Red is never 0, so a band row is never black. band(0) being black
+            # would make the oracle's top band row agree with the native
+            # background and quietly remove a row from the difference.
+            return bytes(((y + 1) & 0xFF, (y * 7) & 0xFF, (y * 13) & 0xFF))
+
+        def frame(first_row):
+            pixels = bytearray(self.WIDTH * self.HEIGHT * 3)
+            for y in range(first_row, first_row + rows):
+                colour = band(y - first_row)
+                for x in range(self.WIDTH):
+                    offset = (y * self.WIDTH + x) * 3
+                    pixels[offset:offset + 3] = colour
+            return pixels
+
+        oracle_pixels = frame(top)
+        native_pixels = frame(top + 1)
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            oracle = temp / "oracle.png"
+            native = temp / "native.png"
+            self.write_png(oracle, self.WIDTH, self.HEIGHT, oracle_pixels)
+            self.write_png(native, self.WIDTH, self.HEIGHT, native_pixels)
+            comparison = self.compare(oracle, native)["comparison"]
+            # The oracle's band rows, the native band's rows, plus the one
+            # partial row at each end, all differ.
+            self.assertEqual(comparison["changed_pixels"],
+                             (rows + 1) * self.WIDTH)
+            # Everything outside both bands is black on both sides.
+            self.assertEqual(comparison["agreeing_both_black_pixels"],
+                             (self.HEIGHT - rows - 1) * self.WIDTH)
+            self.assertEqual(
+                comparison["agreeing_lit_pixels"], 0,
+                "a band shifted by one row shares no drawn pixel")
+            self.assertEqual(
+                comparison["agreeing_pixels"],
+                comparison["agreeing_both_black_pixels"]
+                + comparison["agreeing_lit_pixels"])
+            self.assertEqual(comparison["agreeing_pixels"]
+                             + comparison["changed_pixels"],
+                             self.WIDTH * self.HEIGHT)
+            self.assertEqual(comparison["agreeing_lit_blocks"], [])
+
+    def test_identical_frames_agree_on_drawn_content_not_only_black(self):
+        """The mirror of the case above: agreement must be reported as such."""
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            pixels = self.gradient(self.WIDTH, self.HEIGHT)
+            black = sum(1 for index in range(self.WIDTH * self.HEIGHT)
+                        if pixels[index * 3:index * 3 + 3] == b"\x00\x00\x00")
+            self.assertGreater(black, 0,
+                               "the gradient must contain black too, or the "
+                               "black/lit split is not being exercised")
+            frame = temp / "frame.png"
+            self.write_png(frame, self.WIDTH, self.HEIGHT, pixels)
+            comparison = self.compare(frame, frame)["comparison"]
+            total = self.WIDTH * self.HEIGHT
+            self.assertEqual(comparison["agreeing_both_black_pixels"], black)
+            self.assertEqual(comparison["agreeing_lit_pixels"], total - black)
+            self.assertEqual(comparison["agreeing_lit_pixels"]
+                             + comparison["agreeing_both_black_pixels"], total)
+            self.assertTrue(comparison["agreeing_lit_blocks"],
+                            "identical frames must have agreeing-lit blocks")
+
+    def test_flags_the_recorded_checkpoint_hash_it_could_not_reproduce(self):
+        """The recorded title-checkpoint screenshot hash does NOT reproduce.
+
+        Five fresh `--input none` MAME runs of frame 600 all produce
+        6d46e033...e07f3, which is also the committed fixture, while
+        reference/checkpoints/title/metadata.json records e11398c9...02ac6.
+        The tool must surface that rather than compare silently. Pinned as a
+        test because it is the claim this tool was built to settle, and
+        because if a later MAME or harness change does make it reproduce, this
+        failing is the signal to re-derive the oracle -- not an invitation to
+        relax the comparison.
+        """
+        metadata = json.loads(
+            (ROOT / "reference/checkpoints/title/metadata.json").read_text(encoding="utf-8"))
+        recorded = metadata["screenshot"]["sha256"]
+        fixture = ROOT / "fixtures/oracle/frame_600/frame_600_screen.png"
+        fixture_sha = hashlib.sha256(fixture.read_bytes()).hexdigest()
+        self.assertNotEqual(
+            fixture_sha, recorded,
+            "the committed frame-600 oracle now matches the recorded checkpoint "
+            "screenshot; re-derive the oracle and update this test deliberately")
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            native = temp / "n.png"
+            self.write_png(native, 512, 240, self.gradient(512, 240))
+            result = subprocess.run(
+                [str(ROOT / "tools/compare-frame"),
+                 "--oracle-png", str(fixture), "--native-png", str(native),
+                 "--out", str(temp / "out"), "--json"],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0,
+                             result.stdout + result.stderr)
+            report = json.loads(result.stdout)
+            expectation = report["checkpoint_expectation"]
+            self.assertEqual(expectation["recorded_screenshot_sha256"], recorded)
+            self.assertEqual(report["oracle"]["sha256"], fixture_sha)
+            self.assertFalse(expectation["reproduced"])
+            self.assertIn("MISMATCH", expectation["verdict"])
+            self.assertIn("oracle sha256 does not match",
+                          " ".join(report["warnings"]))
+            # The oracle must still be reported as the committed fixture, so
+            # the mismatch is attributable to the recorded checkpoint rather
+            # than to a misread file.
+            self.assertTrue(report["oracle"]["matches_committed_fixture"])
+
+    def test_rom_overlap_ignores_a_uniform_fill_and_catches_a_copied_table(self):
+        """The check behind AGENTS.md trap 9, with both directions pinned.
+
+        An erased ROM region is a long run of one repeated byte and a sparse
+        capture is full of 0xFF fill, so the naive "does any run appear in the
+        ROM set" test reports ROM-VERBATIM on the GSP VRAM fixture's fill and
+        cries wolf. Uniform runs must be skipped; a real data table must not be.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            table = bytes(range(1, 201))
+            (roms / "cpu.bin").write_bytes(b"\xff" * 4096 + table + b"\xff" * 4096)
+            frame = temp / "frame.png"
+            self.write_png(frame, 16, 16, self.gradient(16, 16))
+
+            fill_only = temp / "fill.bin"
+            fill_only.write_bytes(b"\x00" * 64 + b"\xff" * 512 + b"\x00" * 64)
+            entry = self.compare(
+                frame, frame, "--rom-overlap-buffer", str(fill_only),
+                "--rom-dir", str(roms))["rom_overlap_checks"][0]
+            self.assertEqual(entry["uniform_fill_runs"], 1)
+            self.assertEqual(entry["uniform_fill_bytes_not_searched"], 512)
+            self.assertEqual(entry["data_runs_searched"], 0)
+            self.assertEqual(entry["longest_verbatim_data_run"]["length"], 0,
+                             "a uniform fill matching an erased ROM region is a "
+                             "coincidence, not a ROM copy")
+            self.assertEqual(entry["verdict"], "not-rom-derived")
+
+            copied = temp / "copied.bin"
+            copied.write_bytes(b"\x00" * 32 + table + b"\x00" * 32)
+            report = self.compare(
+                frame, frame, "--rom-overlap-buffer", str(copied),
+                "--rom-dir", str(roms))
+            entry = report["rom_overlap_checks"][0]
+            self.assertEqual(entry["data_runs_searched"], 1)
+            self.assertEqual(entry["longest_verbatim_data_run"]["length"], 200)
+            self.assertEqual(entry["longest_verbatim_data_run"]["offset"], 32)
+            self.assertEqual(entry["longest_verbatim_data_run"]["rom"], "cpu.bin")
+            self.assertIn("ROM-TABLE-COPIED", entry["verdict"])
+            self.assertIn("ROM-TABLE-COPIED", " ".join(report["warnings"]),
+                          "a copied table must raise a warning, not just a field")
+
+    def test_rom_overlap_finds_nothing_in_incompressible_data(self):
+        """Null control: the matcher must be able to return zero matches.
+
+        A check that can only ever say "matches" is indistinguishable from one
+        that cannot fail.
+        """
+        def lcg_bytes(seed, count):
+            state = seed
+            out = bytearray()
+            for _ in range(count):
+                state = (1103515245 * state + 12345) & 0x7FFFFFFF
+                # 1..255, so nonzero runs are long and plenty of runs get
+                # searched. A control that searches nothing proves nothing.
+                out.append(1 + ((state >> 16) % 255))
+            return bytes(out)
+
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "noise.bin").write_bytes(lcg_bytes(0x12345678, 8192))
+            probe = temp / "noise.bin"
+            probe.write_bytes(lcg_bytes(0x0BADC0DE, 4096))
+            frame = temp / "frame.png"
+            self.write_png(frame, 16, 16, self.gradient(16, 16))
+            entry = self.compare(
+                frame, frame, "--rom-overlap-buffer", str(probe),
+                "--rom-dir", str(roms))["rom_overlap_checks"][0]
+            self.assertGreater(entry["data_runs_searched"], 0,
+                               "control is vacuous if nothing was searched")
+            self.assertGreater(entry["data_run_bytes_searched"], 1000,
+                               "control is too short to be meaningful")
+            self.assertEqual(entry["longest_verbatim_data_run"]["length"], 0)
+            self.assertEqual(entry["verdict"], "not-rom-derived")
+
+
 if __name__ == "__main__":
     unittest.main()

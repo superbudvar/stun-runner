@@ -1,0 +1,1211 @@
+#!/usr/bin/env python3
+"""Put MAME's frame N next to the native shell's frame N and measure the gap.
+
+Question this answers: *where* do the two renderers disagree, not merely that
+their hashes differ. It writes `side-by-side.png` (oracle left, native right,
+each labelled), `diff.png` (amplified absolute per-channel difference) and
+`block-map.png` (coarse difference density), and reports differing-pixel count,
+differing-pixel fraction, and an 8x8 block map of the difference density.
+
+The metric that matters most is not the differing count. It is the split of the
+pixels that AGREE into `agreeing_both_black_pixels` and
+`agreeing_lit_pixels`, because "the two frames agree on 3.81% of pixels" reads
+very differently when all of that agreement is background black and **zero**
+pixels agree on drawn content. A tool reporting one number for both hides
+exactly the case worth seeing. When `agreeing_lit_pixels` is 0 and something
+differs, the tool says so loudly on stdout.
+
+Oracle acquisition, in order of preference:
+
+  `--oracle-source fixture` (default)
+      Reads the committed `fixtures/oracle/frame_600/frame_600_screen.png`.
+      ROM-free, MAME-free, and committed, so this path is reproducible from a
+      clean checkout. That fixture is a `service`-input frame 600; see
+      `fixtures/oracle/frame_600/metadata.json`.
+
+  `--oracle-source mame`
+      Runs the pinned MAME through `tools/mame-gsp-state-snapshot` with
+      `--input none` and `--targets N`. `--input none` is the only MAME input
+      mode this repository treats as deterministic (AGENTS.md trap 4), and
+      `--nothrottle` keeps emulated frame numbers meaningful. This path is the
+      only one that can answer "does the hash recorded in
+      `reference/checkpoints/title/metadata.json` still reproduce?".
+
+  `--oracle-png PATH`
+      Any PNG you already have. Use this to compare two of our own frames.
+
+What it reports about provenance, loudly rather than silently:
+
+  * the sha256 of the oracle image actually used;
+  * whether that equals the `screenshot.sha256` recorded in the title
+    checkpoint's metadata.json (it does NOT, and the tool says so on stderr);
+  * whether the oracle image is byte-identical to the committed fixture.
+
+What this tool gets wrong, and cannot see:
+
+  * It compares ONE frame. Two frames agreeing is not evidence the emulations
+    agree; it is consistent with a frozen, blank, or all-black frame on either
+    side hashing just as reproducibly as a correct one. Read `lit`/`colours`
+    from the native run's own `render frame=` line before believing a match.
+    `agreeing_both_black_pixels` is printed for the same reason: agreement on
+    black is not agreement.
+  * A per-pixel difference has no notion of which side is right. The tool says
+    "these disagree", never "the native side is wrong".
+  * Frame N on each side is frame N of each side's OWN counter. Neither is
+    anchored to the other's emulated clock, so a timing offset shows up as a
+    content difference and is indistinguishable from a wrong pixel. The native
+    shell must have a display (`STUNRUN_LIVE_VIDEO=1`) or it renders
+    `mode=blank-scaffold` and every pixel is black: a comparison against that
+    is a comparison against nothing.
+  * `--threshold` is a comparison knob, not a pass/fail gate. Raising it to
+    make a mismatch disappear defeats the tool; the default is exact equality.
+  * It cannot read MAME's GSP VRAM/palette/registers, so it cannot separate
+    "our scanout of the oracle's VRAM is wrong" from "our VRAM is wrong". For
+    that split use `tools/decode-gsp-frame` and `tools/gsp_render.py`.
+  * The `--check-rom-overlap` pass only searches maximal nonzero runs of length
+    >= 8. A buffer built from short ROM-derived fragments, or one whose runs
+    were transformed, can pass it while still being derived from ROM bytes.
+
+Usage:
+
+    tools/compare-frame --out OUTDIR                     # fixture oracle + native run
+    tools/compare-frame --out OUTDIR --oracle-source mame \
+        --rompath roms --mame /mnt/build/mame-oracle/mame
+    tools/compare-frame A.png B.png --out OUTDIR         # compare two PNGs
+
+Every wait is bounded: `--native-timeout` (default 900 s) for the shell and
+`--mame-timeout` (default 900 s) for MAME. A timeout says what it was waiting
+for and exits nonzero. Runs go through a private Xvfb and are reaped.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+from collections import Counter
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+DEFAULT_ORACLE_PNG = ROOT / "fixtures/oracle/frame_600/frame_600_screen.png"
+DEFAULT_CHECKPOINT_METADATA = ROOT / "reference/checkpoints/title/metadata.json"
+DEFAULT_SHELL = ROOT / "build/native/stunrun-native-shell"
+DEFAULT_ROM_DIR = ROOT / "roms/stunrun"
+DEFAULT_ROMPATH = ROOT / "roms"
+
+# The board frame both renderers produce. MAME's snapshot and the native
+# shell's capture are both 512x240; a mismatch is a loud failure, not a resize.
+EXPECTED_WIDTH = 512
+EXPECTED_HEIGHT = 240
+
+
+class CompareError(RuntimeError):
+    """A comparison that cannot be made honestly. Never silently degraded."""
+
+
+# --------------------------------------------------------------------------
+# PNG decode / encode. No PIL and no numpy in this environment, and the house
+# style (tools/gsp_render.py) already writes PNGs with zlib directly.
+# --------------------------------------------------------------------------
+
+def decode_png(path: pathlib.Path) -> tuple[int, int, bytes]:
+    """Return (width, height, packed RGB bytes) for an 8-bit non-interlaced PNG.
+
+    Accepts colour type 2 (RGB) and 6 (RGBA) only. Anything else is rejected
+    loudly: a reader that silently mis-decodes a 16-bit or palette PNG invents
+    a plausible frame and every number derived from it becomes fiction.
+    """
+    data = path.read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise CompareError(f"{path}: not a PNG (bad signature)")
+    width = height = depth = colour = interlace = None
+    idat = bytearray()
+    offset = 8
+    while offset < len(data):
+        if offset + 8 > len(data):
+            raise CompareError(f"{path}: truncated PNG chunk header at {offset}")
+        size = struct.unpack_from(">I", data, offset)[0]
+        kind = data[offset + 4:offset + 8]
+        payload = data[offset + 8:offset + 8 + size]
+        if offset + 8 + size > len(data):
+            raise CompareError(f"{path}: truncated PNG {kind.decode()} chunk")
+        if kind == b"IHDR":
+            width, height, depth, colour, _, _, interlace = struct.unpack(">IIBBBBB", payload)
+        elif kind == b"IDAT":
+            idat += payload
+        offset += size + 12
+    if width is None or not idat:
+        raise CompareError(f"{path}: PNG has no IHDR or no IDAT")
+    if depth != 8 or interlace != 0 or colour not in (2, 6):
+        raise CompareError(
+            f"{path}: unsupported PNG (depth={depth} colour_type={colour} "
+            f"interlace={interlace}); need depth 8, colour_type 2 or 6, "
+            f"interlace 0")
+    channels = 3 if colour == 2 else 4
+    stride = width * channels
+    raw = zlib.decompress(bytes(idat))
+    if len(raw) != (stride + 1) * height:
+        raise CompareError(
+            f"{path}: PNG pixel data is {len(raw)} bytes, expected "
+            f"{(stride + 1) * height} for {width}x{height} ({channels} channels)")
+    out = bytearray(width * height * 3)
+    previous = bytearray(stride)
+    position = 0
+    for row in range(height):
+        method = raw[position]
+        position += 1
+        line = bytearray(raw[position:position + stride])
+        position += stride
+        if method == 1:
+            for index in range(channels, stride):
+                line[index] = (line[index] + line[index - channels]) & 0xFF
+        elif method == 2:
+            for index in range(stride):
+                line[index] = (line[index] + previous[index]) & 0xFF
+        elif method == 3:
+            for index in range(stride):
+                left = line[index - channels] if index >= channels else 0
+                line[index] = (line[index] + ((left + previous[index]) >> 1)) & 0xFF
+        elif method == 4:
+            for index in range(stride):
+                left = line[index - channels] if index >= channels else 0
+                up = previous[index]
+                upleft = previous[index - channels] if index >= channels else 0
+                estimate = left + up - upleft
+                da, db, dc = abs(estimate - left), abs(estimate - up), abs(estimate - upleft)
+                if da <= db and da <= dc:
+                    predictor = left
+                elif db <= dc:
+                    predictor = up
+                else:
+                    predictor = upleft
+                line[index] = (line[index] + predictor) & 0xFF
+        elif method != 0:
+            raise CompareError(f"{path}: unknown PNG filter method {method} on row {row}")
+        if channels == 4:
+            for column in range(width):
+                source = column * 4
+                target = (row * width + column) * 3
+                out[target:target + 3] = line[source:source + 3]
+        else:
+            out[row * stride:(row + 1) * stride] = line
+        previous = line
+    return width, height, bytes(out)
+
+
+def encode_png(path: pathlib.Path, width: int, height: int, rgb: bytes) -> None:
+    """Write an 8-bit colour-type-2 (truecolour) PNG."""
+    if len(rgb) != width * height * 3:
+        raise CompareError(
+            f"{path}: refusing to write {len(rgb)} RGB bytes for {width}x{height} "
+            f"(expected {width * height * 3})")
+    raw = bytearray()
+    stride = width * 3
+    for row in range(height):
+        raw.append(0)
+        raw += rgb[row * stride:(row + 1) * stride]
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (struct.pack(">I", len(payload)) + tag + payload
+                + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+    blob = b"\x89PNG\r\n\x1a\n"
+    blob += chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+    blob += chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+    blob += chunk(b"IEND", b"")
+    path.write_bytes(blob)
+
+
+# --------------------------------------------------------------------------
+# A 3x5 bitmap font, so the side-by-side PNG says which panel is which without
+# anyone having to remember the argument order.
+# --------------------------------------------------------------------------
+
+_FONT_TABLE = """
+A .#. #.# ### #.# #.#
+B ##. #.# ##. #.# ##.
+C .## #.. #.. #.. .##
+D ##. #.# #.# #.# ##.
+E ### #.. ##. #.. ###
+F ### #.. ##. #.. #..
+G .## #.. #.# #.# .##
+H #.# #.# ### #.# #.#
+I ### .#. .#. .#. ###
+J ..# ..# ..# #.# .#.
+K #.# #.# ##. #.# #.#
+L #.. #.. #.. #.. ###
+M #.# ### ### #.# #.#
+N #.# ### ### #.# #.#
+O .#. #.# #.# #.# .#.
+P ##. #.# ##. #.. #..
+Q .#. #.# #.# #.# .##
+R ##. #.# ##. #.# #.#
+S .## #.. .#. ..# ##.
+T ### .#. .#. .#. .#.
+U #.# #.# #.# #.# .#.
+V #.# #.# #.# #.# .#.
+W #.# #.# ### ### #.#
+X #.# #.# .#. #.# #.#
+Y #.# #.# .#. .#. .#.
+Z ### ..# .#. #.. ###
+0 ### #.# #.# #.# ###
+1 .#. ##. .#. .#. ###
+2 ##. ..# .#. #.. ###
+3 ### ..# .#. ..# ###
+4 #.# #.# ### ..# ..#
+5 ### #.. ##. ..# ##.
+6 .## #.. ### #.# ###
+7 ### ..# .#. .#. .#.
+8 ### #.# ### #.# ###
+9 ### #.# ### ..# ##.
+% #.# ..# .#. #.. #.#
+. ... ... ... ... .#.
+- ... ... ### ... ...
+? ##. ..# .#. ... .#.
+/ .#. ..# ... ..# .#.
+= ... ### ... ### ...
++ ... .#. ### .#. ...
+"""
+
+
+def _build_font(table: str) -> dict[str, tuple[str, ...]]:
+    font: dict[str, tuple[str, ...]] = {}
+    for line in table.strip().splitlines():
+        character, *rows = line.split()
+        if len(rows) != GLYPH_H_DECLARED:
+            raise CompareError(f"font glyph {character!r} has {len(rows)} rows, expected {GLYPH_H_DECLARED}")
+        font[character] = tuple(rows)
+    return font
+
+
+GLYPH_H_DECLARED = 5
+GLYPH_W_DECLARED = 3
+FONT = _build_font(_FONT_TABLE)
+FONT[" "] = ("...", "...", "...", "...", "...")
+
+GLYPH_W, GLYPH_H, GLYPH_GAP = 3, 5, 1
+
+
+def text_width(text: str) -> int:
+    return len(text) * (GLYPH_W + GLYPH_GAP) - GLYPH_GAP if text else 0
+
+
+def draw_text(rgb: bytearray, width: int, height: int, x: int, y: int, text: str,
+              colour: tuple[int, int, int]) -> None:
+    """Blit 3x5 uppercase text into an RGB buffer, clipped to the buffer."""
+    cursor = x
+    for character in text.upper():
+        glyph = FONT.get(character)
+        if glyph is None:
+            glyph = FONT["?"]
+        for row in range(GLYPH_H):
+            for column in range(GLYPH_W):
+                if glyph[row][column] != "#":
+                    continue
+                px, py = cursor + column, y + row
+                if 0 <= px < width and 0 <= py < height:
+                    offset = (py * width + px) * 3
+                    rgb[offset:offset + 3] = bytes(colour)
+        cursor += GLYPH_W + GLYPH_GAP
+
+
+def draw_label(rgb: bytearray, width: int, height: int, x: int, y: int, text: str) -> None:
+    """Draw text on a dark plate so it reads over any picture."""
+    box_w, box_h = text_width(text) + 4, GLYPH_H + 4
+    for row in range(box_h):
+        py = y + row
+        if not 0 <= py < height:
+            continue
+        for column in range(box_w):
+            px = x + column
+            if 0 <= px < width:
+                offset = (py * width + px) * 3
+                rgb[offset:offset + 3] = b"\x00\x00\x00"
+    draw_text(rgb, width, height, x + 2, y + 2, text, (255, 255, 255))
+
+
+# --------------------------------------------------------------------------
+# Comparison
+# --------------------------------------------------------------------------
+
+DENSITY_RAMP = " .:-=+*#%@"
+
+
+def compare(oracle: bytes, native: bytes, width: int, height: int,
+            threshold: int, block: int) -> dict:
+    """Per-pixel and per-block difference between two same-size RGB frames."""
+    if len(oracle) != len(native):
+        raise CompareError(
+            f"frame size mismatch: oracle {len(oracle)} RGB bytes, native "
+            f"{len(native)}")
+    columns = (width + block - 1) // block
+    rows = (height + block - 1) // block
+    block_changed = [0] * (columns * rows)
+    block_pixels = [0] * (columns * rows)
+    block_agree_lit = [0] * (columns * rows)
+    changed_pixels = 0
+    changed_channels = 0
+    total_error = 0
+    max_error = 0
+    agree_black = 0
+    agree_lit = 0
+    histogram: Counter = Counter()
+
+    for y in range(height):
+        block_row = (y // block) * columns
+        for x in range(width):
+            offset = (y * width + x) * 3
+            oread = oracle[offset:offset + 3]
+            natread = native[offset:offset + 3]
+            cell = block_row + (x // block)
+            block_pixels[cell] += 1
+            worst = 0
+            for channel in range(3):
+                delta = abs(oread[channel] - natread[channel])
+                if delta > worst:
+                    worst = delta
+                if delta:
+                    changed_channels += 1
+                    total_error += delta
+                    if delta > max_error:
+                        max_error = delta
+            histogram[(oread[0] << 16) | (oread[1] << 8) | oread[2]] += 1
+            if worst > threshold:
+                changed_pixels += 1
+                block_changed[cell] += 1
+            elif oread[0] | oread[1] | oread[2]:
+                # The frames agree here AND something is actually drawn. This
+                # is the only agreeing pixel that says anything about the
+                # renderer; agreeing on black says nothing at all, and a tool
+                # that reports one number for both hides that difference.
+                agree_lit += 1
+                block_agree_lit[cell] += 1
+            else:
+                agree_black += 1
+
+    total_pixels = width * height
+    block_area = block * block
+    grid_changed = []
+    grid_fraction = []
+    for row in range(rows):
+        grid_changed.append(block_changed[row * columns:(row + 1) * columns])
+        grid_fraction.append([
+            block_changed[row * columns + column] / block_area
+            for column in range(columns)
+        ])
+
+    worst_blocks = sorted(
+        ({"x": index % columns, "y": index // columns,
+          "changed_pixels": block_changed[index],
+          "block_pixels": block_pixels[index],
+          "fraction": block_changed[index] / block_area}
+         for index in range(len(block_changed))),
+        key=lambda entry: (-entry["changed_pixels"], entry["y"], entry["x"]),
+    )[:12]
+
+    # Where, if anywhere, the two frames agree on something actually drawn.
+    # Ranked descending so an all-zero list means "nowhere", unambiguously.
+    agreeing_lit_blocks = sorted(
+        ({"x": index % columns, "y": index // columns,
+          "agreeing_lit_pixels": block_agree_lit[index],
+          "block_pixels": block_pixels[index],
+          "fraction": block_agree_lit[index] / block_area}
+         for index in range(len(block_agree_lit)) if block_agree_lit[index]),
+        key=lambda entry: (-entry["agreeing_lit_pixels"], entry["y"], entry["x"]),
+    )[:12]
+
+    return {
+        "width": width,
+        "height": height,
+        "total_pixels": total_pixels,
+        "threshold": threshold,
+        "changed_pixels": changed_pixels,
+        "changed_pixel_fraction": changed_pixels / total_pixels if total_pixels else 0.0,
+        "changed_channels": changed_channels,
+        "max_abs_error": max_error,
+        "mean_abs_error": total_error / (total_pixels * 3) if total_pixels else 0.0,
+        "identical": changed_pixels == 0,
+        "agreeing_pixels": total_pixels - changed_pixels,
+        "agreeing_both_black_pixels": agree_black,
+        "agreeing_lit_pixels": agree_lit,
+        "oracle_colours": len(histogram),
+        "block_size": block,
+        "block_grid": [columns, rows],
+        "block_changed": grid_changed,
+        "block_fraction": grid_fraction,
+        "block_agreeing_lit": [block_agree_lit[row * columns:(row + 1) * columns]
+                               for row in range(rows)],
+        "worst_blocks": worst_blocks,
+        "agreeing_lit_blocks": agreeing_lit_blocks,
+    }
+
+
+def ascii_block_map(result: dict) -> str:
+    """Density as text, so the answer survives a terminal with no image viewer."""
+    grid = result["block_fraction"]
+    lines = []
+    for row in grid:
+        line = []
+        for fraction in row:
+            if fraction <= 0.0:
+                line.append(" ")
+                continue
+            step = min(len(DENSITY_RAMP) - 1, max(1, int(fraction * len(DENSITY_RAMP))))
+            line.append(DENSITY_RAMP[step])
+        lines.append("".join(line))
+    return "\n".join(lines)
+
+
+def make_diff(rgb_a: bytes, rgb_b: bytes, width: int, height: int,
+              gain: int) -> bytes:
+    """Amplified absolute per-channel difference. Black == no difference."""
+    out = bytearray(len(rgb_a))
+    for index in range(len(rgb_a)):
+        delta = abs(rgb_a[index] - rgb_b[index]) * gain
+        out[index] = 255 if delta > 255 else delta
+    return bytes(out)
+
+
+def heatmap(values: list[list[float]], block: int, width: int, height: int,
+            columns: int, rows: int) -> tuple[bytearray, int, int]:
+    """Render a density grid as colour, one cell per block. Returns (rgb, w, h)."""
+    cell_w, cell_h = max(1, width // columns), max(1, height // rows)
+    out_w, out_h = cell_w * columns, cell_h * rows
+    out = bytearray(out_w * out_h * 3)
+    for row in range(rows):
+        for column in range(columns):
+            fraction = values[row][column]
+            # 0 -> deep blue, 0.5 -> green, 1 -> yellow/red. Perceptually ordered
+            # so "hot" reads as "disagrees" without consulting the legend.
+            red = int(255 * min(1.0, max(0.0, (fraction - 0.5) * 2.0)))
+            green = int(255 * min(1.0, fraction * 2.0))
+            blue = int(255 * max(0.0, 1.0 - fraction * 2.0))
+            colour = bytes((red, green, blue))
+            for py in range(row * cell_h, (row + 1) * cell_h):
+                start = (py * out_w + column * cell_w) * 3
+                out[start:start + cell_w * 3] = colour * cell_w
+    return out, out_w, out_h
+
+
+def make_side_by_side(oracle: bytes, native: bytes, width: int, height: int,
+                      gap: int, frame: int) -> tuple[bytes, int, int]:
+    out_w = width * 2 + gap
+    out = bytearray(out_w * height * 3)
+    for row in range(height):
+        source = row * width * 3
+        target = row * out_w * 3
+        out[target:target + width * 3] = oracle[source:source + width * 3]
+        middle = target + width * 3
+        out[middle:middle + gap * 3] = b"\xff\xff\xff" * gap
+        right = middle + gap * 3
+        out[right:right + width * 3] = native[source:source + width * 3]
+    draw_label(out, out_w, height, 4, 4, "ORACLE")
+    draw_label(out, out_w, height, width + gap + 4, 4, "NATIVE")
+    draw_label(out, out_w, height, 4, height - 11, f"F{frame}")
+    return bytes(out), out_w, height
+
+
+# --------------------------------------------------------------------------
+# Acquisition
+# --------------------------------------------------------------------------
+
+class PrivateDisplay:
+    """An Xvfb display for the native shell's live-video path, always reaped.
+
+    The shell needs a display to render anything: with STUNRUN_LIVE_VIDEO=0 it
+    draws `mode=blank-scaffold` and every pixel is black, which compares equal
+    to nothing.
+    """
+
+    def __init__(self, requested: str | None):
+        self.requested = requested
+        self.process: subprocess.Popen | None = None
+        self.display = requested
+
+    def __enter__(self) -> "PrivateDisplay":
+        if self.requested or os.environ.get("DISPLAY"):
+            self.display = self.requested or os.environ["DISPLAY"]
+            return self
+        xvfb = shutil.which("Xvfb")
+        if xvfb is None:
+            raise CompareError(
+                "the native shell needs a display to render a frame and none "
+                "is available: DISPLAY is unset and Xvfb is not installed. Pass "
+                "--display :N, set DISPLAY, or supply --native-png.")
+        self.process = subprocess.Popen(
+            [xvfb, "-displayfd", "1", "-screen", "0", "1024x768x24", "-nolisten", "tcp"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            start_new_session=(os.name == "posix"))
+        assert self.process.stdout is not None
+        number = self.process.stdout.readline().strip()
+        self.process.stdout.close()
+        if not number:
+            self.__exit__(None, None, None)
+            raise CompareError("Xvfb did not provide a display number")
+        self.display = number if number.startswith(":") else f":{number}"
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        if self.process is None or self.process.poll() is not None:
+            return
+        if os.name == "posix":
+            try:
+                os.killpg(self.process.pid, 15)
+            except ProcessLookupError:
+                pass
+        else:
+            self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        if os.name == "posix":
+            try:
+                os.killpg(self.process.pid, 9)
+            except ProcessLookupError:
+                pass
+        else:
+            self.process.kill()
+        self.process.wait()
+
+
+def run_native_shell(shell: pathlib.Path, frame: int, rom_dir: pathlib.Path,
+                     service: bool, timeout: float, display: str,
+                     log_path: pathlib.Path, keep_dir: pathlib.Path) -> dict:
+    """Run the built native shell to `frame` and capture its frame-N PNG.
+
+    Invokes the built binary directly rather than `./run.sh`, because run.sh
+    reconfigures and rebuilds `build/native` on every launch and a comparison
+    tool has no business rebuilding someone else's tree. The environment below
+    mirrors run.sh's documented exports; if run.sh changes them, this drifts.
+    """
+    if not shell.is_file():
+        raise CompareError(
+            f"native shell binary not found: {shell}. Build it, or pass "
+            f"--native-png with a capture you already have.")
+    if not os.access(shell, os.X_OK):
+        raise CompareError(f"native shell binary is not executable: {shell}")
+    if not rom_dir.is_dir():
+        raise CompareError(
+            f"ROM directory not found: {rom_dir}. The shell boots the real "
+            f"MC68010 ROM; set STUNRUN_STUNRUN_DIR, or pass --native-png.")
+    stage = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-compare-native-"))
+    keep_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        environment = {
+            **os.environ,
+            "DISPLAY": display,
+            # Mirrors run.sh: TEST SW (IN0 bit 5) is active low, 0xE7 clears it.
+            "STUNRUN_IN0": "0xC7" if service else "0xE7",
+            "STUNRUN_STUNRUN_DIR": str(rom_dir),
+            "STUNRUN_MC68010": "1",
+            "STUNRUN_LIVE_VIDEO": "1",
+            "STUNRUN_LIVE_VIDEO_FPS": "30",
+            "STUNRUN_VIDEO_BACKEND": "sdl_opengl",
+            "STUNRUN_AUDIO_BACKEND": "null",
+            "STUNRUN_FRAMES": str(frame),
+            "STUNRUN_CAPTURE_FRAME": str(frame),
+            "STUNRUN_CAPTURE_DIR": str(stage),
+        }
+        with log_path.open("w", encoding="utf-8") as log:
+            try:
+                completed = subprocess.run(
+                    [str(shell)], env=environment, cwd=str(ROOT),
+                    stdout=log, stderr=subprocess.STDOUT, text=True,
+                    timeout=timeout, start_new_session=(os.name == "posix"))
+            except subprocess.TimeoutExpired as exc:
+                raise CompareError(
+                    f"native shell did not finish within {timeout:g}s (it was "
+                    f"waiting for frame {frame}); partial log at {log_path}") from exc
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        summary = ""
+        for line in text.splitlines():
+            if line.startswith("render frame="):
+                summary = line
+        capture = stage / f"frame_{frame:04d}.png"
+        if completed.returncode != 0:
+            raise CompareError(
+                f"native shell exited {completed.returncode}; log at {log_path}")
+        if not capture.is_file():
+            # An all-black render is the failure this catches most often, and
+            # it is silent in the shell's own exit status.
+            raise CompareError(
+                f"native shell wrote no capture at {capture}. The frame was "
+                f"probably never rendered -- check that the run reached frame "
+                f"{frame} and that `render frame=` reports lit>0. Log at {log_path}")
+        # Move the capture out of the staging directory before it is removed:
+        # the caller reads the file after this function returns.
+        kept = keep_dir / f"native-frame_{frame:04d}.png"
+        shutil.move(str(capture), str(kept))
+        return {
+            "command": f"STUNRUN_LIVE_VIDEO=1 STUNRUN_FRAMES={frame} "
+                       f"STUNRUN_CAPTURE_FRAME={frame} "
+                       f"STUNRUN_CAPTURE_DIR=<tmp> STUNRUN_IN0="
+                       f"{'0xC7' if service else '0xE7'} DISPLAY={display} "
+                       f"{shell}",
+            "returncode": completed.returncode,
+            "render_summary": summary,
+            "log": str(log_path),
+            "captured": str(kept),
+            "_path": kept,
+        }
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def run_mame_oracle(rompath: pathlib.Path, mame: pathlib.Path, frame: int,
+                    timeout: float, workdir: pathlib.Path, log_path: pathlib.Path) -> dict:
+    """Capture MAME's own frame-N PNG via the committed state-snapshot tool."""
+    tool = ROOT / "tools/mame-gsp-state-snapshot"
+    if not tool.is_file():
+        raise CompareError(f"missing {tool}")
+    if not mame.is_file():
+        raise CompareError(
+            f"mame binary not found: {mame}. It is not on PATH by default in "
+            f"this environment; pass --mame /mnt/build/mame-oracle/mame.")
+    screens = workdir / "screens"
+    screens.mkdir(parents=True, exist_ok=True)
+    command = [str(tool), str(rompath), str(workdir),
+               "--mame", str(mame), "--input", "none",
+               "--frames", str(frame), "--targets", str(frame),
+               "--screen-dir", str(screens), "--nothrottle"]
+    with log_path.open("w", encoding="utf-8") as log:
+        try:
+            completed = subprocess.run(
+                command, cwd=str(ROOT), stdout=log, stderr=subprocess.STDOUT,
+                text=True, timeout=timeout, start_new_session=(os.name == "posix"))
+        except subprocess.TimeoutExpired as exc:
+            raise CompareError(
+                f"MAME did not reach frame {frame} within {timeout:g}s; log at "
+                f"{log_path}") from exc
+    if completed.returncode != 0:
+        raise CompareError(f"mame-gsp-state-snapshot exited {completed.returncode}; log at {log_path}")
+    screen = screens / f"frame-{frame:06d}.png"
+    if not screen.is_file():
+        raise CompareError(f"MAME produced no screen capture at {screen}; log at {log_path}")
+    return {
+        "command": " ".join(command),
+        "returncode": completed.returncode,
+        "log": str(log_path),
+        "captured": str(screen),
+        "note": "tools/mame-gsp-state-snapshot passes -cfg_directory "
+                "/tmp/stunrun-mame-cfg. This run uses --input none, so it "
+                "touches no input port and cannot leak DIP state into a later "
+                "run (AGENTS.md trap 10).",
+        "_path": screen,
+    }
+
+
+def sha256_of(path: pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def nonzero_runs(data: bytes, min_run: int) -> list[tuple[int, bytes]]:
+    """Maximal runs of nonzero bytes at least `min_run` long."""
+    runs: list[tuple[int, bytes]] = []
+    index = 0
+    while index < len(data):
+        if data[index]:
+            start = index
+            while index < len(data) and data[index]:
+                index += 1
+            if index - start >= min_run:
+                runs.append((start, data[start:index]))
+        else:
+            index += 1
+    return runs
+
+
+def check_rom_overlap(buffer_path: pathlib.Path, rom_dir: pathlib.Path,
+                      min_run: int, flag_bytes: int) -> dict:
+    """Is any *data* run of this buffer a verbatim ROM substring?
+
+    Trap 9: a captured buffer can BE commercial ROM (main RAM at 0xFF9584 was
+    bit-identical to ROM 0x044930-0x044B2E). The naive form of this check --
+    "does any byte run appear in the ROM set" -- cries wolf, because an erased
+    ROM region is a long run of one repeated byte and a sparse buffer is full
+    of `0xFF` fill. So a uniform run is classified as a FILL and is NOT
+    searched: matching an erased ROM region copies no information, and
+    reporting it as a ROM copy is exactly how a check like this gets ignored.
+
+    What is searched is the non-uniform runs. The verdict is graded on the
+    LONGEST such match, because the length is what distinguishes a coincidence
+    (single-digit bytes, expected by chance in a structured buffer) from a copy
+    (the trap-9 precedent was 768 contiguous bytes).
+
+    Control: a random buffer of the same size and shape yields zero matches.
+    The test in tests/test_public_tools.py asserts that, so this function
+    cannot silently degrade into "everything matches".
+    """
+    data = buffer_path.read_bytes()
+    runs = nonzero_runs(data, min_run)
+    rom_blobs = {}
+    for entry in sorted(rom_dir.iterdir()):
+        if entry.is_file():
+            rom_blobs[entry.name] = entry.read_bytes()
+
+    uniform_fills = 0
+    uniform_fill_bytes = 0
+    longest = {"length": 0, "offset": None, "rom": None, "rom_offset": None}
+    data_runs = 0
+    data_run_bytes = 0
+    coincidences = 0
+    for offset, run in runs:
+        if len(set(run)) == 1:
+            uniform_fills += 1
+            uniform_fill_bytes += len(run)
+            continue
+        data_runs += 1
+        data_run_bytes += len(run)
+        for name, blob in rom_blobs.items():
+            position = blob.find(run)
+            if position >= 0:
+                coincidences += 1
+                if len(run) > longest["length"]:
+                    longest = {
+                        "length": len(run), "offset": offset, "rom": name,
+                        "rom_offset": position,
+                        "first_bytes": run[:16].hex(" "),
+                    }
+                break
+
+    if longest["length"] == 0:
+        verdict = "not-rom-derived"
+    elif longest["length"] < flag_bytes:
+        verdict = f"short-coincidences (longest {longest['length']} B < {flag_bytes} B flag)"
+    else:
+        verdict = (f"ROM-TABLE-COPIED (longest {longest['length']} B at buffer "
+                   f"offset {longest['offset']} in {longest['rom']})")
+
+    return {
+        "buffer": str(buffer_path),
+        "size_bytes": len(data),
+        "nonzero_bytes": sum(1 for byte in data if byte),
+        "min_run": min_run,
+        "flag_bytes": flag_bytes,
+        "uniform_fill_runs": uniform_fills,
+        "uniform_fill_bytes_not_searched": uniform_fill_bytes,
+        "data_runs_searched": data_runs,
+        "data_run_bytes_searched": data_run_bytes,
+        "data_runs_matching_a_rom": coincidences,
+        "longest_verbatim_data_run": longest,
+        "rom_dir": str(rom_dir),
+        "rom_files_searched": len(rom_blobs),
+        "rom_bytes_searched": sum(len(blob) for blob in rom_blobs.values()),
+        "verdict": verdict,
+        "caveat": (
+            f"only maximal nonzero runs >= {min_run} bytes are searched, and a "
+            f"run is treated as a fill and skipped only when ALL its bytes are "
+            f"equal -- a run that brackets a fill (real data, then 0xFF, then "
+            f"real data) is searched whole, so a short match can be inflated by "
+            f"the fill in the middle. Read longest_verbatim_data_run.first_bytes "
+            f"before believing it. A buffer assembled from fragments each "
+            f"shorter than {flag_bytes} bytes would still pass. This inspects "
+            f"the buffers you name, which are the committed oracle fixtures by "
+            f"default; it does NOT inspect the native shell's VRAM, which this "
+            f"tool cannot see."),
+    }
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def load_checkpoint_expectation(path: pathlib.Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    shot = value.get("screenshot")
+    if not isinstance(shot, dict) or "sha256" not in shot:
+        return None
+    return {
+        "metadata": str(path),
+        "checkpoint": value.get("checkpoint"),
+        "frame": value.get("frame"),
+        "start_condition": value.get("start_condition"),
+        "emulated_seconds": value.get("emulated_seconds"),
+        "recorded_screenshot_sha256": shot["sha256"],
+        "kept_local": shot.get("kept_local"),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Render MAME's frame N and the native shell's frame N side "
+                    "by side, with a measurable difference.",
+        epilog="MAME is not on PATH in this environment; pass "
+               "--mame /mnt/build/mame-oracle/mame for --oracle-source mame.")
+    parser.add_argument("positional", nargs="*", type=pathlib.Path,
+                        help="optional ORACLE.png NATIVE.png pair")
+    parser.add_argument("--out", type=pathlib.Path, required=True,
+                        help="output directory for side-by-side.png, diff.png, block-map.png")
+    parser.add_argument("--frame", type=int, default=600,
+                        help="frame number on both sides (default 600)")
+    parser.add_argument("--oracle-source", choices=("fixture", "mame"), default="fixture",
+                        help="fixture = committed PNG (ROM-free, default); "
+                             "mame = fresh MAME run (needs --rompath and --mame)")
+    parser.add_argument("--oracle-png", type=pathlib.Path, default=None,
+                        help="use this PNG as the oracle instead of acquiring one")
+    parser.add_argument("--native-png", type=pathlib.Path, default=None,
+                        help="use this PNG as the native frame instead of running the shell")
+    parser.add_argument("--rompath", type=pathlib.Path, default=DEFAULT_ROMPATH,
+                        help="MAME rompath (default roms)")
+    parser.add_argument("--rom-dir", type=pathlib.Path, default=DEFAULT_ROM_DIR,
+                        help="ROM chip directory for the native shell (default roms/stunrun)")
+    parser.add_argument("--mame", type=pathlib.Path, default=pathlib.Path("mame"),
+                        help="MAME binary; it is NOT on PATH here")
+    parser.add_argument("--shell", type=pathlib.Path, default=DEFAULT_SHELL,
+                        help=f"built native shell binary (default {DEFAULT_SHELL.relative_to(ROOT)})")
+    parser.add_argument("--display", default=None,
+                        help="DISPLAY for the native shell; a private Xvfb is started if unset")
+    parser.add_argument("--service", action="store_true",
+                        help="boot the native shell to the self-test screen (IN0=0xC7)")
+    parser.add_argument("--threshold", type=int, default=0,
+                        help="per-channel tolerance counted as 'same' (default 0, exact)")
+    parser.add_argument("--block", type=int, default=8,
+                        help="block-map cell size in pixels (default 8)")
+    parser.add_argument("--gap", type=int, default=8,
+                        help="white separator width in side-by-side.png (default 8)")
+    parser.add_argument("--diff-gain", type=int, default=4,
+                        help="diff.png amplification (default 4)")
+    parser.add_argument("--native-timeout", type=float, default=900.0)
+    parser.add_argument("--mame-timeout", type=float, default=900.0)
+    parser.add_argument("--check-rom-overlap", action="store_true",
+                        help="search the committed oracle fixture buffers for "
+                             "verbatim ROM runs")
+    parser.add_argument("--rom-overlap-buffer", type=pathlib.Path, action="append",
+                        default=[],
+                        help="also run the ROM-overlap check on this buffer; "
+                             "repeatable, and implies --check-rom-overlap's "
+                             "machinery without touching the committed fixtures")
+    parser.add_argument("--rom-overlap-min-run", type=int, default=8)
+    parser.add_argument("--rom-overlap-flag-bytes", type=int, default=64,
+                        help="a non-uniform verbatim ROM run at least this long is "
+                             "reported as a copied table, not a coincidence "
+                             "(default 64)")
+    parser.add_argument("--allow-size-mismatch", action="store_true",
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--json", action="store_true", help="machine-readable result")
+    args = parser.parse_args(argv)
+
+    if args.threshold < 0:
+        parser.error("--threshold must be >= 0")
+    if args.block <= 0:
+        parser.error("--block must be > 0")
+    if args.gap <= 0:
+        parser.error("--gap must be > 0")
+    if args.diff_gain <= 0:
+        parser.error("--diff-gain must be > 0")
+    if args.frame <= 0:
+        parser.error("--frame must be > 0")
+    if args.rom_overlap_min_run < 1:
+        parser.error("--rom-overlap-min-run must be >= 1")
+    if args.rom_overlap_flag_bytes < 1:
+        parser.error("--rom-overlap-flag-bytes must be >= 1")
+    if len(args.positional) == 2:
+        if args.oracle_png or args.native_png:
+            parser.error("do not combine positional PNGs with --oracle-png/--native-png")
+        args.oracle_png, args.native_png = args.positional
+    elif args.positional:
+        parser.error("positional arguments are an optional ORACLE.png NATIVE.png pair")
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    workdir = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-compare-", dir=str(args.out)))
+    report: dict = {
+        "schema": "stunrun-frame-compare/v1",
+        "frame": args.frame,
+        "threshold": args.threshold,
+        "warnings": [],
+    }
+    try:
+        # --- oracle -------------------------------------------------------
+        oracle_record: dict = {}
+        if args.oracle_png is not None:
+            oracle_path = args.oracle_png
+            oracle_record = {"source": "png", "path": str(oracle_path)}
+            if not oracle_path.is_file():
+                raise CompareError(f"oracle PNG not found: {oracle_path}")
+        elif args.oracle_source == "fixture":
+            oracle_path = DEFAULT_ORACLE_PNG
+            if not oracle_path.is_file():
+                raise CompareError(f"missing committed oracle fixture: {oracle_path}")
+            oracle_record = {
+                "source": "fixture",
+                "path": str(oracle_path),
+                "note": "committed MAME frame-600 screenshot; ROM-free and "
+                        "MAME-free, so this path is reproducible from a clean "
+                        "checkout. fixtures/oracle/frame_600/metadata.json "
+                        "records it as an `--input service` capture; a fresh "
+                        "`--input none` run reproduces it byte for byte, so "
+                        "the recorded input made no visible difference by "
+                        "frame 600.",
+            }
+        else:
+            oracle_record = run_mame_oracle(
+                args.rompath, args.mame, args.frame, args.mame_timeout,
+                workdir / "mame", workdir / "mame.log")
+            oracle_path = oracle_record.pop("_path")
+            oracle_record["source"] = "mame"
+            oracle_record["path"] = str(oracle_path)
+
+        oracle_sha = sha256_of(oracle_path)
+        oracle_record["sha256"] = oracle_sha
+        fixture_sha = sha256_of(DEFAULT_ORACLE_PNG) if DEFAULT_ORACLE_PNG.is_file() else None
+        oracle_record["matches_committed_fixture"] = (
+            oracle_sha == fixture_sha if fixture_sha else None)
+        report["oracle"] = oracle_record
+
+        expectation = load_checkpoint_expectation(DEFAULT_CHECKPOINT_METADATA)
+        if expectation:
+            matches = oracle_sha == expectation["recorded_screenshot_sha256"]
+            expectation["reproduced"] = matches
+            expectation["oracle_sha256"] = oracle_sha
+            if not matches:
+                expectation["verdict"] = (
+                    "MISMATCH: the oracle frame rendered here is NOT the "
+                    "screenshot recorded in the title checkpoint's metadata.json")
+            report["checkpoint_expectation"] = expectation
+            if not matches:
+                report["warnings"].append(
+                    "oracle sha256 does not match reference/checkpoints/title/"
+                    "metadata.json screenshot.sha256")
+
+        if args.check_rom_overlap or args.rom_overlap_buffer:
+            buffers: list[pathlib.Path] = []
+            if args.check_rom_overlap:
+                for name in ("frame_600_gsp_vram.bin", "frame_600_gsp_palette.bin"):
+                    candidate = DEFAULT_ORACLE_PNG.parent / name
+                    if candidate.is_file():
+                        buffers.append(candidate)
+            buffers.extend(args.rom_overlap_buffer)
+            if buffers and not args.rom_dir.is_dir():
+                raise CompareError(
+                    f"--rom-overlap needs a ROM directory to search: {args.rom_dir}")
+            checked = [
+                check_rom_overlap(candidate, args.rom_dir,
+                                  args.rom_overlap_min_run,
+                                  args.rom_overlap_flag_bytes)
+                for candidate in buffers
+            ]
+            report["rom_overlap_checks"] = checked
+            for entry in checked:
+                if entry["longest_verbatim_data_run"]["length"] >= args.rom_overlap_flag_bytes:
+                    report["warnings"].append(
+                        f"{entry['buffer']}: {entry['verdict']}. That is a table "
+                        f"the board legitimately copies, not evidence that the "
+                        f"capture is a mislabelled ROM dump; see the entry's "
+                        f"uniform_fill_bytes_not_searched for what was skipped.")
+
+        # --- native -------------------------------------------------------
+        native_record: dict = {}
+        if args.native_png is not None:
+            native_path = args.native_png
+            if not native_path.is_file():
+                raise CompareError(f"native PNG not found: {native_path}")
+            native_record = {"source": "png", "path": str(native_path)}
+        else:
+            with PrivateDisplay(args.display) as display:
+                native_record = run_native_shell(
+                    args.shell, args.frame, args.rom_dir, args.service,
+                    args.native_timeout, display.display,
+                    workdir / "native.log", workdir)
+            native_path = native_record.pop("_path")
+            native_record["source"] = "shell"
+            native_record["path"] = str(native_path)
+            native_record["display"] = native_record.pop("display", None) or "private-xvfb"
+        native_record["sha256"] = sha256_of(native_path)
+        report["native"] = native_record
+
+        # --- compare ------------------------------------------------------
+        oracle_w, oracle_h, oracle_rgb = decode_png(oracle_path)
+        native_w, native_h, native_rgb = decode_png(native_path)
+        report["oracle"]["width"], report["oracle"]["height"] = oracle_w, oracle_h
+        report["native"]["width"], report["native"]["height"] = native_w, native_h
+        if (oracle_w, oracle_h) != (native_w, native_h):
+            if not args.allow_size_mismatch:
+                raise CompareError(
+                    f"frame size mismatch: oracle {oracle_w}x{oracle_h}, native "
+                    f"{native_w}x{native_h}. Comparing them would need a resize, "
+                    f"and a resized comparison hides exactly the shear this tool "
+                    f"exists to find.")
+            report["warnings"].append("frame size mismatch; compared over the overlap")
+            width = min(oracle_w, native_w)
+            height = min(oracle_h, native_h)
+            oracle_rgb = oracle_rgb[:width * height * 3]
+            native_rgb = native_rgb[:width * height * 3]
+        else:
+            width, height = oracle_w, oracle_h
+
+        result = compare(oracle_rgb, native_rgb, width, height,
+                         args.threshold, args.block)
+        report["comparison"] = result
+        report["block_map_ascii"] = ascii_block_map(result)
+
+        # --- images -------------------------------------------------------
+        side_rgb, side_w, side_h = make_side_by_side(
+            oracle_rgb, native_rgb, width, height, args.gap, args.frame)
+        encode_png(args.out / "side-by-side.png", side_w, side_h, side_rgb)
+        encode_png(args.out / "diff.png", width, height,
+                   make_diff(oracle_rgb, native_rgb, width, height, args.diff_gain))
+        map_rgb, map_w, map_h = heatmap(
+            result["block_fraction"], args.block, width, height,
+            result["block_grid"][0], result["block_grid"][1])
+        draw_label(map_rgb, map_w, map_h, 2, 2,
+                   f"{args.block}PX {result['block_grid'][0]}X{result['block_grid'][1]}")
+        encode_png(args.out / "block-map.png", map_w, map_h, map_rgb)
+        report["images"] = {
+            "side_by_side": str(args.out / "side-by-side.png"),
+            "side_by_side_size": [side_w, side_h],
+            "diff": str(args.out / "diff.png"),
+            "diff_size": [width, height],
+            "block_map": str(args.out / "block-map.png"),
+            "block_map_size": [map_w, map_h],
+            "diff_gain": args.diff_gain,
+        }
+        report["workdir"] = str(workdir)
+
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print_human(report)
+        # Exit 0 on a successful measurement, whatever it found. A comparison
+        # tool that exits nonzero on "they differ" is indistinguishable from one
+        # that failed to run.
+        return 0
+    except CompareError as exc:
+        print(f"compare-frame: {exc}", file=sys.stderr)
+        if args.json:
+            report["error"] = str(exc)
+            print(json.dumps(report, indent=2, sort_keys=True))
+        shutil.rmtree(workdir, ignore_errors=True)
+        return 2
+
+
+def print_human(report: dict) -> None:
+    oracle = report["oracle"]
+    native = report["native"]
+    comparison = report.get("comparison")
+    print(f"frame {report['frame']}")
+    print(f"  oracle  {oracle['source']:8s} {oracle['width']}x{oracle['height']} "
+          f"sha256 {oracle['sha256']}")
+    if oracle.get("matches_committed_fixture") is not None:
+        print(f"          byte-identical to the committed fixture: "
+              f"{oracle['matches_committed_fixture']}")
+    print(f"  native  {native['source']:8s} {native['width']}x{native['height']} "
+          f"sha256 {native['sha256']}")
+    if native.get("render_summary"):
+        print(f"          {native['render_summary']}")
+
+    expectation = report.get("checkpoint_expectation")
+    if expectation:
+        state = "REPRODUCED" if expectation["reproduced"] else "MISMATCH"
+        print()
+        print(f"  checkpoint {expectation['checkpoint']} "
+              f"(frame {expectation['frame']}, start {expectation['start_condition']}): {state}")
+        print(f"    recorded screenshot sha256 {expectation['recorded_screenshot_sha256']}")
+        print(f"    oracle image actually used {expectation['oracle_sha256']}")
+        if not expectation["reproduced"]:
+            print("    ^ LOUD: these are different images. Either the recorded")
+            print("      checkpoint came from a different machine state or DIP")
+            print("      configuration, or the recording predates a harness change.")
+            print("      Do NOT read the comparison below as 'ours vs that checkpoint'.")
+
+    if comparison:
+        print()
+        print(f"  differing pixels     {comparison['changed_pixels']} / "
+              f"{comparison['total_pixels']} "
+              f"({100.0 * comparison['changed_pixel_fraction']:.2f}%)")
+        print(f"  agreeing pixels      {comparison['agreeing_pixels']} "
+              f"({comparison['agreeing_both_black_pixels']} of them black on BOTH "
+              f"sides, {comparison['agreeing_lit_pixels']} on drawn content)")
+        if comparison["agreeing_lit_pixels"] == 0 and comparison["changed_pixels"]:
+            print("    ^ LOUD: the two frames agree on NO drawn pixel anywhere.")
+            print("      Every agreeing pixel is black on both sides. This is not a")
+            print("      palette error or a shift with the right geometry under it:")
+            print("      there is no shared sub-picture to call nearly-right.")
+        print(f"  differing channels   {comparison['changed_channels']} "
+              f"(threshold {comparison['threshold']} per channel)")
+        print(f"  max / mean |error|   {comparison['max_abs_error']} / "
+              f"{comparison['mean_abs_error']:.2f}")
+        print(f"  oracle colours       {comparison['oracle_colours']}")
+        print(f"  verdict              "
+              f"{'IDENTICAL' if comparison['identical'] else 'DIFFERENT'}")
+        print()
+        print(f"  block map, {comparison['block_size']}x{comparison['block_size']} px "
+              f"cells, one char per cell (' '=0 .. '{DENSITY_RAMP[-1]}'=100%),")
+        print(f"  origin top-left, {comparison['block_grid'][0]} columns x "
+              f"{comparison['block_grid'][1]} rows:")
+        print(indent_block(report["block_map_ascii"]))
+        worst = comparison["worst_blocks"][:5]
+        if worst and comparison["changed_pixels"]:
+            print()
+            print("  five worst blocks:")
+            for entry in worst:
+                print(f"    x={entry['x']:3d} y={entry['y']:3d} "
+                      f"changed {entry['changed_pixels']:4d}/{entry['block_pixels']} "
+                      f"({100.0 * entry['fraction']:5.1f}%)")
+        agreeing = comparison["agreeing_lit_blocks"][:5]
+        print()
+        if agreeing:
+            print("  blocks where the frames agree on DRAWN content:")
+            for entry in agreeing:
+                print(f"    x={entry['x']:3d} y={entry['y']:3d} "
+                      f"agree {entry['agreeing_lit_pixels']:4d}/{entry['block_pixels']} "
+                      f"({100.0 * entry['fraction']:5.1f}%)")
+        else:
+            print("  blocks where the frames agree on drawn content: none")
+
+    checks = report.get("rom_overlap_checks")
+    if checks:
+        print()
+        print("  ROM-overlap check on the committed oracle buffers:")
+        for entry in checks:
+            name = entry["buffer"].rsplit("/", 1)[-1]
+            print(f"    {name}: {entry['verdict']}")
+            print(f"      nonzero {entry['nonzero_bytes']}/{entry['size_bytes']} B; "
+                  f"{entry['uniform_fill_runs']} uniform fill runs "
+                  f"({entry['uniform_fill_bytes_not_searched']} B) skipped as fills; "
+                  f"{entry['data_runs_searched']} data runs "
+                  f"({entry['data_run_bytes_searched']} B) searched against "
+                  f"{entry['rom_files_searched']} ROM files "
+                  f"({entry['rom_bytes_searched']} B)")
+            longest = entry["longest_verbatim_data_run"]
+            if longest["length"]:
+                print(f"      longest verbatim DATA run: {longest['length']} B at "
+                      f"buffer offset {longest['offset']}, found in "
+                      f"{longest['rom']} at offset {longest['rom_offset']}")
+                print(f"        first bytes: {longest['first_bytes']}")
+
+    images = report.get("images")
+    if images:
+        print()
+        print(f"  wrote {images['side_by_side']}  (oracle left, native right)")
+        print(f"  wrote {images['diff']}  (absolute difference x{images['diff_gain']})")
+        print(f"  wrote {images['block_map']}  (difference density)")
+
+    for warning in report.get("warnings", []):
+        print(f"  WARNING: {warning}", file=sys.stderr)
+
+
+def indent_block(text: str, prefix: str = "    ") -> str:
+    return "\n".join(prefix + line for line in text.splitlines())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
