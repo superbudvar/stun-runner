@@ -13195,12 +13195,22 @@ The frame-404 image (GSP still halted, program intact) swept through the decoder
 
 | | |
 |---|---|
-> **SUPERSEDED 2026-10-17 — these numbers were measured at the wrong stride.**
+> **QUALIFIED 2026-10-17 — correct for a coarser question, misleading read as
+> a statement about the program.**
 > `tools/disasm-gsp` used `WORD_STRIDE = 16`, correct for the superseded 4 MiB
 > window captures, but the 512 KiB PHYSICAL share is **dense**: a 2-byte sweep
 > of the file finds exactly the **81,899 nonzero words** the capture metadata
 > records, while a 16-byte stride sees only 10,989 of them. Every count below
 > therefore describes one word in eight. Correct totals are in §87.
+>
+> **These numbers are not wrong; the question they answer is.** They are the
+> 32,768-cell view. The 262,144-word view is the one that describes the program,
+> and §87 carries it. Correcting the framing matters more than the numbers:
+> "invalidated" would be wrong, and the concurrent `stun-runner-8y8` work says so
+> explicitly — `tools/check-gsp-executed` documents that §85.1's counts are "a
+> coarser question and the counts are not comparable", having reached the same
+> dense-layout conclusion independently, from `tools/mame-gsp-vram-dump`'s own
+> stride, before this was written.
 
 | cells | 32,768 |
 | **real instructions** | **7,411** |
@@ -13407,10 +13417,13 @@ share. Reading the same file:
 512 KiB is 262,144 words at 2 bytes. The share is **dense**, full stop. Every
 §85.1 count was taken over one word in eight.
 
-### 87.2 What that invalidates
+### 87.2 What that qualifies (not invalidates — see the correction below)
 
 §85.1's "7,411 real instructions / 24,182 DW / 85 mnemonics" describe a
-subsample, not the program. The corrected totals, over the dense sweep, are
+subsample of one word in eight, not the program. **They remain a true answer to
+the 32,768-cell question** and the concurrent `stun-runner-8y8` work had already
+reached the same dense-layout conclusion independently. What changes is that they
+cannot be quoted as a statement about the program, which is how they were used. The corrected totals, over the dense sweep, are
 **253,231 slots, 60,576 non-`DW`, 192,655 `DW`, 98 distinct mnemonics, 1,258
 JR/JA-family instructions rendering 18 distinct names covering all 16 condition
 codes**.
