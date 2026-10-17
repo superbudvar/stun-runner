@@ -169,10 +169,10 @@ MAME binaries — the count above is the deduplicated executable set.)
 
 ### F9 — §20.7's "Not yet ported" list is done
 
-- **Question** — "Missing: selector resolution (`$25F6`-`$2604`), descriptor decode (`$2608`-`$262E`), and the loop nesting (`$262E`-`$269C`) … Filed as `stun-runner-txt1`." (findings **§20.7**, `:3484-3491`)
+- **Question** — "Missing: selector resolution (`$25F6`-`$2604`), descriptor decode (`$2608`-`$262E`), and the loop nesting (`$262E`-`$269C`) … Filed as no bead — the gap is closed (see the status column)." (findings **§20.7**, `:3484-3491`)
 - **Where the answer may already be** — findings **§23** supersedes it, and `native/mc68010_text_writer.h:20,76` now carries the selector table with its `$25F6` provenance.
 - **Status** — `ANSWER ALREADY EXISTS`.
-- **Bead** — `stun-runner-txt1`
+- **Bead** — no bead — the gap is closed (see the status column)
 - **Gloss** — the caveat in §20.7 about `clr.w $608000` and `andi.w #$e7ff,$c00008` being part of the routine's observable effect still stands as a constraint on the port, not as a gap.
 
 ### F10 — §68.5's "the `$052F`-`$0544` scan is still untranscribed" is superseded
@@ -349,7 +349,7 @@ Ten rows. In rough order of value:
 | F27 | §85.3's 2,718-vs-4,356 | The cause, with both binary hashes and mtimes | Reconciled as *cause*, not as measurement — the images are not committed. |
 | F10 | §68.5's `$052F`-`$0544` scan | Findings §71 | Direct transcription work removed from a bead's critical path. |
 | F11 | §69.5's ring caller | Findings §72 | Same. |
-| F9 | §20.7's "Not yet ported" | Findings §23 and `native/mc68010_text_writer.h` | Closes `stun-runner-txt1`'s recorded gap. |
+| F9 | §20.7's "Not yet ported" | Findings §23 and `native/mc68010_text_writer.h` | Closes no bead — the gap is closed (see the status column)'s recorded gap. |
 | F8 | `gsp-program-upload.md`'s condition table | `34010dsm.cpp:132-153`, all 16 entries, already corroborated by §85.1 | Pure transcription, zero risk, self-checking. **Start here.** |
 | F4 | §47.10's filing precondition | Met, and F1 shows the candidate is now moot for the reason §47.10 gave | Bookkeeping, but it is part of what kept F1's stale text alive. |
 
@@ -809,22 +809,23 @@ nothing says it is dead. **A tombstone belongs in `BUGS.md` next to MD-10/MD-11.
 
 # 5. Orphans
 
-Outstanding work visible in `QUESTIONS.md` or `BUGS.md` with **no bead covering
-it**. Listed only — not filed. Id candidates are suggestions; `bd` assigns the
-short suffix.
+Outstanding work visible in `QUESTIONS.md` or `BUGS.md` that had **no bead covering
+it**. **Filed 2026-10-17** -- the id column now carries the real bead, so the
+document's "owner or next action" rule is satisfied rather than aspirational.
+O4 was completed during that pass and needs no bead.
 
-| # | source | the outstanding thing | suggested id + one-line title |
+| # | source | the outstanding thing | bead (real id now) + one-line title |
 |---|---|---|---|
-| O1 | `QUESTIONS.md:508-512` | segment→index map and field semantics — the remainder `IRQ-0005`'s own last recommendation leaves open, and the same remainder `IRQ-0004` carries at `:241-242` | `stun-runner-tk1` — Map course → segment sequence → ROM table index; decode the table words |
-| O2 | `QUESTIONS.md:590-592` | `IRQ-0006`: frame-locked vs position-locked spawns, `NOT DISCRIMINATED` | `stun-runner-sp1` — Discriminate frame-locked vs position-locked object spawns for `0xFFDD00` |
-| O3 | `QUESTIONS.md:599-689` | `IRQ-0007`'s three sub-questions. Sub 2 is addressed by the pinned map (section A F5, and T17 in section 1), sub 1 narrowed by F6; **sub 3 has no bead and no in-tree answer until this pass** (T17) | `stun-runner-aq1` — Characterise `0x818002`'s LED-write count against MAME, and record the `move.w imm16,(xxx).L` decode |
-| O4 | `BUGS.md:552-559` + `analysis/mame-bugs.md:70-74` | MD-09's refuted encoding claim, in three committed places | `stun-runner-mb1` — Correct the MD-09 `$004F96` encoding claim against the oracle decode table |
-| O5 | `BUGS.md:580-600`, `:647-682`, `analysis/mame-bugs.md:21` | the "entries get reported upstream" rule has **no bead at all** — across all 44 outstanding beads only `9m4`/`xiw` (MD-12) and `s5r` (MD-05/MD-08) name an `MD-*` at all, and none of the three is about reporting | `stun-runner-mb2` — Reduce and file the upstreamable MAME-driver reports (MD-01/02/03, MD-06/07, MD-04+08) |
-| O6 | `BUGS.md:647-682` vs `analysis/gsp-program-upload.md:304-333` | the MD-13 retraction is propagated to `analysis/gsp-program-upload.md` and BUGS.md, but the **`tools/disasm-gsp` docstring is the place the false claim originated** and three committed files asserted it (per the task brief) — no bead tracks checking that no fourth file still does | `stun-runner-mb3` — Sweep the tree for surviving repeat-instruction claims (the MD-13 tombstone's actual lesson) |
-| O7 | `analysis/mame-bugs.md:21` | MD-05's tombstone is missing from `BUGS.md` while three files still cite MD-05 as live (T20) | `stun-runner-mb4` — Write the MD-05 withdrawal note into `BUGS.md`, or renumber |
-| O8 | `BUGS.md:332` vs `:334-412` | the hardware-abuse section header still says "(none recorded yet)" above four entries | `stun-runner-mb5` — Fix the `BUGS.md` hardware-abuse section header and the four entries' `Kind` |
-| O9 | `docs/sources.md:35-37` | no `S#` for `src/devices/cpu/**` (ADSP-2100, MC68000), which findings §§82-85 and T17/T18 cite by `file:line` | `stun-runner-src1` — Add a source-register row for the pinned `src/devices/cpu` implementations |
-| O10 | `QUESTIONS.md:262-545` | `IRQ-0005`'s header says RESOLVED with no `### Resolution`, contradicting its own last update (the IRQ-0005 row, section 1; and T1). No bead tracks the header | `stun-runner-qs1` — Reconcile the `IRQ-0005` status header and reorder/renumber its eleven update blocks |
+| O1 | `QUESTIONS.md:508-512` | segment→index map and field semantics — the remainder `IRQ-0005`'s own last recommendation leaves open, and the same remainder `IRQ-0004` carries at `:241-242` | `stun-runner-dlm` — Map course → segment sequence → ROM table index; decode the table words |
+| O2 | `QUESTIONS.md:590-592` | `IRQ-0006`: frame-locked vs position-locked spawns, `NOT DISCRIMINATED` | `stun-runner-2b2` — Discriminate frame-locked vs position-locked object spawns for `0xFFDD00` |
+| O3 | `QUESTIONS.md:599-689` | `IRQ-0007`'s three sub-questions. Sub 2 is addressed by the pinned map (section A F5, and T17 in section 1), sub 1 narrowed by F6; **sub 3 has no bead and no in-tree answer until this pass** (T17) | `stun-runner-8j4` — Characterise `0x818002`'s LED-write count against MAME, and record the `move.w imm16,(xxx).L` decode |
+| O4 | `BUGS.md:552-559` + `analysis/mame-bugs.md:70-74` | MD-09's refuted encoding claim, in three committed places | `DONE (corrected in BUGS.md, commit 91a613a)` — Correct the MD-09 `$004F96` encoding claim against the oracle decode table |
+| O5 | `BUGS.md:580-600`, `:647-682`, `analysis/mame-bugs.md:21` | the "entries get reported upstream" rule has **no bead at all** — across all 44 outstanding beads only `9m4`/`xiw` (MD-12) and `s5r` (MD-05/MD-08) name an `MD-*` at all, and none of the three is about reporting | `stun-runner-caz` — Reduce and file the upstreamable MAME-driver reports (MD-01/02/03, MD-06/07, MD-04+08) |
+| O6 | `BUGS.md:647-682` vs `analysis/gsp-program-upload.md:304-333` | the MD-13 retraction is propagated to `analysis/gsp-program-upload.md` and BUGS.md, but the **`tools/disasm-gsp` docstring is the place the false claim originated** and three committed files asserted it (per the task brief) — no bead tracks checking that no fourth file still does | `stun-runner-i9p` — Sweep the tree for surviving repeat-instruction claims (the MD-13 tombstone's actual lesson) |
+| O7 | `analysis/mame-bugs.md:21` | MD-05's tombstone is missing from `BUGS.md` while three files still cite MD-05 as live (T20) | `stun-runner-xhw` — Write the MD-05 withdrawal note into `BUGS.md`, or renumber |
+| O8 | `BUGS.md:332` vs `:334-412` | the hardware-abuse section header still says "(none recorded yet)" above four entries | `stun-runner-1lc` — Fix the `BUGS.md` hardware-abuse section header and the four entries' `Kind` |
+| O9 | `docs/sources.md:35-37` | no `S#` for `src/devices/cpu/**` (ADSP-2100, MC68000), which findings §§82-85 and T17/T18 cite by `file:line` | `stun-runner-d0c` — Add a source-register row for the pinned `src/devices/cpu` implementations |
+| O10 | `QUESTIONS.md:262-545` | `IRQ-0005`'s header says RESOLVED with no `### Resolution`, contradicting its own last update (the IRQ-0005 row, section 1; and T1). No bead tracks the header | `stun-runner-191` — Reconcile the `IRQ-0005` status header and reorder/renumber its eleven update blocks |
 
 **Also orphaned, but inside the bead board rather than beside it** — flagged, not
 filed: `stun-runner-gsvp.3`'s own notes say `DONE` while it is `open` and blocks

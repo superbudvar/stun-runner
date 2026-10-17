@@ -154,6 +154,24 @@ bit-addressed reading: the driver computes the cell index with `>> 4`, which is
 look like one. This is a MAME disassembler gap, not a property of the data — it
 is why an earlier reading of `$0x9920` as a reset vector was unsound.
 
+> **RETRACTED 2026-10-17 (MD-13 withdrawn).** The paragraph above was wrong and
+> is retained only so the retraction is visible where the claim lived. The
+> TMS34010 **has no repeat instructions**: SPVU001A Appendix A lists the whole
+> instruction set and none is a repeat, and `RS`/`RD` are *operand* symbols —
+> the chart's own legend at A-13 defines them as "source register" and
+> "destination register". A-14 gives `MOVE *Rs+,*Rd+,F` as `1001 10FS SSSS
+> DDDD`, i.e. `op & 0xfe00 == 0x9800`, which is exactly the family this
+> paragraph attributed to `RS1`/`RS2` — and MAME's `case 0x9800` renders
+> precisely that, with `34010tbl.hxx` dispatching the same range to
+> `move0_ni_ni_a`. So `MOVE *A9+,*A0+,0` for `$9920` is **correct**, and there is
+> no MAME gap here.
+>
+> The error was reading a *missing mnemonic* as a *defect* without checking
+> whether the instruction exists at all. Full refutation: findings §83. The
+> replacement text for this limit is in §"Repeat instructions — there are none"
+> below. **A missing mnemonic is not a defect until the primary source says the
+> opcode should produce a different one.**
+
 **Nothing here has been named semantically.** The register writes are decoded as
 raw addresses, not as `DPYSTRT` and friends. See MD-12 above for why: most of
 the addresses the program writes are outside the array MAME backs them with, so
