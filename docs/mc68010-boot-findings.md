@@ -13822,3 +13822,52 @@ This implements `stun-runner-3vb`; it changes our transcription, not the ROM or
 MAME oracle. Verification: `gsp-payload-codec-c`, all 127 public-tool tests,
 and the full 403-test repository suite. [ROM: capture bundle above; the C
 expected width is the observed B7.DX for the cited captured row.]
+
+## 92. The captured `$04B2-$04DF` path derives the SOM ring from source tuples (`alo`)
+
+Section 72 identified the pass-2 writes as the only version of
+`DM($0040..$0045)` read by the `$0514` SOM emitter, but the slice tests still
+supplied that final ring directly. The new `reproduction/adsp/som_producer.c`
+transcribes the bounded `$04B2-$04DF` routine: the observed three source
+`(x,y,SIMCLK)` tuples are read from the DM stream, `/MP=1` selects the object-ROM
+word window, each SIMCLK/SIMBUF read supplies the multiply coefficient, pass 1
+writes six centered values, and pass 2 transforms those values into the ring.
+It returns both the intermediate pass-1 words and the final pass-2 ring so each
+stage is observable.
+
+**[ROM]** Inputs are the frame-551 `producer_events` in
+`reference/experiments/stunrun/adsp-som-transaction-f551/result.json`, not the
+final SOM words. For each record the ten sequential source words cover three
+`x,y,SIMCLK` tuples plus the final `$04C9` x prefetch. The three SIMBUF reads
+return `$07DE,$072D,$07DE` for records 1–8 and `$07DE,$07DE,$072D` for record 9.
+With `/MP=1`, the two observed object-ROM word indices are `$1208C` and `$123AC`.
+The test uses a sparse synthetic word image populated only at those two measured
+locations; it does not commit or embed the commercial object ROM.
+
+The pass-1 expected words are the writes at `$04C8/$04CA` in §72.2. The result
+matches all **27 input pairs**. For the captured reset state (`MSTAT.INTEGER=0`),
+MAME's `mac_op_mr` performs the signed product, fractional left shift, rounding
+add, and tie adjustment before MR1 is read [S10]. The C transcription preserves
+those 16-bit write boundaries; it does not infer a coordinate system.
+
+For pass 2, all nine records use `DM($1FE4)=$0200`,
+`DM($1FE5)=$0140`, and `SE=-10`. The low/high `LSHIFT`/OR sequence combines the
+low 32 bits of each SS product and shifts them right by ten [S10]. It reproduces
+the observed x identity and y `5/8` transform for all **54 output words**. The
+zero guard at `$04CD` is implemented from the listing and covered by a synthetic
+test, but was not taken in this capture.
+
+`adsp-som-producer-slice-c` also substitutes each derived ring into the existing
+`$052F-$05D1` scan/walk and compares all nine 16-word SOM records against the
+captured output. It does not copy the ring from `som_fixture.c`. A mutant changing
+the pass-2 shift from 10 to 9 fails the ring and SOM-word assertions for all nine
+records; changing a source sample or an object-ROM coefficient also changes the
+derived values.
+
+**Limits:** the `$04C3` `SIMCLK <= $0200` sibling at `$04E0-$04EA` is rejected, not
+implemented; all nine observed tuples take the `$04C4-$04CA` branch. The
+following `$04EB-$050D` clamp/caller, other entry modes, GINT/SOM transaction
+orchestration, and native-shell wiring are not part of this slice. This
+establishes the numeric `$04B2` mechanism for one captured path, not a general
+ADSP replacement or gameplay renderer. [ROM: frame-551 transaction and §72.2;
+MAME arithmetic and SIMBUF mapping: S10.]

@@ -41,11 +41,21 @@ Two coverage gaps, both deliberate and recorded in findings §71:
 
 The DM window is a capture limit: a read outside it fails rather than guessing.
 
-## What fills the ring (identified, not transcribed)
+## Source tuples to the pass-2 ring (`som_producer.c`)
 
-Findings §72 answers §69.5's open item — "the caller that fills the ring before
-`$0514`". It is not one routine. Four of them write `DM($0040..$0045)` per
-record, and the capture shows a byte-identical 24-write histogram in all nine:
+`som_producer.c` transcribes the observed `$04B2-$04DF` two-pass producer for the
+frame-551 path. It consumes the ten words read from `DM($0040..$0049)` (three
+`x,y,SIMCLK` tuples plus the last, unused `$04C9` x prefetch), resolves each
+`SIMCLK` through an MP=1 object-ROM word image, computes the six pass-1 stores,
+then performs the `$04D6-$04DC` pass-2 transform into the ring consumed by
+`som_walk.c`. The test uses the actual observed source words and the two observed
+SIMBUF values in a sparse synthetic ROM image; it does not vendor the commercial
+object ROM.
+
+Findings §72 shows that the pre-pass-1 ring writers are overwritten in this
+capture. The pass-2 result is the only writer output the emitter reads, and the
+following clamp at `$04EB-$050D` preserves it byte-for-byte for all nine
+observed records. The measured write histogram was:
 
 | writer | writes | survives to the emitter? |
 |---|---|---|
@@ -55,20 +65,18 @@ record, and the capture shows a byte-identical 24-write histogram in all nine:
 | pass 2 of `$04B2` (`$04D9`/`$04DC`) | 6 words | **yes** |
 | clamp of `$04EB` (`$050D`) | 6 words | byte-identical to pass 2 in 9/9 |
 
-**No C slice exists for any of this yet.** Nothing under `reproduction/adsp/`
-computes the ring; `som_walk.c` is still fed the ring as an input, which is what
-makes `stunrun_adsp_som_derive_record` an entry point with no measured input.
-The captured inputs both need are in `som_fixture.c`, which `som_walk_test.c`
-and `native/adsp_som_view.c` both read; guard it with
-`tools/check-adsp-som-fixture`.
+`adsp-som-producer-slice-c` checks both intermediate pass-1 values and all six
+final ring words for each of the nine records, then substitutes only the derived
+ring into the existing `$052F-$05D1` pointer scan/walk and compares all nine
+16-word SOM records. The current test fixture has observed SIMCLK addresses
+`$208C`/`$23AC`, whose captured `/MP=1` SIMBUF values are `$07DE`/`$072D`.
 
-Pass 2 is the right first slice: it is the only output the emitter reads and it is
-fully exercised. Its blockers are the SIMBUF word stream at `DM($2000)` — the
-object ROM on `/MP`, read 27 times per transaction at `$04C5` alone — and the
-`DM($1FE4)` guard and `DM($1FE5)` multiplier. Recorded as two further unexercised
-paths in §72.4: `$04E0`-`$04EA` (the `IF LE` sibling, which scales by `LSHIFT 9`
-where the executed path uses `(RND)`) and the clamp's two assignments, which never
-fire because no observed value leaves `[0, $01FF]`.
+This is still a bounded routine slice, not an integrated native ADSP producer.
+Unexercised paths remain: `$04C3`'s `IF LE` sibling at `$04E0-$04EA`, the
+`DM($1FE4)==0` skip at `$04CD`, and the clamp's two assignments. The test rejects
+the alternate SIMCLK branch rather than guessing it. Inputs and output meanings
+remain numeric; this does not identify an object, coordinate frame, or road
+geometry.
 
 ## Looking at it: `./run.sh --adsp-som`
 

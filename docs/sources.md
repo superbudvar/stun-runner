@@ -35,6 +35,7 @@ cite.
 | **S7** | MAME `src/mame/atari/harddriv.cpp` at `/mnt/build/mame-ref`, build 0.289 | primary (emulator) | What the emulator does: machine config, device tags, address maps | `/mnt/build/mame-ref/` (outside this repo) |
 | **S8** | MAME TMS34010 device implementation | primary (emulator) | Host-port semantics, register behaviour | `/mnt/build/mame-ref/src/devices/cpu/tms34010/` |
 | **S9** | SPVU001A — TI TMS34010 User's Guide, 1988 ed. (Appendix A instruction set, A-13 legend, A-14 encodings, §8.8 vector fetch, Table 8-6 illegal opcodes) | primary (vendor) | **What the TMS34010 instruction set is.** The authority for every mnemonic, encoding, operand symbol and illegal opcode | printed TI document; cited by `third_party/tms34010_sv/rtl/core/tms34010_decode.sv` and `tools/disasm-gsp`; **not held locally** — cite by section, and say so rather than implying a local copy |
+| **S10** | MAME ADSP-2100 device and Atari Hard Drivin' ADSP interface implementation | primary (emulator) | ADSP MAC/shift execution and the board's `/MP`, `SIMCLK`, `SIMBUF`, and `SOMLATCH` behavior | `/mnt/build/mame-ref/src/devices/cpu/adsp2100/` and `/mnt/build/mame-ref/src/mame/atari/harddriv_m.cpp` (outside this repo) |
 
 ### Tiers, and what each one outranks
 
@@ -58,7 +59,8 @@ cite.
 | `docs/hardware-contract.md` | S6 `[MANUAL]`, S7 `[MAME]`, S1 `[ROM]`, S3 `[MARGOLIN]` |
 | `docs/mame-machine-reference.md` | S7 `[MAME]` + S8 throughout; S6 and S1 for the cross-checks |
 | `analysis/rom-text-strings.md` | S1 throughout |
-| `docs/mc68010-boot-findings.md` | S1 `[ROM]`, S7 `[MAME]`, S6 `[MANUAL]`, **S9 `[SPVU001A]`** (§83 condition table, §88 the JR/JA form field) |
+| `docs/mc68010-boot-findings.md` | S1 `[ROM]`, S7 `[MAME]`, S10 `[MAME]` for ADSP execution, S6 `[MANUAL]`, **S9 `[SPVU001A]`** (§83 condition table, §88 the JR/JA form field) |
+| `analysis/adsp-producer-semantics.md` | S1 `[ROM]` for captured producer events; S10 `[MAME]` for ADSP MAC/shift and SIMBUF map |
 | `analysis/gsp-program-upload.md` | **S9 `[SPVU001A]`** for the instruction set; S7/S8 for the decode |
 | `analysis/gsp-jr-conditions.md` | **S9 `[SPVU001A]`** for every condition predicate and the three JR/JA forms (pp. 12-92/94/96, read off page images); S7 `[MAME]` for `34010dsm.cpp` / `34010ops.hxx` |
 | `tests/test_gsp_jr_conditions.py` | **S9 `[SPVU001A]`** for every expected predicate; S7 for the executor text it perturbs |

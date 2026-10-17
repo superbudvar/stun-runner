@@ -486,6 +486,21 @@ target_include_directories(stunrun-adsp-som-walk-slice-test PRIVATE
   ../reproduction/adsp)
 set_target_properties(stunrun-adsp-som-walk-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME adsp-som-walk-slice-c COMMAND stunrun-adsp-som-walk-slice-test)
+# Bounded ADSP $04B2 two-pass source transform: DM source tuples, MP=1 SIMBUF
+# coefficient reads, and the pass-2 ring update, checked through the SOM walk.
+add_executable(stunrun-adsp-som-producer-slice-test
+  ../reproduction/adsp/som_fixture.c
+  ../reproduction/adsp/som_math.c
+  ../reproduction/adsp/som_producer.c
+  ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_walk.c
+  ../reproduction/adsp/som_producer_test.c)
+target_include_directories(stunrun-adsp-som-producer-slice-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-som-producer-slice-test PROPERTIES
+  C_STANDARD 99 C_STANDARD_REQUIRED ON)
+add_test(NAME adsp-som-producer-slice-c
+  COMMAND stunrun-adsp-som-producer-slice-test)
 # View of the ADSP SOM producer's derived output, so the reproduction slices can
 # be looked at rather than only read about: `./run.sh --adsp-som`. Needs no ROM,
 # no MAME and no Verilator, because the transaction it derives is committed under
