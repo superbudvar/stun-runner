@@ -13450,17 +13450,29 @@ units per word; the physical share pitch is 2 bytes.
 ### 87.2 What §85.1's counts actually meant
 
 §85.1's "7,411 real instructions / 24,182 DW / 85 mnemonics" are historical
-outputs from the old reader, which sampled one word in eight. They are a true
-description of that 32,768-cell subsample, but not a census of the dense share
-and not a statement about all GSP instructions. The concurrent
-`stun-runner-8y8` fetch-vs-decode work independently swept all 262,144 words and
-reported 253,231 slots, 60,576 non-`DW`, 192,655 `DW`, and 98 distinct mnemonics;
-its denominator and question differ from §85.1's.
+outputs from the old reader, which sampled one word in eight. They describe that
+32,768-position subsample, not a census of the dense share.
 
-The fixed disassembler now covers dense offsets while preserving multiword
-operand reads. Its updated regression tests assert both sides independently:
-synthetic dense ISA fixtures, and the address fold parsed from MAME's own source.
-`tools/check-gsp-executed` separately provides the fetched-vs-decoded census.
+Re-run after the dense adapter landed, on the same frame-404 image and the
+self-verifying `stun-runner-8y8` fetch trace:
+
+| result | measured |
+|---|---:|
+| share words classified | **262,144** |
+| decoder outputs other than `DW` | **67,683** |
+| `DW` | **194,461** |
+| no decoder output | **0** |
+| distinct mnemonics | **98** |
+| fetched-and-decodes (A) | **656** |
+| fetched-but-`DW` (B) | **0** |
+| not-fetched-but-decodes (C) | **67,027** |
+| not-fetched-and-`DW` (D) | **194,461** |
+
+The buckets partition the share exactly; the fetch trace's opcode fold matches
+656/656 with zero mismatches. The report is reproducible with
+`tools/check-gsp-executed` and the capture/trace pair under `/tmp/opencode/gspx`
+(the capture itself remains uncommitted). The old §85.1 counts remain historical
+measurements of the one-in-eight reader, not current tool output.
 
 ### 87.3 RETRACTED 2026-10-17 — the address fold DOES follow; I used the wrong rule
 
@@ -13511,6 +13523,31 @@ model**. `tests/test_disasm-gsp.py` builds its images with
 The check that would have caught it is cheap and belongs here: **a share sweep's
 nonzero-word count must equal the count the capture metadata reports.** That
 number was sitting in `result.json` the whole time.
+
+### 87.5 The fix: adapt the container at the decoder boundary, not the ISA
+
+The disassembler itself expects MAME's 16-byte cell layout for opcode and
+multiword operand reads. The physical share is dense. The fix in
+`tools/disasm-gsp` therefore expands each 2-byte share word into one 16-byte
+cell **in an internal 4 MiB buffer**, but keeps `--at`, printed `offset`, and
+JSON offsets in dense share bytes. A 3-word probe (`0580 0110 c000` at byte
+offsets 0/2/4) prints `MOVE A0,@C0000110h,0 [3 word(s)]` and then advances the
+reported offset to `0x06`; changing the cursor to `len/8` had produced `@0h`, so
+that tempting fix is wrong. `WORD_STRIDE=16` stays as MAME address units per
+word, not as the physical share pitch.
+
+The JSON `vram` fields report the canonical GSP **bit address** corresponding to
+a share byte offset: `0xff800000 + (offset << 3)`. The default `--at` is `0x68000`,
+the upload entry `0xfff40000` folded into dense share bytes. Odd, out-of-range
+starts and nonpositive counts are rejected.
+
+Regression tests are now split: synthetic dense ISA fixtures assert decoder
+behavior; addressing tests independently parse MAME's own
+`&m_gsp_vram[(address - base) >> 4]` expression and verify the byte/word fold.
+The updated `tests/test_disasm_gsp.py` has 25 tests and passes. The first full
+suite attempt was stopped after 37 minutes in a test that spawned one decoder
+subprocess for every stepped-over word. After replacing that with a batch decode,
+`./test` completed **400 tests in 88.250 s, OK**.
 
 ## 88. The GSP's JR/JA form field: MAME's executor and MAME's own disassembler disagree, and both differ from the ISA
 

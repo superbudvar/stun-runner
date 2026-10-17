@@ -39,8 +39,7 @@ WHAT IT GETS WRONG -- read before quoting any number from it
     at any word address, and the frame-404 capture really does hold 262,144
     distinct words -- `tools/mame-gsp-vram-dump` steps 0x10 address units per
     word and writes one word per 2-byte slot, so it is NOT one word replicated
-    eight times per cell. The tool measures that (`image.
-    replicated_8x_within_cells`) so a reader of a different capture is not
+    eight times per cell. The tool measures that (`image.replicated_8x_within_cells`) so a reader of a different capture is not
     misled, but it decodes at word resolution either way. §85.1 counted 32,768
     cells; that is a coarser question and the counts are not comparable.
 
@@ -99,7 +98,6 @@ is §85.1's question and not this tool's, and the report says so on stdout.
 from __future__ import annotations
 
 import argparse
-import concurrent.futures as futures
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -119,10 +117,12 @@ DISASM = REPO / "tools" / "disasm-gsp"
 SHARE_BASE = 0xFF800000
 SHARE_BYTES = 0x80000
 GSP_WINDOW_BYTES = 0x400000
-# One instruction word occupies one 16-byte cell, replicated 8x, in a capture.
+# MAME's disassembler addresses one word per 16-byte internal cell. The
+# physical capture is dense, and disasm-gsp expands it at the adapter boundary.
 WORD_STRIDE = 16
-WORDS_PER_CELL = WORD_STRIDE // 2
-CELLS = SHARE_BYTES // WORD_STRIDE
+WORDS_PER_DISASM_CELL = WORD_STRIDE // 2
+SHARE_WORDS = SHARE_BYTES // 2
+DISASM_CELLS = SHARE_BYTES // WORD_STRIDE
 # MAME's marker for a word its TMS34010 decoder declines to name.
 UNKNOWN_MNEMONIC = "DW"
 # The driver prints "<off>: <b1><b0>  <mnemonic> <operands>   [N word(s)]".
@@ -152,15 +152,16 @@ def read_share(path: pathlib.Path) -> tuple[bytes, dict]:
             f"  Any other length is a different container, and every address this\n"
             f"  tool would report would be wrong."
         )
-    words = CELLS * WORDS_PER_CELL
+    words = SHARE_WORDS
     info = {
         "path": str(path),
         "bytes": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
-        "cells": CELLS,
         "words": words,
+        "cells": DISASM_CELLS,  # legacy schema field: 16-byte adapter groups, not physical cells
+        "disasm_cells_per_share": DISASM_CELLS,
         "replicated_8x_within_cells": data == b"".join(
-            data[i:i + 2] * WORDS_PER_CELL for i in range(0, len(data), WORD_STRIDE)),
+            data[i:i + 2] * WORDS_PER_DISASM_CELL for i in range(0, len(data), WORD_STRIDE)),
     }
     return data, info
 
@@ -244,16 +245,14 @@ def _load_disasm():
 
 
 def decode_sweep(binary: pathlib.Path, image: pathlib.Path, start: int) -> dict[int, str]:
-    """One linear pass, starting at `start`, decoded by MAME, keyed by offset.
+    """One linear pass, starting at a dense share-byte offset, decoded by MAME.
 
-    A linear pass is exactly what produces §85.1's table: it steps over the
-    words a multi-word instruction consumes, so it reports fewer results than
-    there are words, and it only ever visits offsets congruent to its start
-    modulo the 16-byte word stride. Eight passes -- one per residue class --
-    therefore reach every word the program can start an instruction at, and the
-    words they stepped over are recovered individually below.
+    The dense-share adapter maps a one-word MAME length back to two physical
+    share bytes. A full-share pass therefore starts at byte 0 and budgets one
+    possible instruction per share word; multiword instructions skip operand
+    words, which are decoded in the one batch pass below.
     """
-    proc = subprocess.run([str(binary), str(start), str(CELLS + 1), str(image)],
+    proc = subprocess.run([str(binary), str(start), str(SHARE_WORDS + 1), str(image)],
                           capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise SystemExit(proc.stderr.strip() or "the decoder driver failed")
@@ -264,27 +263,64 @@ def decode_sweep(binary: pathlib.Path, image: pathlib.Path, start: int) -> dict[
             decoded[int(match.group(1), 16)] = match.group(2).upper()
     return decoded
 
+def decode_offsets(module, workdir: pathlib.Path, image: pathlib.Path,
+                   offsets: list[int]) -> dict[int, str]:
+    """Decode all requested starts in one process using MAME's disassembler.
 
-def decode_offsets(binary: pathlib.Path, image: pathlib.Path,
-                   offsets: list[int], workers: int = 16) -> dict[int, str]:
-    """Decode individual word addresses the linear passes stepped over."""
+    The ordinary disasm-gsp driver accepts one start and a linear instruction
+    count. This generated batch driver retains the exact same MAME decoder and
+    dense-share adapter, but reads independent byte offsets from stdin. It is
+    intentionally built here rather than changing disasm-gsp's standalone CLI.
+    """
     if not offsets:
         return {}
-
-    def one(offset: int) -> tuple[int, str | None]:
-        proc = subprocess.run([str(binary), str(offset), "1", str(image)],
-                              capture_output=True, text=True, check=False)
-        for line in proc.stdout.splitlines():
-            match = DRIVER_LINE.match(line)
-            if match:
-                return offset, match.group(2).upper()
-        return offset, None
-
-    out: dict[int, str] = {}
-    with futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        for offset, mnemonic in pool.map(one, sorted(offsets)):
-            if mnemonic is not None:
-                out[offset] = mnemonic
+    driver = module.DRIVER
+    new = '''    while(std::cin >> start) {
+        if(start >= raw.size() || (start & 1)) continue;
+        off=(start/2)*WORD_STRIDE_B;
+        std::ostringstream os;
+        offs_t length=d.disassemble(os,off,ops,parm)&util::disasm_interface::LENGTHMASK;
+        size_t share_off=(off/CELL)*SHARE_WORD_BYTES;
+        std::cout<<std::hex<<std::setfill('0')<<"  "<<std::setw(8)<<share_off<<": "
+                 <<std::setw(4)<<(int)(all[off+1])<<std::setw(4)<<(int)all[off]
+                 <<"  "<<os.str()<<"   ["<<std::dec<<(length/WORD_STRIDE_B)
+                 <<" word(s)]\\n";
+    }
+    return 0;'''
+    # Replace from the first disassemble loop through return, retaining the
+    # source's image-loading and dense-to-cell mapping verbatim.
+    begin = driver.index("    for(unsigned i=0;i<n&&off<all.size();i++){")
+    end = driver.index("    return 0;", begin) + len("    return 0;")
+    driver = driver[:begin] + new + driver[end:]
+    driver = driver.replace("WORD_STRIDE_B", str(module.WORD_STRIDE))
+    source = module.MAME_TREE / "src/devices/cpu/tms34010/34010dsm.cpp"
+    header = source.with_name("34010dsm.h")
+    key = hashlib.sha256(source.read_bytes() + header.read_bytes() +
+                         module.SHIM.encode() + driver.encode()).hexdigest()[:16]
+    binary = workdir / f"tms34010-dsm-batch-{key}"
+    if not binary.is_file():
+        inc = workdir / f"inc-batch-{key}"
+        inc.mkdir(parents=True, exist_ok=True)
+        (inc / "emu.h").write_text('#include "emu_shim.h"\n')
+        (workdir / "emu_shim.h").write_text(module.SHIM)
+        (workdir / "batch-driver.cpp").write_text(driver)
+        proc = subprocess.run([module.os.environ.get("CXX", "g++"), "-O2", "-std=c++17",
+                               "-Wno-format-security", "-I", str(inc), "-I", str(workdir),
+                               "-I", str(source.parent), str(workdir / "batch-driver.cpp"),
+                               str(source), "-o", str(binary)], capture_output=True,
+                              text=True, check=False)
+        if proc.returncode:
+            raise SystemExit(f"failed to build MAME batch decoder:\n{proc.stderr[:4000]}")
+    proc = subprocess.run([str(binary), "0", "0", str(image)],
+                          input="".join(f"{offset}\n" for offset in sorted(offsets)),
+                          capture_output=True, text=True, check=False)
+    if proc.returncode:
+        raise SystemExit(proc.stderr.strip() or "the MAME batch decoder failed")
+    out = {}
+    for line in proc.stdout.splitlines():
+        match = DRIVER_LINE.match(line)
+        if match:
+            out[int(match.group(1), 16)] = match.group(2).upper()
     return out
 
 
@@ -353,20 +389,18 @@ def main() -> int:
     workdir.mkdir(parents=True, exist_ok=True)
     binary = module.build(workdir)
 
-    # Eight linear passes, one per 2-byte residue class, then an individual
-    # decode for every word a pass stepped over. Every one of the 262,144 word
-    # addresses ends up with its OWN decode; nothing is inferred from a
-    # neighbour.
+    # One dense linear pass, then one batch decode for every word the pass
+    # stepped over as a multiword operand. Each of the 262,144 addresses gets
+    # its own MAME decode; nothing is inferred from a neighbour. The batch keeps
+    # this bounded to at most two decoder processes, not one process per word.
     word_mnemonic: dict[int, str] = {}
-    swept = 0
-    for residue in range(0, WORD_STRIDE, 2):
-        decoded = decode_sweep(binary, args.image, residue)
-        swept += len(decoded)
-        word_mnemonic.update(decoded)
+    decoded = decode_sweep(binary, args.image, 0)
+    word_mnemonic.update(decoded)
     stepped_over = [offset for offset in range(0, SHARE_BYTES, 2)
                     if offset not in word_mnemonic]
-    individually = decode_offsets(binary, args.image, stepped_over)
+    individually = decode_offsets(module, workdir, args.image, stepped_over)
     word_mnemonic.update(individually)
+    swept = len(decoded)
 
     notes: list[str] = []
     undecodable = {off for off, m in word_mnemonic.items()
@@ -453,8 +487,8 @@ def main() -> int:
     print(f"share   {args.image}  {image_info['bytes']} bytes  "
           f"sha256 {image_info['sha256']}")
     print(f"        {counts['A'] + counts['B'] + counts['C'] + counts['D']} word "
-          f"addresses, {CELLS} 16-byte cells; this capture replicates each "
-          f"cell's word 8x: {image_info['replicated_8x_within_cells']}")
+          f"addresses, {DISASM_CELLS} aligned 16-byte spans; 8x repeated-word "
+          f"pattern: {image_info['replicated_8x_within_cells']}")
     if args.fetch_trace:
         print(f"trace   {args.fetch_trace}  {trace_info['records']} records, "
               f"{trace_info['distinct_word_addresses']} distinct word addresses, "
@@ -462,7 +496,7 @@ def main() -> int:
               f"unaligned={trace_info['unaligned_records']}, "
               f"distinct time values={trace_info['distinct_time_values']}")
     else:
-        print("trace   (none supplied) -- every cell is C or D by construction, "
+        print("trace   (none supplied) -- every word is C or D by construction, "
               "and bucket B is empty for want of evidence, not of instructions")
     print(f"fold    (pc_bits >> 3) & 0x7ffff: {matched} opcode(s) agree with the "
           f"image, {mismatched} disagree")
@@ -472,9 +506,8 @@ def main() -> int:
     print(f"decode  {document['decode']['decoded']} words decode, "
           f"{document['decode']['unknown_dw']} are DW, "
           f"{len(distinct_mnemonics)} distinct mnemonics")
-    print(f"        {swept} words from {WORDS_PER_CELL} linear sweeps (one per "
-          f"2-byte residue class), {len(individually)} decoded individually "
-          f"after a sweep stepped over them")
+    print(f"        {swept} words from one linear sweep, {len(individually)} "
+          f"decoded in one batch after the sweep stepped over them")
     print()
     print(f"{'bucket':>7}  {'count':>7}  meaning")
     print(f"{'A':>7}  {counts['A']:>7}  fetched, decodes -- code MAME reads")

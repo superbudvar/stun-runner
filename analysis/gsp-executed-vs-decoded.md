@@ -238,14 +238,14 @@ decode  67683 words decode, 194461 are DW, 98 distinct mnemonics
 
 ### 3.1 The unit is the word, and §85.1's unit is not this unit
 
-§85.1 counted **32,768 cells** (16 bytes). This counts **262,144 words**
-(2 bytes), and the capture genuinely holds that many distinct words: a 2-byte
-stride over the frame-404 image returns exactly the **81,899** nonzero words the
-capture's own `result.json` records, while a 16-byte stride returns 10,539 —
-one word in eight. That is AGENTS.md trap 11, confirmed on this image, and it
-is why the tool decodes at word resolution. (Trap 11 quotes 10,989 for its
-16-byte figure; on **this** capture it is 10,539. Different image or different
-run — `UNKNOWN` which, and not load-bearing here.)
+§85.1 counted **32,768 16-byte positions** in the old reader. This capture
+holds **262,144 dense words** (2 bytes each): a 2-byte sweep returns exactly the
+**81,899** nonzero words in its `result.json`. Two valid 16-byte measures differ:
+**10,539** nonzero words sampled at the first word of each aligned cell, and
+**10,989** aligned cells containing any nonzero byte. Same image, both correct,
+different questions. The old reader sampled one word in eight because the input
+format changed from a 4 MiB cell image to a 512 KiB dense share but its reader did
+not; findings §87.5 records the fix.
 
 §85.1's own numbers reproduce exactly with one command, which is worth stating
 because it means the disagreement below is about *meaning*, not arithmetic:
@@ -261,7 +261,7 @@ cells reported: 31593  real instructions: 7411  DW: 24182
 sweep reports; 32,768 − 31,593 = **1,175** cells were stepped over as parameters
 of multi-word instructions. §85.1's table is reproduced to the digit.
 
-### 3.2 …and 94 % of §85.1's "real instructions" are not instructions
+### 3.2 Historical §85.1 subsample: 94 % of its "real instructions" were not fetched
 
 ```console
 $ IMG=/tmp/opencode/gspx/cap-observer/gsp-vram-upload-last/gsp_vram.bin
@@ -403,13 +403,11 @@ read those numbers, all reported rather than fixed:
   one-byte-repeated patterns such as `0x8282`, `0xb8b8`, `0xaaaa`; §3.2 shows
   94 % of §85.1's census is there. The docstring's *explanation* is also stale for
   a second reason: §84 (`0fef4c6`) already made the window/share distinction;
-- `tools/disasm-gsp`'s docstring and driver comment, which state that "one
-  instruction word occupies one 16-byte cell, replicated 8x". For this capture
-  that is **false** (§3.1: a 2-byte stride reproduces the metadata's 81,899
-  nonzero words exactly, a 16-byte stride returns 10,539). The conclusion the
-  comment draws from it — the disassembler's position units are already bytes,
-  do not divide by 8 — is independently correct and `disasm-gsp`'s output is
-  unaffected; only the stated reason is wrong. This is AGENTS.md trap 11 /
+- `tools/disasm-gsp`'s former docstring and driver comment said "one instruction
+  word occupies one 16-byte cell, replicated 8x" as a claim about the physical
+  share. The share is dense; 16-byte cells now exist only in the decoder adapter.
+  `WORD_STRIDE=16` remains correct for MAME's internal address units. Findings
+  §87.5 records the fix and the correct distinction. This is AGENTS.md trap 11 /
   `stun-runner-a9q` seen from the other side.
 
 Whether `0x40000` was ever a meaningful program origin is **`UNKNOWN`**; the
@@ -466,3 +464,42 @@ the map, the mirror and the share. **S8** (`tms34010.cpp`) — `ROPCODE()`, the
 `STUNRUN-FETCH` hook, and its 1 MiB stdio buffer. **S9** (SPVU001A, **not held
 locally**, cited by section) — §8.7 Table 8-6's 9,984 illegal opcode words, in
 §3.3.
+
+## 8. Dense decoder and batch-process correction, 2026-10-17
+
+The §3.1/§3.2 command transcript and its 7,411 / 24,182 / 85 table are **historical
+outputs from the old reader**. That build fed the dense 512 KiB image directly to
+a cell-based MAME reader and sampled one word in eight. The same `--at 0 --count
+32769` command now speaks dense share-byte offsets and no longer reproduces that
+old table. Do not quote those values as current output. The physical-layout
+confusion has been corrected in the tool and findings §87.
+
+The first full suite after the disassembler change ran 37m37s before it was
+stopped in `test_gsp_executed`. Source review showed why: the old
+`tools/check-gsp-executed` launched a decoder process for every skipped address —
+**229,368** individual processes on this capture. It now uses one dense linear
+sweep and generates a batch driver from the same MAME disassembler source and
+dense-to-cell adapter for every skipped word. The subprocess-count regression
+test requires at most two decoder processes: one sweep plus one batch.
+
+Re-run on the preserved `/tmp/opencode/gspx` frame-404 image and W1 trace:
+
+| metric | result |
+|---|---:|
+| A fetched + decodes | 656 |
+| B fetched + `DW` | 0 |
+| C not fetched + decodes | 67,027 |
+| D not fetched + `DW` | 194,461 |
+| total classified words | 262,144 |
+| all-share decoder words other than `DW` | 67,683 |
+| `DW` / no decoder output | 194,461 / 0 |
+| distinct mnemonics | 98 |
+| fold opcode matches / mismatches | 656 / 0 |
+| linear-sweep / batched starts | 253,231 / 8,913 |
+| decoder processes | 2 |
+| classifier runtime | 9.786 s |
+
+The bucket result matches the original report; the path to it no longer means
+hundreds of thousands of processes. This session independently ran `test_gsp_executed.py` (13 tests, 25.357 s) and
+`test_disasm_gsp.py` (25 tests, 75.448 s); both passed. After the batch fix,
+`./test` completed **400 tests in 88.250 s, OK**.

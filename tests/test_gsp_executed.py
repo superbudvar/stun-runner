@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import pathlib
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -191,6 +192,24 @@ class GspExecutedTests(unittest.TestCase):
         self.assertEqual(document["decode"]["words_decoded_individually"]
                          + document["decode"]["results_from_linear_sweeps"],
                          WORDS)
+
+    def test_full_share_fill_in_uses_one_batch_decoder_process(self):
+        """A dense full-size image uses one sweep and at most one batch."""
+        script = r'''import importlib.machinery, importlib.util, pathlib, subprocess, sys
+p = pathlib.Path(sys.argv[1]); image = sys.argv[2]
+spec = importlib.util.spec_from_loader("check", importlib.machinery.SourceFileLoader("check", str(p)))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+real = m.subprocess.run; decodes = []
+def counted(argv, *a, **kw):
+    if argv and pathlib.Path(str(argv[0])).name.startswith("tms34010-dsm-"):
+        decodes.append(argv)
+    return real(argv, *a, **kw)
+m.subprocess.run = counted; sys.argv = [str(p), image, "--json"]
+raise SystemExit(0 if m.main() == 0 and len(decodes) <= 2 else 1)
+'''
+        proc = subprocess.run([sys.executable, "-c", script, str(TOOL), str(self.share)],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
     # -- THE NEGATIVE CONTROLS --------------------------------------------
 
