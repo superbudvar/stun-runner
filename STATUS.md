@@ -189,10 +189,21 @@ nothing fills.
   change, and one call restores the tap (measured 29,287 events before the read,
   139,120 after). The behaviour is still worth guarding against because the
   removal is silent. Refutation: `docs/mc68010-boot-findings.md` §28.
-- **Still open from that work:** the pinned oracle binary is not stock MAME.
+- **Closed 2026-10-17:** the pinned oracle binary is not stock MAME.
   `/mnt/build/mame-ref` carries local observation-only hooks in
-  `harddriv_m.cpp`, `harddriv_v.cpp` and `tms34010.cpp`, and this repository does
-  not yet record them. See the open question below.
+  `harddriv_m.cpp`, `harddriv_v.cpp` and `tms34010.cpp`. **They are recorded**,
+  in `analysis/mame-local-patches.json` (8 patches across those three files plus
+  `tms34010.h` and a genie version stamp), and
+  `tests/test_mame_local_patches.py` fails the suite on any unrecorded change.
+  The entry that used to say this repository "does not yet record them" was
+  stale.
+- **But the binary inventory is incomplete.** `reference/` metadata names **two**
+  MAME executables, and one of them is in neither recorded slot:
+  `75b09ee4…` (the oracle, ×9) and `fcb54790e1837ed6…` (`executable_sha256` in
+  `adsp-program-snapshot.metadata.json`, ×2, **unrecorded**). The recorded
+  observer `55956f2b…` appears in no committed metadata at all. So at least one
+  committed measurement came from a build this repository cannot name. See
+  `stun-runner-w55`.
 
 ### M4 completion
 

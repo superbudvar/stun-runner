@@ -549,17 +549,21 @@ dumps belong there. Two consequences:
     `0xB800` to GSP HSTCTLH (halt line asserted) and the GSP halts.
   - MAME VRAM mapping: `map(0xff800000, 0xffbfffff).mirror(0x0400000).ram()`
     in both GSP and 68k program spaces, both sharing `"gsp_vram"`.
-  - The MC68010 `movea.l #$FF945E, A1` instruction at `$004F96` has a
-    non-canonical encoding (`0x2279 00FF945E`) that does not match standard
-    `movea.l #<long>`.L encoding (`0x2079 <long>`). The MAME disassembler
-    decodes it as `movea.l #$FF945E, A1`, but the byte pattern suggests
-    `movea.w #$FF945E, A1` (word, sign-extended → `$FFFF945E`), which would
-    write to a different address. The boot findings claim the fill correctly
-    reaches `$FF945E`, implying either the encoding is a special longword form
-    or the listing transcription is inaccurate.
+  - The MC68010 `movea.l #$FF945E, A1` instruction at `$004F96` is encoded
+    `0x2279 00FF945E`, which **is** canonical `movea.l #<long>` — see the
+    correction below. An earlier revision of this entry called the encoding
+    "non-canonical", suggested it was really `movea.w` sign-extended to
+    `$FFFF945E`, and left the diagnosis hanging on which of the two the listing
+    meant. That was our error and it is retracted: `0x2279 & 0xf1ff == 0x2079`
+    exactly, so An = 1 and the operand is a full 32-bit immediate. Musashi's own
+    decoder agrees on a different mask for the same word (`0x2279 & 0xf1c0 ==
+    0x2040`, `m68kdasm.c:3473`), and routes `0x2279` to a MOVEA handler, not to
+    `move_16`. So the fill does reach `$FF945E`, and the encoding is not a
+    candidate explanation for this symptom.
 - **Confidence:** partially confirmed by measurement (GSP halt state, host port
-  path, VRAM mapping confirmed); MC68010 instruction encoding is inferred from
-  byte pattern and contradicts the listing.
+  path, VRAM mapping confirmed). The MC68010 instruction encoding claim that
+  used to sit here is **retracted** — it is canonical `movea.l`, established by
+  mask arithmetic against both MAME's and Musashi's decoders.
 - **Impact on us:** if this is a MAME driver defect, the TMS34010 host port
   does not correctly relay MC68010 writes into GSP VRAM when the GSP is halted.
   The MC68010 diagnostic writes through the GSP host port, but VRAM at
