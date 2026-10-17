@@ -14,35 +14,30 @@ file references. It is built on first use and cached.
 
 WHAT IT GETS WRONG -- read this before trusting a decode:
 
-  * The GSP address space is BIT-addressed. `ROPCODE()` advances the PC by
-    `2 << 3` and MAME's disassembler advances its read position by 16 units per
-    word. Those 16 units are BYTES in the captured share: one instruction word
-    occupies one 16-byte cell, replicated 8x, so a fetch at any alignment inside
-    the cell returns the same word. This mapping was derived empirically from
-    the STUNRUN-FETCH trace, where `pc & 0x3fffff` lands exactly on the cell
-    holding that fetch's opcode. A first version of this tool divided the
-    position by 8 instead and produced confidently wrong output, so the
-    derivation is what makes the tool usable rather than merely plausible.
+  * The physical share is DENSE: 262,144 16-bit words, two bytes each. MAME's
+    TMS34010 disassembler is written for the 4 MiB bit-address window, where
+    `ROPCODE()` advances the PC by `2 << 3` and the disassembler reads each
+    operand word 16 address units apart. The shim expands the dense image into
+    that 16-byte-cell layout internally, then maps input/output offsets at the
+    boundary back to dense share bytes. This expansion is a decoder adapter,
+    not a claim that the physical share replicates each word eight times.
+    `--at` is a BYTE offset in the 512 KiB share; the default is the folded
+    upload entry `$68000`. The `vram` fields report the canonical GSP bit address
+    `SHARE_BASE + (share_byte_offset << 3)`.
 
   * `DW` does not mean "this is data". It is MAME's own marker for a word its
     TMS34010 decoder does not handle, and that is a large minority of the
     opcode space. Driving this build over the whole 16-bit space with a linear
-    sweep reaches 61,831 of the 65,536 cells (a multi-word instruction steps
-    over the cells it consumes, so the remainder need separate runs) and yields
-    115 mnemonics plus `DW`, of which 12,059 cells -- 19.5% of those reached,
-    18.4% of the whole space -- render as `DW`. So a `DW` line says the
-    *decoder* has nothing, not that the *region* is not code. Which of the two
-    it is cannot be decided from the bytes.
+    sweep reaches 61,831 encodings (a multi-word instruction steps over words it
+    consumes, so the remainder need separate runs) and yields 115 mnemonics plus
+    `DW`. A `DW` line says the *decoder* has nothing, not that the *region* is
+    not code. Which of the two it is cannot be decided from the bytes.
 
   * A linear disassembly of a data region produces plausible instructions, and
-    this tool will happily print them. Measured on the 1,397-word window the
-    STUNRUN first-output boundary defines (share bytes 446118..448912,
-    findings section 36.3), the 18 distinct words present decode as, among
-    others, `MOVE *B12+,B5,0` (word `$9595`), `BTST A10,A11` (`$4B4B`) and
-    `SRA A11,A5` (`$6565`). Nine of the 18 come out as `DW`. So "looks like
-    code" carries no information here at all. `tools/gsp-program-map
-    --fetch-trace` is what separates code from data, and the decision belongs
-    there.
+    this tool will happily print them. A decode is not evidence that the GSP
+    fetched the word. `tools/check-gsp-executed` compares the share with the
+    observed fetch trace; use it to distinguish fetched code from data that only
+    looks like code. Even that is bounded to its captured run and input schedule.
 
   * `opcode` in `--json` is two 4-digit zero-padded byte fields concatenated,
     high byte first -- NOT the instruction word as a number. The driver prints
@@ -50,9 +45,9 @@ WHAT IT GETS WRONG -- read this before trusting a decode:
     `"00050050"` and `int(opcode, 16)` gives `0x50050`. Recover the word with
     `(int(opcode[:4], 16) << 8) | int(opcode[4:], 16)`. This is left as-is
     because `stunrun-gsp-disasm/v1` is a published schema and no committed
-    consumer reads the field (`tools/gsp-program-map` uses `offset`,
-    `mnemonic` and `operands` only); it is documented here rather than silently
-    changed. `tests/test_disasm_gsp.py` pins the relationship.
+    consumer reads the field (`tools/gsp-program-map` uses `offset`, `mnemonic`
+    and `operands` only); it is documented here rather than silently changed.
+    `tests/test_disasm_gsp.py` pins the relationship.
 
   * MAME has no GSP ROM region for stunrun, so everything disassembled here
     came out of VRAM. Nothing here verifies that the bytes came from the game
@@ -70,38 +65,13 @@ WHAT IT GETS WRONG -- read this before trusting a decode:
         SPVU001A, Appendix A pp. A-13..A-16) lists every instruction the part
         has. There is no `RS`, `RS1`, `RS2`, `RI` or `RPT` in it. `RS` and `RD`
         appear only as operand symbols, and the chart's own legend defines them
-        as "source register" and "destination register". NOTE: SPVU001A is not
-        yet registered in `docs/sources.md`, so it carries no `S#` here. It is
-        a primary vendor document and needs a row; this tool and
-        `third_party/tms34010_sv` already cite it.
-      - That chart assigns the `1001 10FS SSSR DDDD` encoding -- `op & 0xfe00
-        == 0x9800` -- to `MOVE *Rs+,*Rd+,F`, "Move Field: Ind. (post-inc) to
-        Ind. (post-inc)". MAME's `case 0x9800` renders exactly that.
-      - Decoding the whole 16-bit space through this build produces 115
-        mnemonics plus `DW`, none of them a repeat instruction.
-      - The vendored RTL in this repository already said so independently:
-        `third_party/tms34010_sv/rtl/core/tms34010_decode.sv:127` documents
-        `1001 10FS` (top6 `0x9800`) as `MOVE *Rs+,*Rd+`, citing SPVU001A.
+        as "source register" and "destination register". This is source S9 in
+        `docs/sources.md`.
+      - MAME's executor, `src/devices/cpu/tms34010/34010ops.hxx`, dispatches the
+        alleged family as `MOVE *Rs+,*Rd+,F`; the disassembler agrees. It is not
+        a decoder gap.
 
-    So `MOVE *A9+,*A0+,0` for the word `$9920` -- the value MD-13 called a
-    mis-decode -- is the correct reading, and adding a repeat-mnemonic table
-    would have introduced the wrong answer.
-
-    The `$0x9920` itself never was an instruction word, either. In the
-    captured share the word appears in exactly one 16-byte cell, at share
-    offset `0x3FFFE0`, whose address is `$FFBFFFE0` -- which the 4 MiB mirror
-    folds to `$FFFFFFE0`, the location SPVU001A section 8.8 names as where the
-    TMS34010 fetches the level-0 vector from. The next cell holds `$FFF5`, so a
-    32-bit read there composes `0x0FFF59920`, which is not an address in the
-    GSP's space. The cell is in the replicated fill, not in the uploaded
-    program: share `0x340000`-`0x35DC00` contains no cell equal to `$9920`.
-    `analysis/gsp-program-upload-boundary.md` had already withdrawn the
-    reset-vector reading for exactly this reason; MD-13 kept using the value.
-
-    Where the decoder *could* be hiding something, this tool does have a
-    check: SPVU001A section 8.7 Table 8-6 lists 9,984 architecturally illegal
-    opcode words, and MAME renders every one of them as `DW` rather than as a
-    mnemonic. `tests/test_disasm_gsp.py` holds that to the table.
+    The retraction is recorded in `BUGS.md` MD-13 and findings §83.
 
 Requires a C++ compiler and the MAME source tree.
 """
@@ -122,31 +92,12 @@ import tempfile
 REPO = pathlib.Path(__file__).resolve().parents[1]
 MAME_TREE = pathlib.Path(os.environ.get("MAME_SRC", "/mnt/build/mame-ref"))
 
-# PHYSICAL SHARE IS 512 KiB. The 4 MiB figure is the ADDRESS WINDOW, not the
-# share, and conflating the two is what made this tool refuse the oracle's own
-# capture.
-#
-# harddriv.cpp:628 -- stunrun -> multisync_nomsp -> multisync_gsp_map:
-#     map(0xff800000, 0xffbfffff).mirror(0x0400000).ram().share("gsp_vram")
-# That is a 4 MiB WINDOW with a mirror mask. The backing STORE is 512 KiB:
-#     * MAME's own direct `m_gsp_vram` dump reports 524288 bytes / 262144 words
-#       (findings 34; reproduced today by tools/capture-gsp-program-upload,
-#       which reports bytes=524288 words=262144).
-#     * Margolin, S3: the MultiSync main board used "8 banks of 64Kx8
-#       (16 64Kx4 VRAMs)" = 512 KiB. The non-MultiSync board used 16 banks = 1 MiB
-#       (harddriv.cpp:579 and :669 map a plain 0xff800000-0xffffffff, no mirror).
-#     * SP-338, S6: "VRAM Array (16) 64K x 4" = 4 Mbit = 512 KiB.
-#     * native/gsp_rtl/gsp_board.h already models 512 KiB.
-#
-# So an address folds into the share; anything the driver writes above 512 KiB is
-# an alias in MAME. Whether the real board ALIASES there or leaves it unwired is
-# UNKNOWN -- Margolin withheld the GSP schematic section deliberately. Logged in
-# docs/mc68010-boot-findings.md 84.
 SHARE_BASE = 0xFF800000
 SHARE_BYTES = 0x80000          # the physical share MAME allocates
 GSP_WINDOW_BYTES = 0x400000    # the address window the map covers, NOT the share
 
-# One instruction word per 16-byte cell, replicated 8x.
+# MAME length units per instruction word (16 address units); not a physical
+# byte stride. The physical share is dense at 2 bytes per word.
 WORD_STRIDE = 16
 
 SHIM = r'''
@@ -221,9 +172,9 @@ DRIVER = r'''
 struct membuf : util::disasm_interface::data_buffer {
     std::vector<u8> b;
     explicit membuf(std::vector<u8> v) : b(std::move(v)) {}
-    // Position is a BYTE offset into the share. The disassembler steps 16 units
-    // per word, and one word occupies one 16-byte cell, so the units are
-    // already bytes. Dividing by 8 here was the first version's bug.
+    // Position is a BYTE offset into the EXPANDED cell buffer, not the dense
+    // physical share. The disassembler steps 16 address units per word; the
+    // wrapper has adapted that to one 16-byte cell per dense 2-byte word.
     u8  r8 (offs_t pc) const override { return pc<b.size()?b[pc]:0; }
     u16 r16(offs_t pc) const override { return (pc+1<b.size())?(u16)(b[pc]|(b[pc+1]<<8)):0; }
     u32 r32(offs_t pc) const override { return (u32)r16(pc)|((u32)r16(pc+16)<<16); }
@@ -231,19 +182,36 @@ struct membuf : util::disasm_interface::data_buffer {
 };
 int main(int argc,char**argv){
     if(argc<4){std::fprintf(stderr,"usage: dsm <offset> <count> <binary>\n");return 2;}
-    offs_t off=strtoul(argv[1],nullptr,0); unsigned n=strtoul(argv[2],nullptr,0);
+
+    offs_t start=strtoul(argv[1],nullptr,0); unsigned n=strtoul(argv[2],nullptr,0);
     FILE*f=fopen(argv[3],"rb"); if(!f){std::perror("open");return 1;}
-    std::vector<u8> all; u8 buf[65536]; size_t g;
-    while((g=fread(buf,1,sizeof buf,f))>0) all.insert(all.end(),buf,buf+g);
+    std::vector<u8> raw; u8 buf[65536]; size_t g;
+    while((g=fread(buf,1,sizeof buf,f))>0) raw.insert(raw.end(),buf,buf+g);
     fclose(f);
+    // MAME's TMS34010 disassembler reads an instruction's operand words at
+    // WORD_STRIDE-byte offsets -- its address model uses one word per 16-byte
+    // cell. The physical share is DENSE (one word per 2-byte
+    // slot, 262,144 of them), so expand it into that layout here and keep the
+    // cell bookkeeping internal. Offsets are accepted and reported in SHARE
+    // BYTES throughout; only the cursor speaks cells. See findings 87.5.
+    const size_t CELL = WORD_STRIDE_B;        // cell size in cell-bytes
+    const size_t SHARE_WORD_BYTES = 2;        // the share is dense: 2 bytes/word
+    const size_t words = raw.size() / SHARE_WORD_BYTES;
+    std::vector<u8> all(words * CELL, 0);
+    for (size_t w = 0; w < words; ++w) {
+        all[w * CELL]     = raw[2 * w];
+        all[w * CELL + 1] = raw[2 * w + 1];
+    }
     membuf ops(all),parm(all);
+    offs_t off = (start / 2) * WORD_STRIDE_B;    // share byte -> cell
     tms34010_disassembler d(false);
     for(unsigned i=0;i<n&&off<all.size();i++){
         std::ostringstream os;
         offs_t raw=d.disassemble(os,off,ops,parm);
         offs_t len=raw&util::disasm_interface::LENGTHMASK;
         size_t bo=off;
-        std::cout<<std::hex<<std::setfill('0')<<"  "<<std::setw(8)<<off<<": "
+        size_t share_off = (bo / CELL) * SHARE_WORD_BYTES;  // cell -> share byte
+        std::cout<<std::hex<<std::setfill('0')<<"  "<<std::setw(8)<<share_off<<": "
                  <<std::setw(4)<<(int)(bo+1<all.size()?all[bo+1]:0)
                  <<std::setw(4)<<(int)all[bo]<<"  "<<os.str()
                  <<"   ["<<std::dec<<(len/WORD_STRIDE_B)<<" word(s)]"<<std::hex<<"\n";
@@ -293,8 +261,8 @@ def main() -> int:
         description="Disassemble the GSP program from a captured VRAM image.")
     parser.add_argument("image", type=pathlib.Path,
                         help="gsp_vram.bin, as written by tools/mame-gsp-vram-dump")
-    parser.add_argument("--at", default="0x340000",
-                        help="start, as a share byte offset (default 0x340000)")
+    parser.add_argument("--at", default="0x68000",
+                        help="start, as a share byte offset (default 0x68000, folded upload entry)")
     parser.add_argument("--count", type=int, default=32,
                         help="instructions to disassemble (default 32)")
     parser.add_argument("--json", action="store_true",
@@ -327,6 +295,13 @@ def main() -> int:
     binary = build(workdir)
 
     start = int(args.at, 0)
+    if start < 0 or start >= SHARE_BYTES or start % 2:
+        print(f"--at must be an even byte offset in the physical share [0, {SHARE_BYTES:#x}), got {start:#x}",
+              file=sys.stderr)
+        return 2
+    if args.count < 1:
+        print(f"--count must be positive, got {args.count}", file=sys.stderr)
+        return 2
     proc = subprocess.run([str(binary), str(start), str(args.count), str(args.image)],
                           capture_output=True, text=True, check=False)
     if proc.returncode != 0:
@@ -354,7 +329,7 @@ def main() -> int:
             operands = re.sub(r"\s*\[\d+ word\(s\)\]\s*$", "", operands).strip()
             instructions.append({
                 "offset": offset,
-                "vram": SHARE_BASE + (offset % SHARE_BYTES),
+                "vram": SHARE_BASE + ((offset % SHARE_BYTES) << 3),
                 "opcode": opcode,
                 "mnemonic": mnemonic,
                 "operands": operands,
@@ -364,7 +339,7 @@ def main() -> int:
             "schema": "stunrun-gsp-disasm/v1",
             "image": str(args.image),
             "start": start,
-            "start_vram": SHARE_BASE + (start % SHARE_BYTES),
+            "start_vram": SHARE_BASE + ((start % SHARE_BYTES) << 3),
             "word_stride": WORD_STRIDE,
             "instructions": instructions,
         }, indent=2))

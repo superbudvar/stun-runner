@@ -13415,83 +13415,90 @@ re-ran.
 **A capture of zero bytes is a disk problem until proven otherwise.** Check free
 space before concluding anything from an empty artifact.
 
-## 87. The GSP share is DENSE: `WORD_STRIDE = 16` was wrong, and §85.1's numbers described one word in eight
+## 87. The GSP share is DENSE; `disasm-gsp`'s input contract changed but its cell-based reader did not
 
-### 87.1 The measurement that settles it
+### 87.1 The measurement that settles the physical layout
 
-`tools/disasm-gsp` used `WORD_STRIDE = 16`, derived when the tool (wrongly)
-believed the share was a 4 MiB window with each instruction word replicated
-eight times. §84 corrected the share size to 512 KiB but did not revisit the
-stride, and the stride is what decides which words are even looked at.
+`tools/disasm-gsp` was originally written for a **4 MiB window image** with one
+word per 16-byte cell. §84 changed the accepted input size to the **512 KiB
+physical share**, which is dense (one 16-bit word per 2-byte slot), but left the
+reader contract unchanged. The resulting unit mismatch made its cursor advance
+16 bytes in the dense image for every one-word instruction: it visited one word
+in eight. The mistake was not `WORD_STRIDE = 16`; MAME returns length in TMS34010
+address units, where 16 units is one word, and the cell-based decoder needs that
+stride to read multiword operands correctly.
 
-The capture is unambiguous. `tools/capture-gsp-program-upload` reports
-`words=262144, nonzero_words=81899` — MAME counting nonzero `uint16_t` in the
-share. Reading the same file:
+The capture metadata settles density. `tools/capture-gsp-program-upload`
+reports `words=262144, nonzero_words=81899` — MAME counting nonzero `uint16_t`
+in the physical share. Reading the same file:
 
-| stride | nonzero words found |
-|---|---|
-| **dense, 2 bytes** | **81,899** — exact match |
-| 16 bytes | 10,989 — one word in eight |
+| measurement | value |
+|---|---:|
+| dense 2-byte sweep of nonzero words | **81,899** — exact metadata match |
+| 16-byte-aligned cells containing any nonzero byte | **10,989** |
+| nonzero words sampled at 16-byte intervals | **10,539** |
 
-512 KiB is 262,144 words at 2 bytes. The share is **dense**, full stop. Every
-§85.1 count was taken over one word in eight.
+The latter two differ because one asks whether *any byte in the cell* is nonzero,
+while the other asks whether the particular 16-bit word at the start of that cell
+is nonzero. Same image, both correct, different questions.
 
-### 87.2 What that qualifies (not invalidates — see the correction below)
+The fixed `tools/disasm-gsp` now expands the dense image into the cell layout
+**internally**, retaining MAME's operand-fetch semantics while accepting and
+reporting physical share byte offsets. It keeps `WORD_STRIDE = 16` as MAME length
+units per word; the physical share pitch is 2 bytes.
 
-§85.1's "7,411 real instructions / 24,182 DW / 85 mnemonics" describe a
-subsample of one word in eight, not the program. **They remain a true answer to
-the 32,768-cell question** and the concurrent `stun-runner-8y8` work had already
-reached the same dense-layout conclusion independently. What changes is that they
-cannot be quoted as a statement about the program, which is how they were used. The corrected totals, over the dense sweep, are
-**253,231 slots, 60,576 non-`DW`, 192,655 `DW`, 98 distinct mnemonics, 1,258
-JR/JA-family instructions rendering 18 distinct names covering all 16 condition
-codes**.
+### 87.2 What §85.1's counts actually meant
 
-The good news inside the bad news: **the §85.1 conclusion survives and strengthens.**
-"Zero unknown encodings" was true of the subsample and is true of the whole
-share. And "all 18 JR condition variants appear" is a property of the *correct*
-stride — at the wrong stride the tool yields 17, which is what made the
-discrepancy visible.
+§85.1's "7,411 real instructions / 24,182 DW / 85 mnemonics" are historical
+outputs from the old reader, which sampled one word in eight. They are a true
+description of that 32,768-cell subsample, but not a census of the dense share
+and not a statement about all GSP instructions. The concurrent
+`stun-runner-8y8` fetch-vs-decode work independently swept all 262,144 words and
+reported 253,231 slots, 60,576 non-`DW`, 192,655 `DW`, and 98 distinct mnemonics;
+its denominator and question differ from §85.1's.
 
-`tests/test_disasm_gsp.py` pins the 16-byte model, so the constant cannot be
-changed without changing that file too. Filed P1.
+The fixed disassembler now covers dense offsets while preserving multiword
+operand reads. Its updated regression tests assert both sides independently:
+synthetic dense ISA fixtures, and the address fold parsed from MAME's own source.
+`tools/check-gsp-executed` separately provides the fetched-vs-decoded census.
 
 ### 87.3 RETRACTED 2026-10-17 — the address fold DOES follow; I used the wrong rule
 
-**What I wrote here was wrong.** I folded `m_gsp_speedup_pc = 0xfff41070` with
-`(addr - 0xff800000) & 0x7ffff`, concluded it landed 8,160 bytes past the end of
-a 512 KiB share, and raised the address-to-offset fold as an open question. The
-rule is wrong: TMS34010 addresses are in units of 8 (`addrshift=3`), so the
-address must be **shifted right by 3 before it is masked**, and the mask is the
-**word** count `0x3FFFF`, not the byte count `0x7FFFF`.
+**The conclusion was right; the arithmetic I recorded was wrong.** The correct
+mapping is derived from MAME's `m_gsp_speedup_addr[0]` word-index expression and
+the TMS34010's bit-addressing (`addrshift=3`):
 
-| fold rule | word offset | verdict |
+| quantity | formula | result |
 |---|---|---|
-| `(addr) & 0x7FFFF` — what this section used | 266,352 | past the end (wrong rule) |
-| `((addr) >> 3) & 0x3FFFF` — measured | **164,366** | **in range** |
+| byte offset in 512 KiB share | `((addr - 0xff800000) >> 3) & 0x7ffff` | `0x6820e` = 426,510 |
+| word index in 262,144-word share | `((addr - 0xff800000) >> 4) & 0x3ffff` | `0x34107` = 213,255 |
 
-164,366 words is byte offset `0x5041C` of `0x80000`. The speedup PC is inside the
-captured share and nothing is anomalous.
+For `m_gsp_speedup_pc = 0xfff41070`, both values are **in range**; byte offset
+`0x6820e` is even and exactly twice word index `0x34107`. The canonical alias in
+MAME's mapped window is `0xffb41070`; adding the high mirror bit gives the
+original `0xfff41070`.
 
-Measured, not assumed: `tools/check-gsp-executed` folds with
-`(pc_bits >> 3) & 0x7FFFF` and **self-verifies** — it compares the opcodes it
-recovers at each folded offset against the opcodes the fetch trace recorded, and
-reports the agreement count. **656 of 656 agree.** The same work shows
+The previous text incorrectly used `((addr) >> 3) & 0x3ffff` as a word index,
+which was neither the byte nor word fold. Its reported `164,366` / `0x5041c` was
+therefore also wrong. The corrected arithmetic is independently tested in
+`tests/test_disasm_gsp.py::AddressingTests.test_word_fold_is_mames_own_index_arithmetic`
+against the actual `&m_gsp_vram[(address - base) >> 4]` expression in
+`harddriv.cpp`, then cross-checked by the byte-fold identity.
+
+Measured, not assumed: `tools/check-gsp-executed` folds fetch PCs to byte offsets
+with `(pc_bits >> 3) & 0x7ffff` and self-verifies the recovered opcodes against
+the trace. **656 of 656 agree.** The same work shows
 `tools/gsp-program-map:88` folding with `pc & (SHARE_BYTES - 1)` — a bit address
 masked by a byte size, never shifted — where **0 of 656** records land correctly.
-Two tools, two rules, and the one carrying the self-check is the one that is
-right.
 
-So `stun-runner-47h` is answered for MAME's side: the fold is `(addr >> 3) &
-0x3FFFF`, the share holds 262,144 words, and each has eight aliases across the
-4 MiB window — which is what Margolin's "memory org changed dynamically according
-to the address being selected" describes. The *hardware* half, and whether the
-board's fold matches MAME's, stay open.
+So `stun-runner-47h` is answered for MAME's side: byte fold `>> 3`, word fold
+`>> 4`, 262,144 words, and eight aliases per word across the 4 MiB window. The
+hardware half — whether the physical board folds the same way — remains open.
 
 **The lesson is §88.4's, one instance further along:** I asserted an arithmetic
 anomaly from a rule I had not verified, and the anomaly was my rule. Deriving the
-fold from the trace and checking it against recovered opcodes costs one run and
-would have caught this at once.
+fold from MAME's actual pointer expression and checking it against recovered
+opcodes would have caught this immediately.
 
 ### 87.4 The transferable lesson
 

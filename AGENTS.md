@@ -154,21 +154,20 @@ Each of these has already cost real time here.
 
 11. **Reconcile any share sweep against `nonzero_words` in the capture's
     `result.json`.** This is the cheapest guard in the repository and it is not
-    automated anywhere. The 512 KiB physical GSP share is **dense** — 262,144
+    automated everywhere. The 512 KiB physical GSP share is **dense** — 262,144
     words at 2 bytes — and a 2-byte sweep of the frame-404 image returns exactly
-    the **81,899** nonzero words the metadata records. A 16-byte stride decodes
-    only **10,539** of them, about **one in eight**. Two nearby numbers get
-    confused here, so state which you mean: **10,539** nonzero *instruction
-    words* (what `disasm-gsp` actually decodes, one word per 16-byte cell) and
-    **10,989** 16-byte *cells* containing any nonzero byte. Same image, both
-    correct, different questions. `tools/disasm-gsp` carries
-    `WORD_STRIDE = 16`, derived when the share was wrongly believed to be a 4 MiB
-    window with 8x replication; §84 fixed the size and missed the stride
-    (`stun-runner-a9q`). Every test stayed green, because
-    `tests/test_disasm_gsp.py` builds its fixtures with a `share()` helper that
-    **encodes the same assumption** — so the suite could not have caught it. When
-    a tool's output is a count, a total, or a "N instructions" claim, check the
-    count against the capture's own metadata before repeating it.
+    the **81,899** nonzero words the metadata records. Two nearby historical
+    numbers get confused here, so state which you mean: **10,539** nonzero words
+    sampled at 16-byte intervals by the OLD `disasm-gsp` reader, and **10,989**
+    16-byte-aligned cells containing any nonzero byte. Same image, both correct,
+    different questions. The bug was a unit mismatch: the tool changed input from
+    a 4 MiB cell image to a 512 KiB dense share but left its cell reader unchanged.
+    `WORD_STRIDE = 16` is still correct as MAME length units per word; the fix
+    expands dense input to cells internally and reports dense byte offsets
+    (`stun-runner-a9q`). Its tests now separate ISA decoding from address-fold
+    tests against MAME's own expression. When a tool's output is a count, a total,
+    or a "N instructions" claim, check the count against the capture's own
+    metadata before repeating it.
 
 12. **MAME state is per-RUN, and `tools/mame_launch.py` is the only place that
     is decided.** MAME writes `stunrun.cfg` at exit including current input-port
