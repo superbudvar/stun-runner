@@ -13866,8 +13866,88 @@ derived values.
 
 **Limits:** the `$04C3` `SIMCLK <= $0200` sibling at `$04E0-$04EA` is rejected, not
 implemented; all nine observed tuples take the `$04C4-$04CA` branch. The
-following `$04EB-$050D` clamp/caller, other entry modes, GINT/SOM transaction
-orchestration, and native-shell wiring are not part of this slice. This
+following `$04EB-$04FD` caller logic, other entry modes, GINT/SOM transaction
+orchestration, and native-shell wiring are not part of this slice. The separate
+`$04FE-$050D` clipping loop is recorded in §94. This
 establishes the numeric `$04B2` mechanism for one captured path, not a general
 ADSP replacement or gameplay renderer. [ROM: frame-551 transaction and §72.2;
 MAME arithmetic and SIMBUF mapping: S10.]
+
+## 93. `$0147-$0173` source-DM producer derives the `$04B2` input window (`alo`)
+
+`reproduction/adsp/source_producer.c` transcribes the bounded ADSP-2100 path
+`$0147-$0173`. It consumes the same-run DM($2000) reads, applies the captured
+`SE=-2` arithmetic shift to the first 30 stream words, combines those staged
+words with the 90 observed PM reads and 30 observed `$015A` DM auxiliary reads,
+then derives the 30 writes at `$015C`. It consumes the next 27 raw DM($2000)
+words with the following 81 PM reads and derives the 27 `$0171` writes. The
+returned sequence is exactly `DM[$010D..$0145]`; it does not assign meanings
+to those words.
+
+**[ROM] Provenance:** both fresh seeded-NVRAM captures in
+`reference/experiments/stunrun/adsp-som-pm-reads-f551/run-{1,2}/result.json`
+are stock-behaviour MAME
+`75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06`, frame
+551, input `none`, power-on, and have identical transaction SHA-256
+`deaee6477ef283e756bdf81bfa6ecee14e9f29f83efded70216e7bd352d6e91c`. Each
+contains 4,009 untruncated `producer_events` and 171 same-run PM reads. The
+per-run seed-file hashes are in each result's `nvram` record. The same-run
+program image and the independent frame-600 image both hash to
+`821f3478ef4de4deb67c2b492fc726aaa73351d240b037e46b9f0d23014cecc4`; the C
+test uses PM tap values, not the run-end program image. The fixtures in
+`source_producer_test.c` were checked against the result's DM($2000) reads,
+PM reads, auxiliary DM reads, and writes. Its 57 expected values are the
+observed `$015C/$0171` DM writes, independently of the C routine.
+
+The confirmed instruction mechanics are the 24-bit program-space read followed
+by the ADSP's `>> 8` PM-to-MY0 path and modifier update (`2100ops.hxx`,
+`pgm_read_dag2`, lines 680-698), the signed/fractional SS and RND MAC behavior
+(`mac_op_mr`, lines 1380-1440), and the immediate shifts
+(`shift_op_imm`, lines 2158-2219) [S10]. In the trace, all 30 first-loop output
+groups read three DM operands and three PM dwords; the last PM dword in each
+three-term group is the RND multiply. The second loop reads three DM operands
+and three PM dwords per output. The recorded PM values include transient
+`$1010=$00400000` reads (MY0 receives `$4000`); substituting the matching
+run-end image would incorrectly replace those values with zero.
+
+**Confirmed vs inferred:** observed event values and write counts are confirmed
+by the two identical same-run captures. The incoming shift value is not directly
+included in the PM/DM event records; the implemented `SE=-2` is inferred from
+all 30 captured staged DM words, each matching arithmetic shift-right-by-two
+of its corresponding raw DM($2000) word. The C entry point accepts only this
+observed shift value. The following DM staging is kept numeric and does not
+claim a source-data meaning. The `$015C` RND tie case and the `$0171` parallel
+`SI=AR` old-value use follow MAME's executor semantics [S10] and reproduce all
+57 captured writes.
+
+**Limits:** this is only the observed counts and `SE=-2` entry case. Other
+incoming shift values, outer-loop counts, and alternate control-flow paths are
+rejected or unimplemented. It does not implement the `$04B2-$04DF` consumer,
+SOM/GINT orchestration, lookup-table output, object semantics, gameplay, or a
+general ADSP core. The separate `adsp-source-producer-slice-c` test passes;
+a temporary mutant removing one fractional MAC shift failed the expected-write
+comparison. The source-selector composition also derives the table before
+checking the nine SOM records.
+
+## 94. `$04FE-$050D` clamps the six-word SOM ring (`alo`)
+
+`reproduction/adsp/som_clamp.c` transcribes the bounded six-word clip loop in
+`analysis/adsp-producer-semantics.md` `$04EB-$050D`: values are interpreted as
+signed 16-bit words and saturated to `0..$01FF`. The function rejects a missing
+or non-six-word input without publishing partial output.
+
+**[ROM]** All nine frame-551 pass-2 rings are within the clamp interval. The
+composition test runs each derived ring through the clamp, proves it is
+unchanged against the captured DM ring, and feeds the clamped ring to the
+existing SOM scan/walk. Thus the observed path is the no-op branch only.
+
+**Synthetic code-path coverage:** a six-word boundary vector checks negative,
+zero, `$01FF`, `$0200`, `$7FFF`, and `$8000` inputs against the literal
+saturating result. These values exercise the disassembled comparison branches;
+they are not claimed as a runtime capture or hardware observation.
+
+**Limits:** this slice starts at `$04FE`, after `$04EB-$04FD` conditionally
+tests caller state and may return through `$0631`. It does not model that
+caller, the `$0663` alternate mode, or SOM/GINT orchestration. The standalone
+CTest is `adsp-som-clamp-slice-c`; the transform and source-selector CTests
+compose the clamp before the SOM walk.

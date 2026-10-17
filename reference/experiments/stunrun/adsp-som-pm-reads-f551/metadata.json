@@ -1,0 +1,43 @@
+{
+  "schema": "stunrun-experiment-metadata/v1",
+  "experiment": "adsp-som-pm-reads-f551",
+  "purpose": "Retain same-run ADSP program-space read dwords used by PCs $0147-$0173, alongside the existing DM and SOM transaction events, to independently derive the 57 source-table writes.",
+  "rom_manifest": "roms/stunrun.manifest.json",
+  "rom_manifest_sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d",
+  "mame": {
+    "binary": "/mnt/build/mame-oracle/mame",
+    "binary_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+    "role": "stock-behaviour; capture reproduction uses same-run PM taps absent from the older committed transaction artifact"
+  },
+  "machine_map": {
+    "path": "analysis/driver-mining/stunrun.machine-map.yaml",
+    "sha256": "b9106e5c04d8bd20b0c7bb4eab52553cd1655bd037e62be5f16a5f1bc21db02f"
+  },
+  "harness": {
+    "tool": "tools/capture-adsp-som-transaction",
+    "tool_sha256": "7e2d1fccc5643d64b2b7cce78a9cdb63a0d97470bd331d02d14b6a4c32983537",
+    "lua": "mame/lua/adsp-som-transaction.lua",
+    "lua_sha256": "31df63e4afc4e2e2f0f3d4d0b2eae50076895dacbf8a1d908ab1b1de05bfecac",
+    "input": "none",
+    "start_condition": "power_on with a disposable copy of the recorded NVRAM seed"
+  },
+  "runs": [
+    {
+      "result": "run-1/result.json",
+      "result_sha256": "52d0c8fb9e235348368c4dc4d8898565a53bb575d7a618026c7662825865c1ce"
+    },
+    {
+      "result": "run-2/result.json",
+      "result_sha256": "730a708d71d7b9d63c65fbeec1bd29b2cdd9f9b1dad55a37bc9ecc8d44054f4a"
+    }
+  ],
+  "repeatability": {
+    "transaction_sha256_both_runs": "deaee6477ef283e756bdf81bfa6ecee14e9f29f83efded70216e7bd352d6e91c",
+    "transaction_frame_both_runs": 551,
+    "som_word_count_both_runs": 146,
+    "pc_0147_0173_pm_read_count_both_runs": 171,
+    "note": "Whole result.json hashes differ because MAME writes changed NVRAM into each disposable run directory; the transaction hashes and observed output remain identical."
+  },
+  "artifacts": ["run-1/result.json", "run-2/result.json"],
+  "commercial_roms_committed": false
+}

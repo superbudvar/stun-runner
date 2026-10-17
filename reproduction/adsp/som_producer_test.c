@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "som_fixture.h"
+#include "som_clamp.h"
 #include "som_producer.h"
 #include "som_walk.h"
 
@@ -80,6 +81,7 @@ static void test_captured_records(void)
     for (record_index = 0; record_index < RECORDS; record_index++) {
         uint16_t pass1[STUNRUN_ADSP_SOM_RING_WORDS];
         uint16_t ring[STUNRUN_ADSP_SOM_RING_WORDS];
+        uint16_t clipped_ring[STUNRUN_ADSP_SOM_RING_WORDS];
         uint16_t dm[DM_WORDS];
         uint16_t som_words[RECORD_WORDS];
         stunrun_adsp_som_span_t spans[8];
@@ -94,14 +96,17 @@ static void test_captured_records(void)
                            STUNRUN_ADSP_SOM_RING_WORDS));
         check(arrays_equal(ring,
                            stunrun_adsp_som_fixture_dm((unsigned)record_index)
-                               + RING_OFFSET,
+                                + RING_OFFSET,
                            STUNRUN_ADSP_SOM_RING_WORDS));
+        check(stunrun_adsp_som_clamp_ring(
+            ring, STUNRUN_ADSP_SOM_RING_WORDS, clipped_ring));
+        check(arrays_equal(clipped_ring, ring, STUNRUN_ADSP_SOM_RING_WORDS));
 
         /* Compose the derived ring, not the captured ring, with the existing
          * $052F-$05D1 walk. Preserve only the other measured DM inputs. */
         memcpy(dm, stunrun_adsp_som_fixture_dm((unsigned)record_index),
                sizeof(dm));
-        memcpy(&dm[RING_OFFSET], ring, sizeof(ring));
+        memcpy(&dm[RING_OFFSET], clipped_ring, sizeof(clipped_ring));
         check(stunrun_adsp_som_derive_record(
             dm, DM_WORDS, DM_BASE, stunrun_adsp_som_fixture_pm(),
             STUNRUN_ADSP_SOM_FIXTURE_PM_WORDS, spans, 8u, &record));

@@ -104,6 +104,24 @@ SOM/GINT orchestration, and native-shell wiring remain open. This is not an
 integrated ADSP/gameplay replacement. See findings §92 and
 `reproduction/adsp/README.md`.
 
+**ADSP source-table C slice (2026-10-17).** `reproduction/adsp/source_producer.c`
+now derives the 57 observed `$015C/$0171` writes in `$0147-$0173` from the
+same-run DM/SIMBUF/PM operands. The composed source-selector test constructs
+that table before selecting tuples and walking SOM records. The transaction
+artifact retains two repeated same-seed captures with 171 PM read events each.
+Upstream caller inputs, E8 MR2/caller-loop behavior, alternate branches,
+the `$04EB-$04FD` caller wrapper and `$0663` mode, SOM/GINT orchestration, and
+native-shell wiring remain open;
+`stun-runner-alo` is not complete. See findings §93 and
+`reproduction/adsp/README.md`.
+
+**ADSP ring clamp slice (2026-10-18).** `reproduction/adsp/som_clamp.c` now
+transcribes `$04FE-$050D` and is composed between the `$04B2` ring transform and
+the SOM walk. The frame-551 oracle path leaves all 54 ring words unchanged;
+synthetic boundary vectors cover the disassembled saturation branches, which
+remain unobserved at runtime. The preceding `$04EB-$04FD` caller logic and
+alternate `$0663` mode are still open. See findings §94.
+
 Distinct from M5. The GSP has no ROM: `mainpcb:user1` is the ADSP object ROM,
 and the 68010 programs the GSP through VRAM. Until a GSP executes, the display
 list is never rasterised and the 68010 spins at `$022766` waiting on a queue

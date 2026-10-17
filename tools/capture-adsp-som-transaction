@@ -2,14 +2,17 @@
 """Capture one no-input ADSP SOMLATCH->GINT transaction in MAME.
 
 Answers: "what words did the ADSP put on SOMLATCH before this GINT, what DM
-reads/writes surrounded it, and which 68010 bank was selected?" Captures the
-ADSP's DM space plus the 68010 SOM-window/control/FIFO accesses in one MAME run.
+reads/writes and PM program-space reads surrounded it, and which 68010 bank was
+selected?" Captures ADSP DM, same-run PM reads, and 68010 SOM-window/control/FIFO
+accesses in one MAME run. An optional NVRAM seed is copied into a disposable
+per-run directory to reproduce a known startup state without modifying it.
 
 WHAT IT GETS WRONG: one frame can contain multiple unrelated ADSP routines; a
 SOMCLK->GINT interval is an observed transport boundary, not proof that all
-preceding DM reads caused every SOM word. The host bank is reconstructed from
-the 68010's address-decoded control writes using the pinned MAME rule. This
-does not decode F1 geometry fields or claim a screen-space meaning.
+preceding DM or PM reads caused every SOM word. The PM tap reports program-space
+read values, not decoded operand roles. The host bank is reconstructed from the
+68010's address-decoded control writes using the pinned MAME rule. This does not
+decode F1 geometry fields or claim a screen-space meaning.
 """
 
 from __future__ import annotations
@@ -58,6 +61,13 @@ def sha256(path: pathlib.Path) -> str:
     return h.hexdigest()
 
 
+def directory_hashes(root: pathlib.Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): sha256(path)
+        for path in sorted(root.rglob("*")) if path.is_file()
+    }
+
+
 def parse_event(m: re.Match[str]) -> dict[str, object]:
     event = {
         "seq": int(m.group(1)), "frame": int(m.group(2)),
@@ -86,6 +96,9 @@ def main() -> int:
                         help="capture the 68010 ferry this many frames after GINT")
     parser.add_argument("--max-events", type=int, default=50000)
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--nvram-seed", type=pathlib.Path,
+        help="copy this NVRAM root (containing stunrun/) into a disposable per-run directory")
     parser.add_argument("--mame", default="mame")
     args = parser.parse_args()
     if args.frames < 2 or not (1 <= args.start_frame < args.frames) or \
@@ -116,16 +129,39 @@ def main() -> int:
         "STUNRUN_ADSP_TX_MAX_EVENTS": str(args.max_events),
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
-    # This tool passed a SHARED -state_directory as well as a shared
-    # -cfg_directory. Both are the trap-12 shape; the launcher gives each run
-    # its own of each, and the bound is unchanged.
-    with mame_launch(mame=mame, rompath=rompath, frames=last_frame,
-                     autoboot=script,
-                     extra=("-debug", "-debugger", "none", "-nothrottle")) as launch:
-        with log.open("w", encoding="utf-8") as handle:
-            completed = run_mame(launch.argv, env=environment, stdout=handle,
-                                 stderr=-2, timeout=args.timeout)
-        text = log.read_text(encoding="utf-8", errors="replace")
+    def run_capture(nvram_directory: pathlib.Path | None = None):
+        # This tool passed a SHARED -state_directory as well as a shared
+        # -cfg_directory. Both are the trap-12 shape; the launcher gives each
+        # run its own of each, and the bound is unchanged.
+        with mame_launch(mame=mame, rompath=rompath, frames=last_frame,
+                         autoboot=script,
+                         extra=("-debug", "-debugger", "none", "-nothrottle"),
+                         nvram_directory=nvram_directory) as launch:
+            with log.open("w", encoding="utf-8") as handle:
+                completed = run_mame(launch.argv, env=environment, stdout=handle,
+                                     stderr=-2, timeout=args.timeout)
+            return completed, log.read_text(encoding="utf-8", errors="replace")
+
+    nvram_record: dict[str, object] = {"mode": "fresh-per-run"}
+    if args.nvram_seed is None:
+        completed, text = run_capture()
+    else:
+        seed = args.nvram_seed.resolve()
+        if not seed.is_dir() or not (seed / "stunrun").is_dir():
+            parser.error("--nvram-seed must be a NVRAM root containing stunrun/")
+        with tempfile.TemporaryDirectory(prefix="stunrun-adsp-nvram-",
+                                         dir=os.environ.get("TMPDIR")) as temporary:
+            staged_nvram = pathlib.Path(temporary)
+            shutil.copytree(seed, staged_nvram, dirs_exist_ok=True)
+            initial_files = directory_hashes(staged_nvram)
+            completed, text = run_capture(staged_nvram)
+            final_files = directory_hashes(staged_nvram)
+        nvram_record = {
+            "mode": "seeded-copy",
+            "seed_source": str(seed),
+            "initial_files_sha256": initial_files,
+            "final_files_sha256": final_files,
+        }
     lua_errors = find_lua_errors(text)
     check_lua_errors(text, log)
     done = DONE.findall(text)
@@ -137,8 +173,15 @@ def main() -> int:
         raise SystemExit(f"event cap reached ({args.max_events}); capture is incomplete: {log}")
     if "nil" in (tx_start_frame, tx_start_seq, tx_end_frame, tx_end_seq):
         raise SystemExit(f"no complete SOMCLK->GINT transaction; see {log}")
+    start_seq, end_seq = int(tx_start_seq), int(tx_end_seq)
 
     events = [parse_event(m) for m in EVENT.finditer(text)]
+    pm_reads = [e for e in events if e["cpu"] == "adsp_program" and
+                start_seq <= int(e["seq"]) <= end_seq and
+                0x0147 <= int(e["pc"]) <= 0x0173]
+    if any(e["access"] != "R" or not 0x1000 <= int(e["address"]) <= 0x1fff
+           for e in pm_reads):
+        raise SystemExit("ADSP PM tap emitted an out-of-window or non-read event")
     record_states = []
     for m in STATE.finditer(text):
         base = int(m.group(7), 16)
@@ -209,6 +252,9 @@ def main() -> int:
         ],
         "producer_events": [e for e in events if e["cpu"] == "adsp" and
                             start_seq <= int(e["seq"]) <= end_seq],
+        # PM program-space reads were already tapped in Lua but previously
+        # dropped from the parsed transaction. Preserve exact same-run operands.
+        "pm_reads": pm_reads,
         "maincpu_irq_acks": related_irq_acks,
         # Ferry events occur after the GINT and can include unrelated traffic
         # during the post-frame window. Keep counts and small samples without
@@ -241,10 +287,11 @@ def main() -> int:
                                       "analysis/driver-mining/stunrun.machine-map.yaml"),
         "mame_binary": str(mame),
         "mame_binary_sha256": mame_sha256,
+        "nvram": nvram_record,
         "harness": "tools/capture-adsp-som-transaction + mame/lua/adsp-som-transaction.lua",
         "harness_sha256": {"python": sha256(pathlib.Path(__file__).resolve()),
                            "lua": sha256(script)},
-        "register_snapshots": "ADSP AR/AF/AX/AY/MY/MR/SR/SI/SE/I/M/L at PC 0x0570-0x0580 and 0x05DD-0x0630; PM lookup taps at PCs 0x05E0/0x060A",
+        "register_snapshots": "ADSP AR/AF/AX/AY/MY/MR/SR/SI/SE/I/M/L at PC 0x0570-0x0580 and 0x05DD-0x0630; same-run PM program-space reads for PC 0x0147-0x0173 are retained in transaction.pm_reads",
         "max_events": args.max_events,
         "truncated": False,
         "bank_events": banks,
@@ -259,6 +306,7 @@ def main() -> int:
     print(json.dumps({"schema": result["schema"], "frame": transaction["frame"],
                       "som_words": len(som_writes), "gint_pc": gint[0]["pc"],
                       "host_bank": bank_before, "producer_bank": bank_before ^ 1,
+                      "pm_reads": len(transaction["pm_reads"]),
                       "transaction_sha256": result["transaction_sha256"]}))
     return 0
 

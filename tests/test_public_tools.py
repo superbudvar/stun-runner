@@ -1150,12 +1150,13 @@ class PublicToolTests(unittest.TestCase):
                 "#!/usr/bin/env python3\n"
                 "print('M1_ADSP_TX_BANK seq=1 frame=134 address=00818016 offset=B bank=1 pc=0002C24E')\n"
                 "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=1')\n"
-                "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=1')\n"
-                "print('M1_ADSP_TX_EVENT seq=12 frame=550 cpu=adsp access=W address=00002006 data=00000045 mask=0000FFFF pc=0000004C bank=1')\n"
-                "print('M1_ADSP_TX_EVENT seq=13 frame=550 cpu=maincpu access=W address=00818060 data=00000000 mask=0000FFFF pc=000213FE bank=1')\n"
-                "print('M1_ADSP_TX_EVENT seq=14 frame=551 cpu=maincpu access=R address=00810000 data=00000030 mask=0000FFFF pc=0002D000 bank=1')\n"
-                "print('M1_ADSP_TX_EVENT seq=15 frame=551 cpu=maincpu access=W address=00C0000C data=00000030 mask=0000FFFF pc=0002D010 bank=1')\n"
-                "print('M1_ADSP_TX_DONE frames=556 events=6 truncated=false bank_events=1 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=12 records=0')\n",
+                "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp_program access=R address=00001010 data=00000000 mask=FFFFFFFF pc=00000157 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=12 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=13 frame=550 cpu=adsp access=W address=00002006 data=00000045 mask=0000FFFF pc=0000004C bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=14 frame=550 cpu=maincpu access=W address=00818060 data=00000000 mask=0000FFFF pc=000213FE bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=15 frame=551 cpu=maincpu access=R address=00810000 data=00000030 mask=0000FFFF pc=0002D000 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=16 frame=551 cpu=maincpu access=W address=00C0000C data=00000030 mask=0000FFFF pc=0002D010 bank=1')\n"
+                "print('M1_ADSP_TX_DONE frames=556 events=7 truncated=false bank_events=1 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=13 records=0')\n",
                 encoding="utf-8")
             mame.chmod(0o755)
             output = temp / "capture"
@@ -1167,15 +1168,89 @@ class PublicToolTests(unittest.TestCase):
             report = json.loads((output / "result.json").read_text())
             tx = report["transaction"]
             self.assertEqual(report["input"], "none")
+            self.assertEqual(report["nvram"]["mode"], "fresh-per-run")
             self.assertEqual(tx["somclk"]["seq"], 10)
-            self.assertEqual(tx["gint"]["seq"], 12)
+            self.assertEqual(tx["gint"]["seq"], 13)
             self.assertEqual(tx["host_bank"], 1)
             self.assertEqual(tx["adsp_producer_bank"], 0)
             self.assertEqual(tx["som_words"], [{
-                "address_word": 0, "value": 0x30, "pc": 0x515, "seq": 11
+                "address_word": 0, "value": 0x30, "pc": 0x515, "seq": 12
             }])
+            self.assertEqual(tx["pm_reads"], [{
+                "seq": 11, "frame": 550, "cpu": "adsp_program", "access": "R",
+                "address": 0x1010, "data": 0, "mask": 0xFFFFFFFF,
+                "pc": 0x157, "host_bank": 1,
+            }])
+            self.assertTrue(all(event["cpu"] == "adsp"
+                                for event in tx["producer_events"]))
             self.assertEqual(tx["maincpu_irq_acks"][0]["pc"], 0x213FE)
             self.assertEqual(tx["post_window_ferry_observation"]["hstdat_write_count"], 1)
+
+    def test_capture_adsp_som_transaction_seeded_nvram_is_copied_and_hashed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "stunrun.manifest.json").write_text("{}\n", encoding="utf-8")
+            seed = temp / "seed"
+            nvram_file = seed / "stunrun" / "mainpcb_200e"
+            nvram_file.parent.mkdir(parents=True)
+            nvram_file.write_bytes(b"seed nvram")
+            source_hash = hashlib.sha256(nvram_file.read_bytes()).hexdigest()
+
+            mame = temp / "mame-stub"
+            mame.write_text(
+                "#!/usr/bin/env python3\n"
+                "import pathlib, sys\n"
+                "args=sys.argv\n"
+                "nvram=pathlib.Path(args[args.index('-nvram_directory')+1])\n"
+                "(nvram/'stunrun'/'mainpcb_200e').write_bytes(b'updated nvram')\n"
+                "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=12 frame=550 cpu=adsp access=W address=00002006 data=00000045 mask=0000FFFF pc=0000004C bank=1')\n"
+                "print('M1_ADSP_TX_DONE frames=556 events=3 truncated=false bank_events=0 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=12 records=0')\n",
+                encoding="utf-8")
+            mame.chmod(0o755)
+            output = temp / "capture"
+            result = subprocess.run(
+                [str(ROOT / "tools" / "capture-adsp-som-transaction"),
+                 str(roms), str(output), "--frames", "556",
+                 "--nvram-seed", str(seed), "--mame", str(mame)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            report = json.loads((output / "result.json").read_text())
+            self.assertEqual(report["nvram"]["mode"], "seeded-copy")
+            self.assertEqual(
+                report["nvram"]["initial_files_sha256"]["stunrun/mainpcb_200e"],
+                source_hash)
+            self.assertEqual(
+                report["nvram"]["final_files_sha256"]["stunrun/mainpcb_200e"],
+                hashlib.sha256(b"updated nvram").hexdigest())
+            self.assertEqual(nvram_file.read_bytes(), b"seed nvram")
+
+    def test_capture_adsp_som_transaction_rejects_invalid_pm_tap_event(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "stunrun.manifest.json").write_text("{}\n", encoding="utf-8")
+            mame = temp / "mame-stub"
+            mame.write_text(
+                "#!/usr/bin/env python3\n"
+                "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=11 frame=550 cpu=adsp_program access=W address=00001010 data=00000000 mask=FFFFFFFF pc=00000157 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=12 frame=550 cpu=adsp access=W address=00002006 data=00000045 mask=0000FFFF pc=0000004C bank=1')\n"
+                "print('M1_ADSP_TX_DONE frames=556 events=3 truncated=false bank_events=0 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=12 records=0')\n",
+                encoding="utf-8")
+            mame.chmod(0o755)
+            result = subprocess.run(
+                [str(ROOT / "tools" / "capture-adsp-som-transaction"),
+                 str(roms), str(temp / "capture"), "--frames", "556",
+                 "--mame", str(mame)],
+                cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ADSP PM tap emitted an out-of-window or non-read event",
+                          result.stderr)
 
     def test_capture_adsp_som_transaction_rejects_missing_gint_boundary(self):
         with tempfile.TemporaryDirectory() as temp:

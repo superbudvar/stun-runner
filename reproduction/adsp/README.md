@@ -78,6 +78,52 @@ the alternate SIMCLK branch rather than guessing it. Inputs and output meanings
 remain numeric; this does not identify an object, coordinate frame, or road
 geometry.
 
+## Clipping the six-word ring (`som_clamp.c`)
+
+`som_clamp.c` transcribes the six-word loop at `$04FE-$050D`, which clamps
+signed DM words to `[0, 0x01FF]`. The frame-551 ring is entirely in range, so
+the oracle-backed check proves the observed no-op and feeds the clamped result
+into the existing SOM walk. A separate synthetic vector exercises negative,
+in-range, and over-limit values as source-level coverage of the disassembled
+branches; those saturation values were not observed in the captured run. The
+earlier `$04EB-$04FD` caller/early-return checks and the alternate `$0663` mode
+remain outside this slice.
+
+## Selecting the three source tuples (`som_source_select.c`)
+
+The `$01E8/$01B0` data-side slice reads the measured MP=1 SIMBUF selector stream,
+copies the first three-word source tuple and weight words from a supplied DM
+table, then follows the two observed point selectors into `DM($0043..$0048)`.
+The CTest checks the resulting nine-word `DM($0040..$0048)` window against the
+later `$04B2` reads and composes it with `som_producer.c` to reproduce all nine
+captured SOM records. Its DM table is produced by the bounded
+`$0147-$0173` source-DM slice below.
+
+Only the data writes are modeled: the E8 weighted accumulator result / MR2
+caller branch is not yet modeled. The captured selector list has exactly two
+point indices followed by `$FFFF`; other counts fail rather than guessing.
+
+## Building the source-DM table (`source_producer.c`)
+
+`source_producer.c` transcribes the observed `$0147-$0173` loops for the
+frame-551 transaction. It consumes the same-run 58-word DM($2000) read stream,
+the 30 auxiliary DM reads, and the full 171 same-run program-space read dwords
+at PCs `$0157-$0159` and `$0169-$016B`. It emits 30 writes from `$015C` and 27
+from `$0171`; the CTest compares all 57 words with the separate captured DM
+write stream. `source_producer_fixture.c` keeps these operands and expectations
+separate from the implementation. The observed `SE=-2` staging shift is
+captured for this path; other incoming shift states are rejected.
+
+`adsp-som-source-select-slice-c` now builds the table with this producer,
+selects source tuples with `$01E8/$01B0`, then composes the `$04B2` transform
+and SOM walk. This reproduces the nine observed SOM records from the measured
+DM/SIMBUF/PM entry operands. It still does not derive those initial operands
+from the upstream caller, model the E8 MR2/caller-loop flags, exercise alternate
+branches, or reproduce SOM bank/address/GINT orchestration. The PM operands are
+same-run values, not read from the later run-end program image; the retained
+capture is `reference/experiments/stunrun/adsp-som-pm-reads-f551/run-1/result.json`
+and its repeat is `run-2/result.json`.
+
 ## Looking at it: `./run.sh --adsp-som`
 
 Everything below existed only in slice tests, so this is how you see it:

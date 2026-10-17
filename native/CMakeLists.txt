@@ -486,10 +486,23 @@ target_include_directories(stunrun-adsp-som-walk-slice-test PRIVATE
   ../reproduction/adsp)
 set_target_properties(stunrun-adsp-som-walk-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME adsp-som-walk-slice-c COMMAND stunrun-adsp-som-walk-slice-test)
+# Bounded $04FE-$050D signed 16-bit ring clamp. The capture exercises its
+# no-op path; a separate synthetic vector covers the saturation boundaries.
+add_executable(stunrun-adsp-som-clamp-slice-test
+  ../reproduction/adsp/som_fixture.c
+  ../reproduction/adsp/som_clamp.c
+  ../reproduction/adsp/som_clamp_test.c)
+target_include_directories(stunrun-adsp-som-clamp-slice-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-som-clamp-slice-test PROPERTIES
+  C_STANDARD 99 C_STANDARD_REQUIRED ON)
+add_test(NAME adsp-som-clamp-slice-c
+  COMMAND stunrun-adsp-som-clamp-slice-test)
 # Bounded ADSP $04B2 two-pass source transform: DM source tuples, MP=1 SIMBUF
 # coefficient reads, and the pass-2 ring update, checked through the SOM walk.
 add_executable(stunrun-adsp-som-producer-slice-test
   ../reproduction/adsp/som_fixture.c
+  ../reproduction/adsp/som_clamp.c
   ../reproduction/adsp/som_math.c
   ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
@@ -501,6 +514,37 @@ set_target_properties(stunrun-adsp-som-producer-slice-test PROPERTIES
   C_STANDARD 99 C_STANDARD_REQUIRED ON)
 add_test(NAME adsp-som-producer-slice-c
   COMMAND stunrun-adsp-som-producer-slice-test)
+# Bounded ADSP $0147-$0173 source-table producer; checks all 57 derived DM
+# writes against separate same-run DM/PM event expectations.
+add_executable(stunrun-adsp-source-producer-slice-test
+  ../reproduction/adsp/source_producer.c
+  ../reproduction/adsp/source_producer_fixture.c
+  ../reproduction/adsp/source_producer_test.c)
+target_include_directories(stunrun-adsp-source-producer-slice-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-source-producer-slice-test PROPERTIES
+  C_STANDARD 99 C_STANDARD_REQUIRED ON)
+add_test(NAME adsp-source-producer-slice-c
+  COMMAND stunrun-adsp-source-producer-slice-test)
+# Captured $01E8/$01B0 source-window selection: resolve two SIMBUF pointer
+# words and the sentinel-terminated point-index list into DM($0040..$0048).
+add_executable(stunrun-adsp-som-source-select-test
+  ../reproduction/adsp/som_fixture.c
+  ../reproduction/adsp/som_clamp.c
+  ../reproduction/adsp/som_math.c
+  ../reproduction/adsp/som_producer.c
+  ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_source_select.c
+  ../reproduction/adsp/som_walk.c
+  ../reproduction/adsp/source_producer.c
+  ../reproduction/adsp/source_producer_fixture.c
+  ../reproduction/adsp/som_source_select_test.c)
+target_include_directories(stunrun-adsp-som-source-select-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-som-source-select-test PROPERTIES
+  C_STANDARD 99 C_STANDARD_REQUIRED ON)
+add_test(NAME adsp-som-source-select-slice-c
+  COMMAND stunrun-adsp-som-source-select-test)
 # View of the ADSP SOM producer's derived output, so the reproduction slices can
 # be looked at rather than only read about: `./run.sh --adsp-som`. Needs no ROM,
 # no MAME and no Verilator, because the transaction it derives is committed under
