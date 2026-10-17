@@ -34,6 +34,7 @@ cite.
 | **S6** | SP-338 / TM-238 S.T.U.N. Runner operator manual, 1st printing 1989 | primary (vendor) | The board: memory map, `SW1` word, VRAM array, board identifiers | `reference/manuals/stunrunner.pdf` |
 | **S7** | MAME `src/mame/atari/harddriv.cpp` at `/mnt/build/mame-ref`, build 0.289 | primary (emulator) | What the emulator does: machine config, device tags, address maps | `/mnt/build/mame-ref/` (outside this repo) |
 | **S8** | MAME TMS34010 device implementation | primary (emulator) | Host-port semantics, register behaviour | `/mnt/build/mame-ref/src/devices/cpu/tms34010/` |
+| **S9** | SPVU001A — TI TMS34010 User's Guide, 1988 ed. (Appendix A instruction set, A-13 legend, A-14 encodings, §8.8 vector fetch, Table 8-6 illegal opcodes) | primary (vendor) | **What the TMS34010 instruction set is.** The authority for every mnemonic, encoding, operand symbol and illegal opcode | printed TI document; cited by `third_party/tms34010_sv/rtl/core/tms34010_decode.sv` and `tools/disasm-gsp`; **not held locally** — cite by section, and say so rather than implying a local copy |
 
 ### Tiers, and what each one outranks
 
@@ -58,6 +59,9 @@ cite.
 | `docs/mame-machine-reference.md` | S7 `[MAME]` + S8 throughout; S6 and S1 for the cross-checks |
 | `docs/mc68010-boot-findings.md` | S1 `[ROM]`, S7 `[MAME]`, S6 `[MANUAL]` |
 | `analysis/rom-text-strings.md` | S1 throughout |
+| `docs/mc68010-boot-findings.md` | S1 `[ROM]`, S7 `[MAME]`, S6 `[MANUAL]`, **S9 `[SPVU001A]`** (§83) |
+| `analysis/gsp-program-upload.md` | **S9 `[SPVU001A]`** for the instruction set; S7/S8 for the decode |
+| `tests/test_disasm_gsp.py` | **S9 `[SPVU001A]`** for every expected mnemonic and encoding |
 
 ## Adding a source
 

@@ -301,27 +301,43 @@ codes were not read off `print_condition_code` before the end of this session �
 **the full condition list still needs transcribing**, though `LT`, `NE` and `UC`
 are confirmed by these three.
 
-### Repeat instructions — encoding not yet pinned
+### Repeat instructions — there are none (MD-13 withdrawn)
 
-MAME's **disassembler** has no mnemonic for `RS`/`RS1`/`RS2`/`RI`/`RPT`, which is
-recorded as MD-13. The *executor* was not reached for these before the end of
-this session, so the encoding and semantics are **not** pinned here. Do not
-implement from the disassembler's `MOVE *,*` rendering — that rendering is
-MAME's fallback for an unhandled encoding, not a statement about the data.
+**There are no repeat instructions on the TMS34010.** An earlier version of this
+file recorded MD-13, "MAME's disassembler has no mnemonic for
+`RS`/`RS1`/`RS2`/`RI`/`RPT`", and warned against implementing from the `MOVE *,*`
+rendering as though it were a fallback for an unhandled encoding. It is not a
+fallback. It is the correct reading.
 
-Two routes to the answer, both cheap:
+- SPVU001A Appendix A lists every instruction the part has; none is a repeat.
+  `RS`/`RD` appear only as **operand symbols**, defined in the chart's own legend
+  at A-13 as "source register"/"destination register".
+- A-14 gives `MOVE *Rs+,*Rd+,F` as `1001 10FS SSSS DDDD`, i.e. `op & 0xfe00 ==
+  0x9800`. MAME's `case 0x9800`/`case 0x9a00` (`34010dsm.cpp:1326-1334`) renders
+  exactly that; `34010tbl.hxx:471` dispatches the same range to `move0_ni_ni_a`.
+- Exhaustive sweep of this build's decoder over the 16-bit opcode space:
+  61,831 cells, 115 mnemonics plus `DW`, none a repeat.
+- Our own vendored RTL already had it:
+  `third_party/tms34010_sv/rtl/core/tms34010_decode.sv:127` documents
+  `1001 10FS` as `MOVE *Rs+,*Rd+`, citing SPVU001A.
 
-1. `execute_op()` in `tms34010.cpp` — the authoritative semantics, in the same
-   file the fetch trace already comes from.
-2. SPVU001A, which `tms34010_decode.sv` already cites for its other encodings.
+So for `0x9920`: F=0, `Rs`=bits[8:5]=9 → A9, A-file, `Rd`=0 → A0, giving
+`MOVE *A9+,*A0+,0`. That is right, and `tests/test_disasm_gsp.py` pins it against
+SPVU001A so it cannot drift back.
+
+`$0x9920` is not code in any case: it sits in one cell of the share at offset
+`0x3FFFE0`, address `$FFBFFFE0`, which mirrors to `$FFFFFFE0` — the level-0 vector
+fetch named in SPVU001A §8.8 — and the adjacent cell is `$FFF5`, so a 32-bit
+read composes `0x0FFF59920`. The uploaded program contains no `0x9920` cell.
+
+Full refutation: `docs/mc68010-boot-findings.md` §83.
 
 ### Scope of the remaining work
 
-Running this program on our own core is gated on exactly two things:
-
-1. the JR family above, which is now specified to the point of three verified
-   examples; and
-2. the repeat instructions, which are not yet pinned.
+Running this program on our own core was gated on the JR family above and on the
+repeat instructions. **The second gate is gone — it never existed.** Only the JR
+family remains, and that is already specified to the point of three verified
+examples.
 
 Nothing else in the decode is missing for the opcodes this program has executed
 so far. `CLR` is *not* a gap — MAME emits it as `XOR` with source and destination

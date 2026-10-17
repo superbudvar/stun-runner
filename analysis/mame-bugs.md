@@ -26,15 +26,33 @@ more credibility than the finding is worth.
 | MD-10 | *withdrawn 2026-10-13 — documented behaviour, not a defect* | — | — | no |
 | MD-11 | *withdrawn 2026-10-13 — misuse of a documented API, not a defect* | — | — | no |
 | MD-12 | GSP register writes run off the end of `m_IOregs` | driver defect (memory safety) | indexing confirmed; impact not | **no — needs a sanitiser run first** |
-| MD-13 | TMS34010 disassembler has no RS/RI/RPT mnemonic | driver gap | confirmed | yes — trivial patch, easy approval |
+| MD-13 | *withdrawn 2026-10-17 — the part has no repeat instructions; our error* | — | — | no |
 
 ## What each needs before it can be sent
 
-**MD-13 — closest to ready.** The defect is that `34010dsm.cpp` has no case for
-the repeat instructions. The patch is a handful of lines in one `switch`, and the
-TMS34010 instruction encoding for RS/RS1/RS2/RI/RPT is published. Needs: someone
-to check the operand formatting against another TMS34010 disassembler. Low risk,
-easy approval, real value to anyone reading GSP code.
+**MD-13 — withdrawn 2026-10-17, do not send.** This one was the closest to ready
+and that made it the most dangerous entry in the file: it had a concrete patch
+sized, a published encoding, and "easy approval, real value to anyone reading
+GSP code" written against it. All of that was resting on our having invented the
+instructions. SPVU001A Appendix A lists every instruction the TMS34010 has, and
+there is no `RS`/`RS1`/`RS2`/`RI`/`RPT` — `RS` and `RD` are operand symbols
+("source register"/"destination register" in the chart's own legend). MAME's
+`case 0x9800` renders `MOVE *Rs+,*Rd+,F`, which is what A-14 says that encoding
+*is*, and `34010tbl.hxx:471` dispatches the same range to `move0_ni_ni_a`.
+
+Had this been sent, it would have been a confident bug report asking MAME to add
+mnemonics for instructions the silicon does not have, backed by a patch that
+would have decoded real `MOVE`s as something fictional. Two false reports cost
+more credibility than the silence they replace.
+
+The general lesson, and the reason it is recorded at this length: **a missing
+mnemonic is not a defect until the primary source says the opcode should produce
+a different one.** Checking that the ISA contains an instruction before filing
+that it decodes wrongly is a cheap step, and skipping it is what put a
+"trivial patch, easy approval" row in this table for months.
+
+The refutation, with the sweep and the `$0x9920` accounting, is in
+`docs/mc68010-boot-findings.md` §83 and `BUGS.md` MD-13.
 
 **MD-01, MD-02, MD-03, MD-06, MD-07 — confirmed, need reducers.** Each has a
 measured symptom but was found while working around the oracle, not while

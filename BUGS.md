@@ -644,22 +644,42 @@ dumps belong there. Two consequences:
   question answered first — a patch that only grows the array could be papering
   over a different intent.
 
-### MD-13 — The TMS34010 disassembler has no mnemonic for the repeat instructions
+### MD-13 — WITHDRAWN 2026-10-17 — there are no repeat instructions on this part
 
-- **Kind:** driver gap (debugger/disassembler)
-- **Where:** `src/devices/cpu/tms34010/34010dsm.cpp` — the `switch (op & 0xfe00)`
-  dispatch has no case for the RS/RS1/RS2/RI/RPT group
-- **Symptom:** `RS1 A0,$0020` (word `0x9920`), the TMS34010's standard power-on
-  self-test delay idiom, disassembles as `MOVE *A9+,*A0+,0`. The disassembler's
-  mnemonic list contains no repeat instruction at all.
-- **Evidence:** `tools/disasm-gsp` on the captured GSP program decodes word
-  `0x9920` as `MOVE *A9+,*A0+,0`. The full mnemonic set in the file, extracted:
-  `ABS ADD ADDC ... XORI ZEXT` — no RS, RI or RPT.
-- **Confidence:** confirmed by inspection and by running the disassembler
-- **Impact on us:** a power-on delay loop does not look like one. This is one of
-  the two reasons an earlier reading of `$0x9920` as a reset vector was unsound
-  (the other was the 16-byte cell replication). Anything reading GSP disassembly
-  for control flow will mis-classify repeat-heavy code as data movement.
+**Withdrawn.** The entry read "the TMS34010 disassembler has no mnemonic for the
+repeat instructions `RS`/`RS1`/`RS2`/`RI`/`RPT`, so they decode as `MOVE`". There
+is nothing to fix: **the TMS34010 has no such instructions.** This was our
+misunderstanding, so it belongs in `docs/mc68010-boot-findings.md` §83 as a
+refutation, not in this section.
+
+> - SPVU001A (TI TMS34010 User's Guide, 1988 ed.) Appendix A lists every
+>   instruction the part has. No `RS`/`RS1`/`RS2`/`RI`/`RPT`. `RS` and `RD` appear
+>   only as **operand symbols**, defined in the chart's own legend at A-13 as
+>   "source register" and "destination register".
+> - A-14 gives `MOVE *Rs+,*Rd+,F` as `1001 10FS SSSS DDDD` — i.e. `op & 0xfe00 ==
+>   0x9800`, exactly the family attributed to `RS1`/`RS2`. MAME's
+>   `case 0x9800`/`case 0x9a00` (`34010dsm.cpp:1326-1334`) renders precisely
+>   that, and `34010tbl.hxx:471` dispatches the same range to `move0_ni_ni_a`.
+>   Disassembler and executor agree, so there is no MAME-vs-hardware
+>   disagreement to report either.
+> - An exhaustive sweep of this build's decoder over the whole 16-bit opcode
+>   space reaches 61,831 cells and yields 115 mnemonics plus `DW` — none a
+>   repeat.
+> - The vendored RTL agrees independently of MAME:
+>   `third_party/tms34010_sv/rtl/core/tms34010_decode.sv:127` already documents
+>   `1001 10FS` (`top6 = 100110`, `0x9800`) as `MOVE *Rs+,*Rd+`.
+>
+> The `$0x9920` that started this is not code. It occurs in exactly one cell of
+> the 4 MiB share, at share offset `0x3FFFE0`, whose address `$FFBFFFE0` mirrors
+> to **`$FFFFFFE0`** — the location SPVU001A §8.8 names as where the TMS34010
+> fetches the level-0 vector. The next cell is `$FFF5`, so a 32-bit read there
+> composes `0x0FFF59920`, not an address. The uploaded program
+> (`0x340000`–`0x35DC00`) contains no cell equal to `0x9920` at all.
+>
+> The original evidence line was the mistake: reading the *absence* of a mnemonic
+> as a defect, without checking the ISA for whether the instruction exists. A
+> missing mnemonic only means something once the primary source says the opcode
+> should produce a different one. Leave this ID retired.
 
 ### Local build note (not upstreamable) — generated makefiles keep absolute paths
 
