@@ -24,14 +24,84 @@ WHAT IT GETS WRONG -- read this before trusting a decode:
     position by 8 instead and produced confidently wrong output, so the
     derivation is what makes the tool usable rather than merely plausible.
 
-  * MAME's TMS34010 disassembler has NO mnemonic for the repeat instructions
-    RS, RS1, RS2, RI and RPT. Those decode as `MOVE`. If you are looking at a
-    power-on delay loop, that is why it does not look like one.
+  * `DW` does not mean "this is data". It is MAME's own marker for a word its
+    TMS34010 decoder does not handle, and that is a large minority of the
+    opcode space. Driving this build over the whole 16-bit space with a linear
+    sweep reaches 61,831 of the 65,536 cells (a multi-word instruction steps
+    over the cells it consumes, so the remainder need separate runs) and yields
+    115 mnemonics plus `DW`, of which 12,059 cells -- 19.5% of those reached,
+    18.4% of the whole space -- render as `DW`. So a `DW` line says the
+    *decoder* has nothing, not that the *region* is not code. Which of the two
+    it is cannot be decided from the bytes.
+
+  * A linear disassembly of a data region produces plausible instructions, and
+    this tool will happily print them. Measured on the 1,397-word window the
+    STUNRUN first-output boundary defines (share bytes 446118..448912,
+    findings section 36.3), the 18 distinct words present decode as, among
+    others, `MOVE *B12+,B5,0` (word `$9595`), `BTST A10,A11` (`$4B4B`) and
+    `SRA A11,A5` (`$6565`). Nine of the 18 come out as `DW`. So "looks like
+    code" carries no information here at all. `tools/gsp-program-map
+    --fetch-trace` is what separates code from data, and the decision belongs
+    there.
+
+  * `opcode` in `--json` is two 4-digit zero-padded byte fields concatenated,
+    high byte first -- NOT the instruction word as a number. The driver prints
+    byte[1] then byte[0] with `setw(4)`, so word `0x0550` is reported as
+    `"00050050"` and `int(opcode, 16)` gives `0x50050`. Recover the word with
+    `(int(opcode[:4], 16) << 8) | int(opcode[4:], 16)`. This is left as-is
+    because `stunrun-gsp-disasm/v1` is a published schema and no committed
+    consumer reads the field (`tools/gsp-program-map` uses `offset`,
+    `mnemonic` and `operands` only); it is documented here rather than silently
+    changed. `tests/test_disasm_gsp.py` pins the relationship.
 
   * MAME has no GSP ROM region for stunrun, so everything disassembled here
     came out of VRAM. Nothing here verifies that the bytes came from the game
     rather than from a capture artifact; that check lives upstream, in the
     fetch trace.
+
+  * There are no repeat instructions, and nothing is being hidden. An earlier
+    version of this docstring claimed MAME lacked a mnemonic for `RS`, `RS1`,
+    `RS2`, `RI` and `RPT`, that those words decode as `MOVE`, and that a
+    power-on delay loop therefore "does not look like one". That claim was
+    wrong and is refuted here rather than quietly dropped, because it was
+    propagated into BUGS.md MD-13 and two analysis documents:
+
+      - The TMS34010's own instruction-set summary (TI's TMS34010 User's Guide,
+        SPVU001A, Appendix A pp. A-13..A-16) lists every instruction the part
+        has. There is no `RS`, `RS1`, `RS2`, `RI` or `RPT` in it. `RS` and `RD`
+        appear only as operand symbols, and the chart's own legend defines them
+        as "source register" and "destination register". NOTE: SPVU001A is not
+        yet registered in `docs/sources.md`, so it carries no `S#` here. It is
+        a primary vendor document and needs a row; this tool and
+        `third_party/tms34010_sv` already cite it.
+      - That chart assigns the `1001 10FS SSSR DDDD` encoding -- `op & 0xfe00
+        == 0x9800` -- to `MOVE *Rs+,*Rd+,F`, "Move Field: Ind. (post-inc) to
+        Ind. (post-inc)". MAME's `case 0x9800` renders exactly that.
+      - Decoding the whole 16-bit space through this build produces 115
+        mnemonics plus `DW`, none of them a repeat instruction.
+      - The vendored RTL in this repository already said so independently:
+        `third_party/tms34010_sv/rtl/core/tms34010_decode.sv:127` documents
+        `1001 10FS` (top6 `0x9800`) as `MOVE *Rs+,*Rd+`, citing SPVU001A.
+
+    So `MOVE *A9+,*A0+,0` for the word `$9920` -- the value MD-13 called a
+    mis-decode -- is the correct reading, and adding a repeat-mnemonic table
+    would have introduced the wrong answer.
+
+    The `$0x9920` itself never was an instruction word, either. In the
+    captured share the word appears in exactly one 16-byte cell, at share
+    offset `0x3FFFE0`, whose address is `$FFBFFFE0` -- which the 4 MiB mirror
+    folds to `$FFFFFFE0`, the location SPVU001A section 8.8 names as where the
+    TMS34010 fetches the level-0 vector from. The next cell holds `$FFF5`, so a
+    32-bit read there composes `0x0FFF59920`, which is not an address in the
+    GSP's space. The cell is in the replicated fill, not in the uploaded
+    program: share `0x340000`-`0x35DC00` contains no cell equal to `$9920`.
+    `analysis/gsp-program-upload-boundary.md` had already withdrawn the
+    reset-vector reading for exactly this reason; MD-13 kept using the value.
+
+    Where the decoder *could* be hiding something, this tool does have a
+    check: SPVU001A section 8.7 Table 8-6 lists 9,984 architecturally illegal
+    opcode words, and MAME renders every one of them as `DW` rather than as a
+    mnemonic. `tests/test_disasm_gsp.py` holds that to the table.
 
 Requires a C++ compiler and the MAME source tree.
 """

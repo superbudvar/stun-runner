@@ -12956,3 +12956,114 @@ offset equals an ADSP program address is safe until they are.**
 its output stands regardless — but this is the kind of unresolved unit that
 produced the 8x share error retracted in §34, and it wants a follow-up before
 anyone builds on the upload metadata.
+
+## 83. Refutation: there are no repeat instructions on the TMS34010 (MD-13 withdrawn)
+
+### 83.1 What was claimed
+
+`BUGS.md` MD-13 read: *"The TMS34010 disassembler has no mnemonic for the repeat
+instructions `RS`/`RS1`/`RS2`/`RI`/`RPT`"* — filed as a driver gap, a handful of
+lines to patch, "easy approval, real value to anyone reading GSP code". The
+evidence line was that `tools/disasm-gsp` renders word `0x9920` as
+`MOVE *A9+,*A0+,0`, and that the extracted mnemonic list from `34010dsm.cpp`
+contains no `RS`, `RI` or `RPT`.
+
+**The TMS34010 has no repeat instructions.** The absence of a mnemonic was not a
+gap in the decoder; it was a faithful report of an ISA that does not contain them.
+
+### 83.2 Why the original evidence could never have shown this
+
+The reasoning error is worth isolating, because it is cheap to repeat. I read a
+*missing mnemonic* as a *defect*, and never checked the ISA for whether the
+instruction exists at all. A missing mnemonic only means something once the
+primary source says that opcode should produce a different one. Without that
+check, "the decoder has no case for X" and "X does not exist" are
+indistinguishable — and the second is far more likely for an encoding you have
+inferred from a disassembler's fallback.
+
+Had this been sent upstream it would have been a confident report asking MAME to
+add mnemonics for instructions the silicon does not have, with a patch that would
+have decoded real `MOVE`s as something fictional. `BUGS.md`'s rule is that its
+entries get reported, and two false reports cost more credibility than the
+silence they replace. Withdrawn, alongside the earlier MD-10/MD-11 withdrawals.
+
+### 83.3 What actually holds, and how far I checked it myself
+
+**Verified directly by me against the pinned tree:**
+
+- Exhaustive sweep of the mnemonic set in `34010dsm.cpp`: 115 mnemonics plus
+  `DW`, and **no** `RS`, `RS1`, `RS2`, `RI` or `RPT`. Recounted independently;
+  the original claim's "extracted: `ABS ADD ADDC ... XORI ZEXT`" was accurate
+  about the absence and drew the wrong conclusion from it.
+- `34010dsm.cpp:1326-1334` — `case 0x9800:`/`case 0x9a00:` renders
+  `MOVE *Rs+,*Rd+,F`. The disassembler and the claim are describing the same
+  `op & 0xfe00` family; there is no unhandled encoding being fallen back from.
+- `34010tbl.hxx:471` — the **executor** dispatches that same range to
+  `move0_ni_ni_a`. Disassembler and executor agree, so there is no
+  MAME-versus-hardware disagreement here either.
+- `third_party/tms34010_sv/rtl/core/tms34010_decode.sv:127` — our own vendored
+  RTL, written independently of MAME, already documents `1001 10FS`
+  (`top6 = 100110`, `0x9800`) as `MOVE *Rs+,*Rd+` and cites SPVU001A. We had the
+  answer in our own tree and had not looked.
+- The mirroring arithmetic for the lone `$0x9920` cell: share offset `0x3FFFE0`,
+  address `$FFBFFFE0`. MAME's `.mirror(0x0400000)` replicates the **bank bit**, it
+  is not a modulo, so that address mirrors to `$FFFFFFE0` — the level-0 vector
+  fetch. *(My first check used a modulo model and disagreed; the bank-replication
+  model is the correct one and it confirms the claim.)*
+
+**Cited, not independently verified by me:** SPVU001A (TI TMS34010 User's Guide,
+1988 ed.) Appendix A — the instruction list, the A-13 legend defining `RS`/`RD` as
+*operand* symbols, A-14 giving `MOVE *Rs+,*Rd+,F` as `1001 10FS SSSS DDDD`, §8.8
+for the level-0 vector fetch, and Table 8-6 for the illegal opcodes. No local copy
+is held; it is now registered as **S9** in `docs/sources.md` with that stated.
+
+The load-bearing claim — that the instruction set contains no repeats — rests on
+that reading. The four independent corroborations above all agree with it, and
+three of them are things I checked myself, but a primary-source claim should stay
+marked as cited-by until someone holds the document.
+
+### 83.4 `$0x9920` is not code, and was never a reset vector
+
+Worth stating separately because it was the original trigger. `$0x9920` occurs in
+exactly one cell of the 4 MiB share, at offset `0x3FFFE0`, whose address mirrors
+to `$FFFFFFE0` — SPVU001A §8.8, where the TMS34010 fetches the level-0 vector.
+The adjacent cell is `$FFF5`, so a 32-bit read there composes `0x0FFF59920`, not an
+address. The uploaded program (`0x340000`–`0x35DC00`) contains **no** cell equal
+to `0x9920`.
+
+`analysis/gsp-program-upload-boundary.md` had already withdrawn the reset-vector
+reading. MD-13 kept the value alive. That is the second time in this file that a
+withdrawn interpretation survived in a *different* document — the first was the
+two non-interchangeable MAME binaries in §81. A retraction only counts where the
+claim was made.
+
+### 83.5 What is now pinned
+
+`tools/disasm-gsp` carried this as a documented limitation. It now carries the
+correction, and `tests/test_disasm_gsp.py` pins the right reading against the ISA
+so it cannot drift back: for `$9920`, F=0, `Rs`=bits[8:5]=9 → A9, A-file,
+`Rd`=0 → A0, giving `MOVE *A9+,*A0+,0`.
+
+The control that matters: injecting a fabricated repeat-mnemonic table into the
+tool turns the suite red on exactly two tests, including
+`0x9800 decoded as a repeat instruction`. Worth recording how hard that control
+was to write honestly — the `opcode` field in the tool's `--json` is a **byte
+dump**, `'00990020'`, not a number, so the first two attempts at a control tested
+a field that could never satisfy the condition and passed vacuously. The third
+attempt, reconstructing the word as `(int(opcode[:4],16) << 8) | int(opcode[4:8],16)`,
+fired. A control that cannot fail is worse than no control, because it reports
+confidence. See the `opcode`-field defect below.
+
+### 83.6 Latent defects found while verifying (reported, not fixed)
+
+All in `tools/disasm-gsp`, all outside the change that was authorised:
+
+1. `--json`'s `opcode` cannot be read as a number — it is two 4-digit byte fields
+   concatenated, high byte first. No committed consumer depends on it
+   (`tools/gsp-program-map` uses `offset`/`mnemonic`/`operands`), so a `v2` schema
+   could fix it cleanly.
+2. `--at` accepts a negative or >4 MiB offset with no validation; the driver then
+   prints nothing and exits 0.
+3. `--json` skips any output line it cannot parse instead of reporting it, so a
+   driver or decoder format change would yield a silently short `instructions`
+   list.
