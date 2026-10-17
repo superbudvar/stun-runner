@@ -9776,6 +9776,21 @@ of 0x40 or above. MAME is not corrupting its register array, and the comment's
 claim about 0x90–0x160 is **stale or a misreading** — recorded here rather than
 filed upstream.
 
+> **2026-10-17 — this run was VACUOUS, and the conclusion is re-established by a
+> non-vacuous one.** `strings` finds `STUNRUN_GSP_IOBREPORT` in
+> `/mnt/build/mame-ref/mame` and **zero occurrences** in
+> `/mnt/build/mame-oracle/mame`: the hook was added to `mame-ref` on 2026-10-14,
+> after the oracle was frozen. Running the oracle with the env var set therefore
+> could never have produced a file — absence proved nothing about the oracle.
+>
+> §86.2 re-ran the same test on **`md12-fixed`, which does contain the hook**, at
+> 600 frames power-on and 600 frames of service mode: still no report file, still
+> no write at MAME-offset ≥ `0x40`. The conclusion survives, and now rests on a
+> test that could have failed.
+>
+> This is the same failure shape as §83's controls: **a negative result from an
+> instrument that was not present is not a negative result.**
+
 ### 52.3 Our decode: one register confirmed, two disagree, one not comparable
 
 Ours (600-frame live run) against MAME's own `GSPREG` line:

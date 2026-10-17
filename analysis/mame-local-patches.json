@@ -126,13 +126,15 @@
       "function": "IOREG macro (34010ops.h) and m_IOregs declaration (tms34010.h)",
       "env": [],
       "observation_only": false,
-      "reason": "The MD-12 memory-safety fix. m_IOregs grew from 64 to 0x200 entries and IOREG() now masks its offset to 0x1ff. Access below offset 0x40 is unaffected, and this game's GSP program writes at 0x90-0x160, so this changes the oracle's behaviour precisely where the unfixed build was running off the end of the array. It is a model fix, not an observation, and must never be filed under patches.",
+      "reason": "The MD-12 memory-safety fix. m_IOregs grew from 64 to 0x200 entries and IOREG() now masks its offset to 0x1ff (and SMART_IOREG routes through IOREG). CORRECTED 2026-10-17: an earlier version of this reason claimed 'this game's GSP program writes at 0x90-0x160, so this changes the oracle's behaviour'. THAT CLAIM IS WRONG. Measured on md12-fixed (which contains the STUNRUN_GSP_IOBREPORT hook, unlike the frozen oracle): 600 frames power-on and 600 frames of service mode produced NO write at MAME-offset >= 0x40 -- the report file is fopen'ed inside the offset>=64 branch, so its absence is positive evidence the branch was never taken. Findings 52.2 (same conclusion, but VACUOUS: the oracle lacks the hook) and 86.2 (the non-vacuous re-run). So the fix is INERT for S.T.U.N. Runner: the two binaries behave identically on these paths and this patch is not why their frame-600 output differs. The fix stays because the overflow is real in the unfixed array.",
       "bugs_md": "MD-12",
       "added": "2026-10-13",
       "files": [
         "src/devices/cpu/tms34010/34010ops.h",
         "src/devices/cpu/tms34010/tms34010.h"
-      ]
+      ],
+      "measured_inert": true,
+      "evidence": "docs/mc68010-boot-findings.md 52.2 (vacuous) and 86.2 (non-vacuous)"
     }
   ],
   "provenance_note": "STUNRUN-IOB appeared in the MAME working tree while this session was running and was not authored here. It is recorded because an unrecorded hook in the oracle is exactly the failure tests/test_mame_local_patches.py exists to catch. Its observation-only status was read off its body, not assumed. The MD-12 fix is filed under behaviour_changes rather than patches for the same reason: the guard rejects any non-observation-only entry in patches, and calling this one observation-only would be false. Note that tms34010.h now appears in BOTH lists -- it carries observation hooks and a behavioural fix inside one diff, which is exactly the case the file-level check cannot detect on its own."

@@ -135,9 +135,21 @@ wrong one; `behaviour_changes` exists so the honest option is also the easy one.
 
 `internal_regs_map` maps `map(0xc0000000, 0xc00001ff)`, so the TMS34010's I/O
 offsets run to `0x1ff`. The backing store was `uint16_t m_IOregs[64]` and
-`IOREG(reg)` was `m_IOregs[reg]` with no mask. S.T.U.N. Runner's GSP program
-stores at offsets `0x110`–`0x160` — 208 entries past the end of the array — and
-those fetches were traced executing, so this is not a theoretical overrun.
+`IOREG(reg)` was `m_IOregs[reg]` with no mask.
+
+> **CORRECTED 2026-10-17 — the claim that "S.T.U.N. Runner's GSP program stores
+> at offsets `0x110`–`0x160` … and those fetches were traced executing" is
+> DISPROVEN.** MAME ships an MD-12 triage hook, `STUNRUN_GSP_IOBREPORT`, which
+> arms inside `io_register_w` on `offset >= 64` and `fopen`s its report lazily on
+> the first such write. Run on `md12-fixed`, which **does** contain the hook:
+> 600 frames power-on and 600 frames of service mode produced **no report file**,
+> so no write at offset ≥ `0x40` ever happened. Findings §52.2 reached the same
+> conclusion but VACUOUSLY — the frozen oracle contains zero occurrences of the
+> hook string, so its silence proved nothing. §86.2 is the non-vacuous run.
+>
+> The overrun is real in the unfixed array; it simply does not occur on this
+> game's paths. Hence the behavioural patch is **inert here**, and it is not why
+> the two binaries' frame-600 output differs.
 
 The fix grows the array to `0x200` entries and masks `IOREG()` to `0x1ff`.
 Access below `0x40` is byte-for-byte unchanged, and every register MAME's `REG_`
