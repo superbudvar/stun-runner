@@ -82,6 +82,18 @@ still lacks GSP host-read responses and MAME's INTOUT edge timeline. Findings
 
 ### Parallel thread — GSP execution (`stun-runner-gsvp`)
 
+**ADSP output semantics established for the observed ordinary renderer path
+(2026-10-17).** Fresh same-run evidence joins ADSP SOM output through banked
+SOM, unchanged 68010 ferry words and GSP reads to actual pixel writes. Records
+carry colour/style, left/right X endpoints, starting Y and signed 16.16 edge
+increments with inclusive vertical runs; a separate offset list orders the
+records. Predictions match 18,720 primary horizontal-fill groups across two
+windows, including endpoints, write addresses and first-word coverage masks.
+See `analysis/adsp-output-semantics.md` and findings §90. This does not claim
+all alternate workers, object identities or native gameplay parity. It also
+refutes the old prefix codec's word-2-as-DX interpretation; the codec fix and
+live-prefix regression are now in place (`stun-runner-3vb` closed).
+
 Distinct from M5. The GSP has no ROM: `mainpcb:user1` is the ADSP object ROM,
 and the 68010 programs the GSP through VRAM. Until a GSP executes, the display
 list is never rasterised and the 68010 spins at `$022766` waiting on a queue

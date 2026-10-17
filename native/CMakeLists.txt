@@ -444,8 +444,8 @@ target_include_directories(stunrun-gsp-record-parser-slice-test PRIVATE
 set_target_properties(stunrun-gsp-record-parser-slice-test PROPERTIES C_STANDARD 99)
 add_test(NAME gsp-record-parser-slice-c COMMAND stunrun-gsp-record-parser-slice-test)
 # Bounded four-F0-word prefix decoder and primary FILL XY register setup from
-# the SOM/HSTDAT stream. F1 is 32-bit; this target deliberately assumes no
-# fixed full-entry size.
+# the SOM stream. Word 2 is an inclusive right endpoint; live-raster checks
+# establish width=right-left+1. F1 is 32-bit; no fixed full-entry size assumed.
 add_executable(stunrun-gsp-payload-codec-test
   ../reproduction/gsp/payload_codec.c
   ../reproduction/gsp/payload_codec_test.c)

@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Test whether ADSP MP=1 coefficient ROM implements reciprocal depth scaling.
+
+Reads the two ROM_LOAD16_BYTE lanes at user1 offsets 0x20000/0x20001.
+WHAT IT GETS WRONG: a reciprocal table does not name the source coordinate
+frame or identify an object. It reports exceptions rather than silently
+rounding the ROM into an idealized formula. No ROM image is written.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+
+def main():
+    ap=argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('rompath',type=Path)
+    ap.add_argument('--manifest',type=Path)
+    ap.add_argument('--json',action='store_true')
+    args=ap.parse_args()
+    manifest=args.manifest or args.rompath/'stunrun.manifest.json'
+    entries=json.loads(manifest.read_text())['roms']
+    lanes=[]
+    hashes={}
+    for off in (0x20000,0x20001):
+        found=[e for e in entries if e['region']=='mainpcb:user1' and e['offset']==off]
+        if len(found)!=1:
+            raise SystemExit(f'need exactly one user1 lane at offset {off:X}')
+        e=found[0]
+        path=args.rompath/e['filename']
+        if not path.is_file():
+            path=args.rompath/'stunrun'/e['filename']
+        data=path.read_bytes()
+        if len(data)!=65536 or e['size']!=65536:
+            raise SystemExit(f'wrong-sized coefficient ROM lane: {path}')
+        if hashlib.sha1(data).hexdigest()!=e['sha1']:
+            raise SystemExit(f'coefficient ROM hash mismatch: {path}')
+        lanes.append(data)
+        hashes[e['filename']]=hashlib.sha256(data).hexdigest()
+    values=[a*256+b for a,b in zip(*lanes)]
+    ranges=[]
+    for name,start,end,numerator in [('low',1,0x201,1<<15),('high',0x201,0x7fff,1<<24)]:
+        exceptions=[]
+        for i in range(start,end):
+            expected=(2*numerator+i)//(2*i)  # nearest integer, ties upward
+            if values[i]!=expected:
+                exceptions.append(dict(index=i,actual=values[i],nearest_reciprocal=expected))
+        ranges.append(dict(name=name,start=start,end_exclusive=end,numerator=numerator,
+                           tested=end-start,matches=end-start-len(exceptions),exceptions=exceptions))
+    print(json.dumps(dict(schema='stunrun-adsp-projection-table-v1',
+                          rom_manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                          lanes_sha256=hashes,ranges=ranges,
+                          boundary_values={'0':values[0],'32767':values[0x7fff]},
+                          interpretation='piecewise reciprocal coefficients; semantic coordinate frame not established'),indent=2))
+
+
+if __name__=='__main__':
+    main()

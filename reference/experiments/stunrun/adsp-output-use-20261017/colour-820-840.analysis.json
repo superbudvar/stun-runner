@@ -1,0 +1,418 @@
+{
+  "schema": "stunrun-adsp-output-use-analysis-v1",
+  "counts": {
+    "som_writes": 22777,
+    "som_reads": 17547,
+    "som_reads_matching_latest_producer": 17547,
+    "ferry_words_matching_read": 17541,
+    "ferry_words_with_producer": 17541,
+    "gsp_reads_matching_ferried_producer": 17374,
+    "raster_write_groups": 10851,
+    "complete_records": 1251,
+    "pending_ferry_reads_at_end": 0
+  },
+  "transactions": [
+    {
+      "id": 1,
+      "frame": 827,
+      "bank": 0,
+      "words": 5848,
+      "record_starts": 317,
+      "draw_indices": 317,
+      "index_set_equals_record_starts": true,
+      "reordered_positions": 308
+    },
+    {
+      "id": 2,
+      "frame": 830,
+      "bank": 0,
+      "words": 2,
+      "record_starts": 0,
+      "draw_indices": 0,
+      "index_set_equals_record_starts": false,
+      "reordered_positions": 0
+    },
+    {
+      "id": 3,
+      "frame": 830,
+      "bank": 1,
+      "words": 5848,
+      "record_starts": 317,
+      "draw_indices": 317,
+      "index_set_equals_record_starts": true,
+      "reordered_positions": 308
+    },
+    {
+      "id": 4,
+      "frame": 833,
+      "bank": 1,
+      "words": 2,
+      "record_starts": 0,
+      "draw_indices": 0,
+      "index_set_equals_record_starts": false,
+      "reordered_positions": 0
+    },
+    {
+      "id": 5,
+      "frame": 834,
+      "bank": 0,
+      "words": 5848,
+      "record_starts": 317,
+      "draw_indices": 317,
+      "index_set_equals_record_starts": true,
+      "reordered_positions": 308
+    },
+    {
+      "id": 6,
+      "frame": 837,
+      "bank": 0,
+      "words": 2,
+      "record_starts": 0,
+      "draw_indices": 0,
+      "index_set_equals_record_starts": false,
+      "reordered_positions": 0
+    },
+    {
+      "id": 7,
+      "frame": 837,
+      "bank": 1,
+      "words": 5227,
+      "record_starts": 300,
+      "draw_indices": 0,
+      "index_set_equals_record_starts": false,
+      "reordered_positions": 0
+    }
+  ],
+  "gsp_consumer_reads": {
+    "FFF44CA0": 3,
+    "FFF45000": 945,
+    "FFF45090": 943,
+    "FFF450F0": 943,
+    "FFF45110": 943,
+    "FFF45360": 943,
+    "fill:FFF454E0": 10851,
+    "FFF45510": 6192,
+    "FFF455A0": 4308,
+    "FFF45610": 2154
+  },
+  "raster_checks": {
+    "matching_predicted_endpoint_rows": 10851,
+    "matching_2bpp_addresses": 10851,
+    "matching_first_2bpp_word_masks": 10851
+  },
+  "control_to_pen_rows": {
+    "0030->3030": 294,
+    "0130->2020": 150,
+    "011C->1C1C": 249,
+    "0031->3131": 273,
+    "001C->1C1C": 48,
+    "0132->2222": 711,
+    "0131->2121": 258,
+    "001F->1F1F": 18,
+    "0033->3333": 642,
+    "0032->3232": 876,
+    "0135->2525": 267,
+    "0133->2323": 378,
+    "0034->3434": 450,
+    "0035->3535": 174,
+    "0036->3636": 591,
+    "0134->2424": 276,
+    "0136->2626": 234,
+    "0137->2727": 603,
+    "0014->1414": 84,
+    "00E8->E8E8": 90,
+    "00E3->E3E3": 210,
+    "00E5->E5E5": 186,
+    "00E7->E7E7": 12,
+    "00E9->E9E9": 156,
+    "00E4->E4E4": 234,
+    "0010->1010": 6,
+    "0037->3737": 492,
+    "0038->3838": 357,
+    "0138->2828": 474,
+    "0139->2929": 72,
+    "013A->2A2A": 786,
+    "003A->3A3A": 255,
+    "0814->1414": 87,
+    "00EA->EAEA": 48,
+    "00B9->B9B9": 60,
+    "0017->1717": 33,
+    "008B->8B8B": 227,
+    "008A->8A8A": 63,
+    "0086->8686": 75,
+    "0016->1616": 27,
+    "0015->1515": 24,
+    "0085->8585": 90,
+    "008C->8C8C": 76,
+    "0089->8989": 64,
+    "0013->1313": 9,
+    "0087->8787": 42,
+    "00EC->ECEC": 20
+  },
+  "record_shapes": {
+    "16": 471,
+    "21": 606,
+    "6": 110,
+    "11": 52,
+    "26": 12
+  },
+  "control_words": {
+    "0030": 48,
+    "0087": 8,
+    "0085": 16,
+    "0014": 32,
+    "008B": 76,
+    "008C": 36,
+    "008A": 20,
+    "00EC": 8,
+    "00E4": 44,
+    "00E3": 60,
+    "00E5": 52,
+    "0086": 16,
+    "0089": 16,
+    "00E8": 52,
+    "00E9": 56,
+    "00EA": 16,
+    "00B9": 16,
+    "0017": 4,
+    "0016": 4,
+    "0015": 4,
+    "0013": 4,
+    "0814": 20,
+    "0133": 32,
+    "0134": 24,
+    "0136": 16,
+    "0137": 32,
+    "0138": 16,
+    "013A": 24,
+    "011C": 23,
+    "0032": 56,
+    "0033": 40,
+    "0034": 16,
+    "0036": 24,
+    "0037": 16,
+    "0038": 24,
+    "003A": 16,
+    "001C": 19,
+    "0132": 56,
+    "0135": 24,
+    "0139": 8,
+    "0035": 24,
+    "0131": 40,
+    "0031": 45,
+    "00E7": 12,
+    "0010": 8,
+    "0130": 32,
+    "001F": 16
+  },
+  "correlation_examples": [
+    {
+      "gsp_seq": 30705,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF44CA0",
+      "gsp_address": "FFFA0140",
+      "host_seq": 15334,
+      "source": {
+        "seq": 15094,
+        "tx": 2,
+        "frame": 830,
+        "bank": 0,
+        "word": 1,
+        "value": 5529,
+        "pc": 192,
+        "record_seq": null
+      }
+    },
+    {
+      "gsp_seq": 30707,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF45000",
+      "gsp_address": "FFFB5AD0",
+      "host_seq": 28414,
+      "source": {
+        "seq": 14759,
+        "tx": 1,
+        "frame": 830,
+        "bank": 0,
+        "word": 5530,
+        "value": 1,
+        "pc": 2088,
+        "record_seq": null
+      }
+    },
+    {
+      "gsp_seq": 30708,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF45090",
+      "gsp_address": "FFFA0150",
+      "host_seq": 15335,
+      "source": {
+        "seq": 229,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 2,
+        "value": 48,
+        "pc": 1301,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30709,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF450F0",
+      "gsp_address": "FFFA0160",
+      "host_seq": 15338,
+      "source": {
+        "seq": 230,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 3,
+        "value": 255,
+        "pc": 1381,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30710,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF45110",
+      "gsp_address": "FFFA0170",
+      "host_seq": 15339,
+      "source": {
+        "seq": 231,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 4,
+        "value": 255,
+        "pc": 1383,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30713,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF45360",
+      "gsp_address": "FFFA0180",
+      "host_seq": 15342,
+      "source": {
+        "seq": 232,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 5,
+        "value": 153,
+        "pc": 1387,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30715,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF45510",
+      "gsp_address": "FFFA0190",
+      "host_seq": 15343,
+      "source": {
+        "seq": 233,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 6,
+        "value": 28088,
+        "pc": 1440,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30716,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF45510",
+      "gsp_address": "FFFA01A0",
+      "host_seq": 15346,
+      "source": {
+        "seq": 234,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 7,
+        "value": 65535,
+        "pc": 1442,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30717,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF455A0",
+      "gsp_address": "FFFA01B0",
+      "host_seq": 15347,
+      "source": {
+        "seq": 235,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 8,
+        "value": 52442,
+        "pc": 1444,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30718,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF455A0",
+      "gsp_address": "FFFA01C0",
+      "host_seq": 15350,
+      "source": {
+        "seq": 236,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 9,
+        "value": 65533,
+        "pc": 1446,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30719,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF45610",
+      "gsp_address": "FFFA01D0",
+      "host_seq": 15351,
+      "source": {
+        "seq": 237,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 10,
+        "value": 6,
+        "pc": 1448,
+        "record_seq": 229
+      }
+    },
+    {
+      "gsp_seq": 30735,
+      "gsp_frame": 832,
+      "gsp_pc": "FFF45510",
+      "gsp_address": "FFFA01E0",
+      "host_seq": 15354,
+      "source": {
+        "seq": 238,
+        "tx": 1,
+        "frame": 827,
+        "bank": 0,
+        "word": 11,
+        "value": 28088,
+        "pc": 1408,
+        "record_seq": 229
+      }
+    }
+  ],
+  "limitations": [
+    "No GSP-write invalidation or GSP-copy propagation",
+    "Open transactions/queued reads at capture end are not complete blocks"
+  ]
+}

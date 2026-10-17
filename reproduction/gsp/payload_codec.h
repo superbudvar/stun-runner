@@ -7,9 +7,10 @@
  *
  * Proven primary-path field mapping at $FFF45090-$FFF454E0:
  *   F0 word 0 -> control
- *   F0 word 1 -> A8 -> B0.X (FILL DADDR.X)
- *   F0 word 2 -> A6.X (FILL DYDX.DX)
+ *   F0 word 1 -> A8 -> B0.X (inclusive left endpoint)
+ *   F0 word 2 -> A6.X (inclusive right endpoint; NOT width)
  *   F0 word 3 -> MOVY into B0/A6 (FILL DADDR.Y)
+ * The primary path computes horizontal FILL width as right-left+1.
  * Further F1/F0 fields are left to the caller as raw stream words.
  */
 #ifndef STUNRUN_GSP_PAYLOAD_CODEC_H
@@ -41,8 +42,8 @@ extern "C" {
 
 typedef struct stunrun_gsp_payload_prefix {
     uint16_t control; /* F0 word 0 -> A4 */
-    uint16_t x;       /* F0 word 1 -> A8 -> B0.X */
-    uint16_t dx;      /* F0 word 2 -> A6.X -> B7.DX */
+    uint16_t left_x;  /* F0 word 1 -> A8 -> B0.X */
+    uint16_t right_x; /* F0 word 2 -> A6.X; inclusive */
     uint16_t y;       /* F0 word 3 -> MOVY -> B0.Y / A6.Y */
 } stunrun_gsp_payload_prefix_t;
 
@@ -60,7 +61,7 @@ typedef struct stunrun_gsp_payload_control {
 typedef struct stunrun_gsp_fill_xy_setup {
     uint16_t destination_x;
     uint16_t destination_y;
-    uint16_t dx;
+    uint16_t width;   /* FILL DYDX.DX = right-exclusive - left */
     uint16_t dy;
 } stunrun_gsp_fill_xy_setup_t;
 

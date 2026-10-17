@@ -13644,3 +13644,57 @@ produces plausible-looking execution.
 `tools/check-gsp-executed` (bead `stun-runner-8y8`) is the thing that answers
 it. Do not assume the answer either way, and do not treat the fix to the decode
 stride (`stun-runner-a9q`) as settling it — different question.
+## 90. Refutation: ADSP SOM fields were not semantically opaque, and word 2 is not width
+
+The earlier investigation stopped at transport and called the task complete.
+That did not answer what the ADSP produces or how it is used. Sections 59–63
+also misread `SUBXY`: it subtracts both coordinates, so the inclusive right
+endpoint in header word 2 does **not** remain the FILL width.
+
+New same-run observations now connect bank/address-versioned SOM output,
+68010 buffer reads, unchanged host writes, GSP operand reads and actual 2bpp
+pixel writes. Power-on, no-input, independently isolated runs under md12-fixed
+`55956f2b…` cover two windows (820–840 and 1100–1110). From the producer words
+alone, the semantic predictor reproduces **18,720 primary raster groups**:
+both endpoints, first write address, and first-word coverage mask all match.
+The early capture's 117,220-event stream repeats byte-identically.
+[ROM: `tools/capture-adsp-output-use`, `tools/analyze-adsp-output-use`;
+`reference/experiments/stunrun/adsp-output-use-20261017/metadata.json`.]
+
+The ordinary record is a colour/style word, inclusive left/right X endpoints,
+starting Y, then tuples of signed 16.16 right/left edge increments and an
+inclusive vertical run, ending in two `$FFFF` words. The GSP makes the right
+endpoint exclusive, biases the fractional accumulators by half a unit, steps
+each tuple for `run-1` further rows, and fills one horizontal interval per row.
+Thus `DX = right - left + 1` initially, not `right`. The ADSP also emits a
+reordered record-offset list; the first packet has 317 records and exactly
+those 317 offsets, with 308 positions reordered relative to emission order.
+[ROM: same evidence and ADSP `$080B–$0833` decode.]
+
+The primary consumer writes coverage masks into the GSP 2bpp aperture. The
+board expander applies the separately latched palette index to VRAM; the
+words are not final RGB pixels. MAME source `harddriv_v.cpp:45–60,270–319`
+establishes that expansion [S7/S8]. Actual colour-latch and mask observations
+are in the same-run capture [ROM].
+
+This is **our** refutation, not a ROM or MAME defect. The earlier
+word-2-as-DX interpretation is corrected in section 91 and in the GSP payload
+codec. The later capture also contains alternate workers and incomplete-at-
+window-start source history; those are explicitly excluded from the 18,720-row
+claim, not silently counted as matches. Full explanation and reproduction
+commands: `analysis/adsp-output-semantics.md`.
+
+## 91. Correct the primary FILL XY codec to use the inclusive right endpoint
+
+The GSP prefix codec now names the fields `left_x` and `right_x`; the primary
+FILL setup computes `width = (uint16_t)(right_x - left_x + 1)` and preserves
+the caller-derived height. The captured live prefix
+`0014 00F6 0108 00C1` gives width 19, matching GSP B7.DX for the row observed
+at `$FFF454E0`; copying word 2 as width would give `$0108` and is rejected by
+the updated self-check. The coverage-mask/address predictor already validates
+this rule across 18,720 primary raster groups.
+
+This implements `stun-runner-3vb`; it changes our transcription, not the ROM or
+MAME oracle. Verification: `gsp-payload-codec-c`, all 127 public-tool tests,
+and the full 403-test repository suite. [ROM: capture bundle above; the C
+expected width is the observed B7.DX for the cited captured row.]

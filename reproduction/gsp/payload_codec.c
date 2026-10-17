@@ -13,8 +13,8 @@ int stunrun_gsp_payload_decode_prefix(const uint16_t *words, size_t word_count,
         return 0;
 
     decoded.control = words[word_offset + 0u];
-    decoded.x       = words[word_offset + 1u];
-    decoded.dx      = words[word_offset + 2u];
+    decoded.left_x  = words[word_offset + 1u];
+    decoded.right_x = words[word_offset + 2u];
     decoded.y       = words[word_offset + 3u];
     *out = decoded;
     return 1;
@@ -29,8 +29,8 @@ size_t stunrun_gsp_payload_encode_prefix(
         return 0u;
 
     words_out[0] = prefix->control;
-    words_out[1] = prefix->x;
-    words_out[2] = prefix->dx;
+    words_out[1] = prefix->left_x;
+    words_out[2] = prefix->right_x;
     words_out[3] = prefix->y;
     return STUNRUN_GSP_PAYLOAD_PREFIX_WORDS;
 }
@@ -98,14 +98,15 @@ int stunrun_gsp_payload_primary_fill_xy(
         return 0;
 
     /* Literal dataflow:
-     *   F0 word1 -> A8 -> B0.X
-     *   F0 word2 -> A6.X
+     *   F0 word1 -> A8 -> B0.X (inclusive left endpoint)
+     *   F0 word2 -> A6.X (inclusive right endpoint)
      *   F0 word3 -> A8 -> MOVY A8,B0 and MOVY A8,A6 (both Y starts)
-     *   ADDXY A11,A6; B7=A6; SUBXY B2,B7 leaves B7.DY=A11.Y
+     *   ADDXY A11,A6; B7=A6; SUBXY B2,B7 leaves B7.DY=A11.Y and
+     *     B7.DX=word2-(word1-1)=rightX-leftX+1
      *   FILL XY consumes B2=DADDR and B7=DYDX. */
-    result.destination_x = prefix->x;
+    result.destination_x = prefix->left_x;
     result.destination_y = prefix->y;
-    result.dx = prefix->dx;
+    result.width = (uint16_t)(prefix->right_x - prefix->left_x + 1u);
     result.dy = (uint16_t)(a11 >> 16);
     *out = result;
     return 1;

@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Join captured SOM writes to CPU ferry words and direct GSP operand reads.
+
+Answers whether the same bank/address version is copied unchanged to a physical
+GSP word and subsequently read. WHAT IT GETS WRONG: does not follow GSP copies,
+and cannot exclude intervening GSP writes (the capture only logs host stores).
+Therefore matches are address/version/value correlations, not full taint proof.
+"""
+import argparse
+from collections import Counter, deque
+import hashlib
+import json
+from pathlib import Path
+
+
+def analyze(path):
+    som, vram, pending = {}, {}, deque()
+    counts = Counter()
+    consumers = Counter()
+    records = []
+    record = None
+    tx = 0
+    sample = []
+    transactions = []
+    record_offsets, draw_indices = {}, {}
+    record_map = {}
+    active_record = None
+    raster_checks = Counter()
+    colour_pairs = Counter()
+
+    def signed32(lo, hi):
+        v = lo | (hi << 16)
+        return v - 0x100000000 if v & 0x80000000 else v
+
+    def expected_rows(values):
+        if len(values) < 6 or (len(values)-6) % 5 or values[-2:] != [65535,65535]:
+            raise ValueError('invalid complete producer record')
+        # The stream carries two endpoints, not a width. The GSP makes the
+        # right endpoint exclusive with ADDXY 00010001 and rounds both with
+        # half-unit fractional accumulators before applying signed 16.16 steps.
+        left = values[1]*65536 + 32768
+        right = (values[2]+1)*65536 + 32768
+        y = values[3]
+        result = {y: (left//65536,right//65536)}
+        for i in range(4,len(values)-2,5):
+            dr = signed32(*values[i:i+2])
+            dl = signed32(*values[i+2:i+4])
+            for _ in range(max(0,values[i+4]-1)):
+                left += dl
+                right += dr
+                y += 1
+                result[y] = (left//65536,right//65536)
+        return result
+    for line in path.read_text().splitlines():
+        p = line.split()
+        if len(p) != 9:
+            raise ValueError('invalid event shape')
+        seq, frame, kind, pc, addr, data, mask, bank, extra = p
+        seq, frame, bank = int(seq), int(frame), int(bank)
+        pc, addr, data, mask = (int(v,16) for v in (pc,addr,data,mask))
+        if kind == 'fill':
+            counts['raster_write_groups'] += 1
+            consumers[f'fill:{pc:08X}'] += 1
+            if pc != 0xfff454e0:
+                raster_checks['alternate_worker_not_predicted'] += 1
+                continue
+            regs = dict((k,int(v,16)) for k,v in (s.split(':') for s in extra.split(',')))
+            if active_record is not None:
+                if 'PEN' in regs:
+                    colour_pairs[f'{active_record["values"][0]:04X}->{regs["PEN"]:04X}'] += 1
+                predicted = expected_rows(active_record['values'])
+                y = regs['B0'] >> 16
+                actual = regs['B0'] & 65535, regs['A6'] & 65535
+                if predicted.get(y) == actual:
+                    raster_checks['matching_predicted_endpoint_rows'] += 1
+                else:
+                    raster_checks['mismatching_endpoint_rows'] += 1
+                    if len(sample)<20:
+                        sample.append(dict(fill_seq=seq, y=y, predicted=predicted.get(y),actual=actual,
+                                           record=active_record))
+                if (regs['B7'] & 65535) != ((actual[1]-actual[0]) & 65535) or regs['B7']>>16 != 1:
+                    raster_checks['invalid_fill_dimensions'] += 1
+                expected_address = (regs['B4'] + y*1024 + actual[0]*2) & ~15
+                if addr == expected_address:
+                    raster_checks['matching_2bpp_addresses'] += 1
+                else:
+                    raster_checks['mismatching_2bpp_addresses'] += 1
+                bits = 0
+                for x in range(actual[0],min(actual[1],(actual[0]//8+1)*8)):
+                    bits |= 3 << (2*(x%8))
+                if data == (bits & (regs['B9'] & 65535)):
+                    raster_checks['matching_first_2bpp_word_masks'] += 1
+                else:
+                    raster_checks['mismatching_first_2bpp_word_masks'] += 1
+            else:
+                raster_checks['without_matched_producer_record'] += 1
+            continue
+        if mask != 0xffff:
+            raise ValueError(f'unsupported partial bus word at sequence {seq}')
+        if kind == 'port' and addr == 0x2003:
+            tx += 1
+            transactions.append(dict(id=tx, frame=frame, bank=bank^1, words=0))
+            record_offsets[tx], draw_indices[tx] = [], []
+        if kind == 'som':
+            producer_bank = int(extra)
+            if producer_bank != bank ^ 1:
+                raise ValueError('invalid producer bank')
+            item = dict(seq=seq, tx=tx, frame=frame, bank=producer_bank, word=addr, value=data, pc=pc)
+            som[producer_bank,addr] = item
+            if transactions:
+                transactions[-1]['words'] += 1
+            counts['som_writes'] += 1
+            if pc == 0x515:
+                record = dict(seq=seq, frame=frame, bank=producer_bank, word=addr, values=[])
+                record_map[seq] = record
+                if tx in record_offsets:
+                    record_offsets[tx].append(addr-1)
+            if pc == 0x828 and tx in draw_indices:
+                draw_indices[tx].append(data)
+            item['record_seq'] = record['seq'] if record is not None else None
+            if record is not None:
+                record['values'].append(data)
+                if pc == 0x5d4:
+                    records.append(record)
+                    record = None
+        elif kind == 'read':
+            key = bank,(addr-0x810000)//2
+            source = som.get(key)
+            counts['som_reads'] += 1
+            if source:
+                if source['value'] != data:
+                    raise ValueError(f'SOM shadow mismatch at sequence {seq}')
+                counts['som_reads_matching_latest_producer'] += 1
+            else:
+                counts['som_reads_without_captured_producer'] += 1
+            if pc in (0x2248e,0x2249a):
+                pending.append((data,source))
+        elif kind == 'host' and addr in (0xc0000c,0xc0000e):
+            dest = int(extra,16)
+            physical = ((dest & 0xfffffff0)-0xff800000 >> 3) & 0x7ffff
+            source = None
+            if pending:
+                value,source = pending.popleft()
+                if value != data or pc not in (0x2248e,0x2249a):
+                    raise ValueError(f'CPU ferry order/value mismatch at sequence {seq}')
+                counts['ferry_words_matching_read'] += 1
+                if source:
+                    counts['ferry_words_with_producer'] += 1
+            vram[physical] = (data,source,dest,seq)
+        elif kind == 'gsp':
+            if pc == 0xfff45090:
+                active_record = None
+            physical = ((addr-0xff800000) >> 3) & 0x7ffff
+            store = vram.get(physical)
+            if store and store[1] and store[0] == data:
+                counts['gsp_reads_matching_ferried_producer'] += 1
+                consumers[f'{pc:08X}'] += 1
+                if pc == 0xfff45090:
+                    active_record = record_map.get(store[1].get('record_seq'))
+                if len(sample)<12:
+                    sample.append(dict(gsp_seq=seq,gsp_frame=frame,gsp_pc=f'{pc:08X}',
+                                       gsp_address=f'{addr:08X}',host_seq=store[3],
+                                       source=store[1]))
+    counts['complete_records'] = len(records)
+    counts['pending_ferry_reads_at_end'] = len(pending)
+    for t in transactions:
+        starts, order = record_offsets[t['id']], draw_indices[t['id']]
+        t['record_starts'] = len(starts)
+        t['draw_indices'] = len(order)
+        t['index_set_equals_record_starts'] = bool(starts) and set(starts)==set(order)
+        t['reordered_positions'] = sum(a!=b for a,b in zip(starts,order))
+    return dict(schema='stunrun-adsp-output-use-analysis-v1', counts=dict(counts),
+                transactions=transactions, gsp_consumer_reads=dict(consumers),
+                raster_checks=dict(raster_checks),
+                control_to_pen_rows=dict(colour_pairs),
+                record_shapes=dict(Counter(str(len(r['values'])) for r in records)),
+                control_words=dict(Counter(f'{r["values"][0]:04X}' for r in records)),
+                correlation_examples=sample,
+                limitations=['No GSP-write invalidation or GSP-copy propagation',
+                             'Open transactions/queued reads at capture end are not complete blocks'])
+
+
+def main():
+    ap=argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('capture',type=Path)
+    ap.add_argument('--json',action='store_true')
+    args=ap.parse_args()
+    p=args.capture/'events.txt'
+    meta=json.loads((args.capture/'result.json').read_text())
+    if meta['truncated'] or hashlib.sha256(p.read_bytes()).hexdigest()!=meta['events_sha256']:
+        raise SystemExit('incomplete or modified event capture')
+    if sum(1 for _ in p.open()) != meta['events']:
+        raise SystemExit('event count mismatch')
+    result=analyze(p)
+    print(json.dumps(result,indent=2))
+    if not result['raster_checks'].get('matching_predicted_endpoint_rows'):
+        raise SystemExit('no matched primary raster rows; semantic validation unavailable')
+    if any(v for k,v in result['raster_checks'].items() if k.startswith('mismatching') or k.startswith('invalid')):
+        raise SystemExit(1)
+
+
+if __name__=='__main__':
+    main()

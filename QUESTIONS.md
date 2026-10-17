@@ -2,6 +2,36 @@
 
 Use this file for questions that cross agent ownership boundaries. Preserve resolved requests as project history.
 
+## ADSP-OUTPUT-CODEC — primary fill endpoint correction
+
+Status: RESOLVED (`stun-runner-3vb`)
+From: Investigator, ADSP output semantics (`stun-runner-hj1`)
+To: Implementer
+Priority: HIGH
+
+New live producer-to-raster evidence establishes header word 2 as the inclusive
+right X endpoint, not DX. The primary GSP worker computes initial width
+`right-left+1`; `SUBXY` subtracts X as well as Y. Correct
+`reproduction/gsp/payload_codec.c` and its self-checks from the original
+instructions and new observations, not by retaining the old expected width.
+Also reconcile the earlier field names in the ADSP/GSP codec interfaces.
+
+### Resolution
+
+`payload_codec` now names the endpoints `left_x` and inclusive `right_x`, and
+the primary FILL result is `width = right_x - left_x + 1`. A captured live
+prefix at `$FFF454E0` checks width 19 against observed `B7.DX=$0013`; the old
+word-2-as-width behavior is explicitly rejected. Verified by `gsp-payload-codec-c`,
+127 public-tool tests, and the full repository suite.
+
+Evidence and independent checker:
+`analysis/adsp-output-semantics.md`, findings §90,
+`reference/experiments/stunrun/adsp-output-use-20261017/metadata.json` and
+`tools/analyze-adsp-output-use`. The observed primary predictor matches 18,720
+row groups across two capture windows; excluded alternate workers are not
+part of that claim. The Implementer correction and its regression are recorded
+in findings §91.
+
 ## IRQ-0001
 
 Status: RESOLVED

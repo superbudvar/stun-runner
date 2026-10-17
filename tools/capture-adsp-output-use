@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Observe multiple ADSP outputs and their SOM/host/GSP consumers in one run.
+
+Answers which emitted words are read from which SOM bank and where the host
+stores them. WHAT IT GETS WRONG: a matching value is not causal proof; the
+consumer read tap covers only the selected GSP worker range, not all dataflow.
+No input schedule or ROM-derived binary is embedded. Ordered raw events are
+retained locally; provenance and counts are written as JSON. Raster events are
+the first 2bpp write per consecutive (PC, B0, A6), not complete framebuffer dumps.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT), str(ROOT / 'tools')]
+from mame_harness.process import run_mame, check_lua_errors
+from mame_launch import mame_launch
+
+
+def digest(p):
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('rompath', type=Path)
+    ap.add_argument('output', type=Path)
+    ap.add_argument('--mame', type=Path, default=Path('/mnt/build/mame-ref/mame'))
+    ap.add_argument('--start-frame', type=int, default=540)
+    ap.add_argument('--frames', type=int, default=620)
+    ap.add_argument('--max-events', type=int, default=400000)
+    ap.add_argument('--timeout', type=float, default=180)
+    ap.add_argument('--json', action='store_true')
+    args = ap.parse_args()
+    if not 1 <= args.start_frame < args.frames or args.max_events < 1:
+        ap.error('require 1 <= start-frame < frames and max-events > 0')
+    args.output.mkdir(parents=True, exist_ok=False)
+    out = args.output.resolve()
+    script = ROOT / 'mame/lua/adsp-output-use.lua'
+    env = dict(os.environ, SDL_VIDEODRIVER='dummy',
+               STUNRUN_OUTPUT_FIRST=str(args.start_frame),
+               STUNRUN_OUTPUT_LAST=str(args.frames),
+               STUNRUN_OUTPUT_CAP=str(args.max_events),
+               STUNRUN_OUTPUT_LOG=str(out / 'events.txt'))
+    with mame_launch(mame=args.mame.resolve(), rompath=args.rompath.resolve(),
+                     frames=args.frames, autoboot=script,
+                     extra=('-debug', '-debugger', 'none', '-nothrottle')) as launch:
+        with (out / 'mame.log').open('w') as log:
+            proc = run_mame(launch.argv, env=env, stdout=log, stderr=-2, timeout=args.timeout)
+        text = (out / 'mame.log').read_text()
+        check_lua_errors(text, out / 'mame.log')
+        done = re.search(r'ADSP_OUTPUT_DONE frames=(\d+) events=(\d+) truncated=(true|false)', text)
+        if proc.returncode or not done or done[3] != 'false':
+            raise SystemExit(f'incomplete ADSP output observation; see {out / "mame.log"}')
+        n = sum(1 for _ in (out/'events.txt').open())
+        if n != int(done[2]):
+            raise SystemExit('event count mismatch')
+        result = dict(schema='stunrun-adsp-output-use-v1', frames=args.frames,
+                      start_frame=args.start_frame, input='none', start_condition='power_on',
+                      mame=str(args.mame.resolve()), mame_sha256=digest(args.mame),
+                      rom_manifest_sha256=digest(args.rompath/'stunrun.manifest.json'),
+                      machine_map_sha256=digest(ROOT/'analysis/driver-mining/stunrun.machine-map.yaml'),
+                      harness_sha256=digest(__file__), lua_sha256=digest(script),
+                      events=n, events_sha256=digest(out/'events.txt'), truncated=False,
+                      trace_flags='ordered memory taps; no debugger instruction trace',
+                      captured_state='ADSP special writes, SOM reads/bank changes, host writes, selected GSP worker reads, colour-control writes, first 2bpp write per consecutive PC/B0/A6 group',
+                      argv=launch.argv)
+        (out/'result.json').write_text(json.dumps(result, indent=2)+'\n')
+    print(json.dumps(result) if args.json else f'{n} ordered events: {out}')
+
+
+if __name__ == '__main__':
+    main()

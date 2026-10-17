@@ -16,6 +16,121 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 
 class PublicToolTests(unittest.TestCase):
+    def test_adsp_projection_table_checks_reciprocals_and_sizes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            directory = pathlib.Path(directory)
+            values = [0]*65536
+            for z in range(1,0x7fff):
+                numerator = (1<<15) if z<=512 else (1<<24)
+                values[z]=(2*numerator+z)//(2*z)
+            even=bytearray(v>>8 for v in values)
+            odd=bytearray(v&255 for v in values)
+            entries=[]
+            for i,data in enumerate([even,odd]):
+                (directory/f'lane{i}').write_bytes(data)
+                entries.append(dict(filename=f'lane{i}',region='mainpcb:user1',
+                                    offset=0x20000+i,size=65536,
+                                    sha1=hashlib.sha1(data).hexdigest()))
+            manifest=directory/'stunrun.manifest.json'
+            manifest.write_text(json.dumps({'roms':entries}))
+            tool=ROOT/'tools/analyze-adsp-projection-table'
+
+            def invoke(path=tool):
+                return subprocess.run([sys.executable,str(path),str(directory),'--json'],
+                                      capture_output=True,text=True)
+
+            good=invoke()
+            self.assertEqual(good.returncode,0,good.stderr)
+            self.assertEqual([r['matches'] for r in json.loads(good.stdout)['ranges']],
+                             [512,32254])
+            # Preserve correct size and manifest identity while changing a
+            # coefficient: the mathematical check must expose the exception.
+            odd[0x201] ^= 1
+            (directory/'lane1').write_bytes(odd)
+            entries[1]['sha1']=hashlib.sha1(odd).hexdigest()
+            manifest.write_text(json.dumps({'roms':entries}))
+            changed=invoke()
+            high=json.loads(changed.stdout)['ranges'][1]
+            self.assertEqual(len(high['exceptions']),1)
+            self.assertEqual(high['exceptions'][0]['index'],0x201)
+            broken=directory/'broken.py'
+            original=tool.read_text()
+            self.assertIn('if values[i]!=expected:',original)
+            broken.write_text(original.replace('if values[i]!=expected:','if False:'))
+            # The sensitivity control demonstrates exactly what a toothless
+            # analyzer reports on this deliberately changed table.
+            toothless=invoke(broken)
+            self.assertEqual(json.loads(toothless.stdout)['ranges'][1]['exceptions'],[])
+            (directory/'lane1').write_bytes(odd[:-1])
+            short=invoke()
+            self.assertNotEqual(short.returncode,0)
+            self.assertIn('wrong-sized',short.stderr)
+
+    def test_adsp_output_use_semantic_join_and_negative_controls(self):
+        """Independent synthetic endpoints; broken raster rules must fail."""
+        with tempfile.TemporaryDirectory() as directory:
+            directory = pathlib.Path(directory)
+            lines = []
+
+            def event(kind, pc, addr, data, extra='-', bank=1):
+                lines.append(f'{len(lines)+1} 10 {kind} {pc:08X} {addr:08X} '
+                             f'{data:08X} 0000FFFF {bank} {extra}')
+
+            event('port', 0x34, 0x2003, 0)
+            # Left x=2, right x=4 inclusive, y=1. For the following two
+            # rows the left edge advances +0.5 with half-unit rounding bias,
+            # while the right stays fixed. Integer lefts are 2, 3, 3.
+            words = [0x30, 2, 4, 1, 0, 0, 0x8000, 0, 3, 0xffff, 0xffff]
+            for i, value in enumerate(words):
+                event('som', 0x515 if i == 0 else 0x5d4 if i == 10 else 0x565,
+                      i, value, '0')
+            for i, value in enumerate(words):
+                event('read', 0x2248e, 0x810000+2*i, value, bank=0)
+                event('host', 0x2248e, 0xc0000c, value, f'{0xfffa0000+16*i:08X}', bank=0)
+            event('gsp', 0xfff45090, 0xfffa0000, words[0], bank=0)
+            for y, left, mask in [(1, 2, 0x3f0), (2, 3, 0x3c0), (3, 3, 0x3c0)]:
+                regs = (f'B0:{(y<<16)|left:08X},A6:{((y+1)<<16)|5:08X},'
+                        f'B7:{0x10000+5-left:08X},B4:02000000,B9:FFFFFFFF')
+                event('fill', 0xfff454e0, 0x02000000+y*1024, mask, regs, bank=0)
+            path = directory/'events.txt'
+            path.write_text('\n'.join(lines)+'\n')
+            meta = {'events':len(lines),'truncated':False,
+                    'events_sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+            (directory/'result.json').write_text(json.dumps(meta))
+            tool = ROOT/'tools/analyze-adsp-output-use'
+            result = subprocess.run([sys.executable,str(tool),str(directory),'--json'],
+                                    capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            checks = json.loads(result.stdout)['raster_checks']
+            self.assertEqual(checks['matching_predicted_endpoint_rows'],3)
+            self.assertEqual(checks['matching_first_2bpp_word_masks'],3)
+            self.assertFalse(any('mismatching' in k for k in checks))
+            original = tool.read_text()
+            for old,new in [('(values[2]+1)','(values[2]+0)'),
+                            ('y*1024','y*2048'),
+                            ('32768','0'),
+                            ('range(max(0,values[i+4]-1))','range(max(0,values[i+4]-2))')]:
+                self.assertIn(old,original)
+                broken = directory/'broken.py'
+                broken.write_text(original.replace(old,new))
+                failed = subprocess.run([sys.executable,str(broken),str(directory),'--json'],
+                                        capture_output=True,text=True)
+                self.assertNotEqual(failed.returncode,0,(old,failed.stdout))
+            # A modified trace must not be accepted with its old metadata.
+            path.write_text(path.read_text().replace('000003F0','000003F1'))
+            tampered = subprocess.run([sys.executable,str(tool),str(directory),'--json'],
+                                     capture_output=True,text=True)
+            self.assertNotEqual(tampered.returncode,0)
+            # A valid but empty observation is not a semantic PASS.
+            path.write_text('')
+            (directory/'result.json').write_text(json.dumps({
+                'events':0,'truncated':False,
+                'events_sha256':hashlib.sha256(b'').hexdigest()}))
+            empty = subprocess.run([sys.executable,str(tool),str(directory),'--json'],
+                                   capture_output=True,text=True)
+            self.assertNotEqual(empty.returncode,0)
+            self.assertIn('no matched primary raster rows',empty.stderr)
+
     def run_tool(self, name, *args):
         return subprocess.run(
             [str(ROOT / "tools" / name), *map(str, args)],

@@ -28,8 +28,8 @@ int main(void)
     /* Decode the actual first F0 prefix from the committed 64-word capture. */
     check(stunrun_gsp_payload_decode_prefix(k_capture_prefix, 4u, 0u, &p));
     check(p.control == 0x0014u);
-    check(p.x == 0x1615u);
-    check(p.dx == 0x171Fu);
+    check(p.left_x == 0x1615u);
+    check(p.right_x == 0x171Fu);
     check(p.y == 0x1013u);
     check(stunrun_gsp_payload_encode_prefix(&p, encoded, 4u) == 4u);
     check(memcmp(encoded, k_capture_prefix, sizeof(k_capture_prefix)) == 0);
@@ -42,8 +42,8 @@ int main(void)
         larger[8] = 0x00FFu; larger[9] = 0x11FFu;
         larger[10] = 0x11FFu; larger[11] = 0x11FFu;
         check(stunrun_gsp_payload_decode_prefix(larger, 12u, 8u, &p));
-        check(p.control == 0x00FFu && p.x == 0x11FFu &&
-              p.dx == 0x11FFu && p.y == 0x11FFu);
+        check(p.control == 0x00FFu && p.left_x == 0x11FFu &&
+              p.right_x == 0x11FFu && p.y == 0x11FFu);
     }
 
     /* Failures leave the output untouched. */
@@ -85,12 +85,25 @@ int main(void)
     check(stunrun_gsp_payload_primary_fill_xy(&p, 0x00010001u, 0u, &fill));
     check(fill.destination_x == 0x1615u);
     check(fill.destination_y == 0x1013u);
-    check(fill.dx == 0x171Fu);
+    check(fill.width == 0x010Bu);
     check(fill.dy == 0x0001u);
 
     /* Isolate the selected A11 half: FILL DY is the high 16 bits. */
     check(stunrun_gsp_payload_primary_fill_xy(&p, 0x00020000u, 0u, &fill));
     check(fill.dy == 0x0002u);
+
+    /* Live ADSP record from the fresh frame-827 output capture:
+     * left=$00F6, right=$0108 inclusive -> FILL width 19, not $0108. */
+    {
+        const uint16_t live_prefix[4] = {0x0014u,0x00F6u,0x0108u,0x00C1u};
+        check(stunrun_gsp_payload_decode_prefix(live_prefix,4u,0u,&p));
+        check(p.left_x == 0x00F6u && p.right_x == 0x0108u && p.y == 0x00C1u);
+        check(stunrun_gsp_payload_primary_fill_xy(&p,0x00010001u,0u,&fill));
+        check(fill.destination_x == 0x00F6u);
+        check(fill.destination_y == 0x00C1u);
+        check(fill.width == 19u);
+        check(fill.width != p.right_x); /* negative control for the old bug */
+    }
 
     memset(&fill, 0xA5, sizeof(fill));
     check(!stunrun_gsp_payload_primary_fill_xy(&p, 0x00020000u, 0x8u, &fill));
