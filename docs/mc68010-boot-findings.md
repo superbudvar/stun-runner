@@ -15171,9 +15171,13 @@ Two things to read carefully:
 
 - **`BAD GSP VRAM` appears in the oracle too.** It is not our defect. It is
   consistent with the VRAM test screen already characterised in §30.3/§69.
-- **`ADSP TEST: 35 SECS - 3 MINS` is a countdown**, not a status line. The ROM
-  only enters a *timed* ADSP self-test if the DSP answers its handshake. So in
-  MAME the ADSP-2100 responds and the test is under way.
+- **`ADSP TEST: 35 SECS - 3 MINS` is the countdown screen**, and it is reached
+  only after a *separate* ADSP check that happens just before it. The check
+  and the countdown are two different steps: the ROM checks the DSP, and if
+  that passes it starts the timed test and shows the countdown. Our machine
+  fails the check, prints `ADSP-2100 DOES NOT RESPOND`, and never reaches the
+  countdown at all — so we have never observed the check succeeding, only
+  failing. Do not read the countdown as itself being the response test.
 
 ### 104.2 What we show
 
@@ -15233,10 +15237,43 @@ Not settled:
 
 ### 104.5 A cheap acceptance gate
 
-`STUNRUN_CAPTURE_FRAME` on a service run gives a pass/fail with no MAME
-required: reaching the `ADSP TEST: 35 SECS - 3 MINS` countdown is the target,
-`ADSP-2100 DOES NOT RESPOND` is the failure. That is a better criterion than a
-pixel diff, because it is the original code grading our model.
+Reaching the `ADSP TEST: 35 SECS - 3 MINS` countdown means the ADSP **check**
+passed; `ADSP-2100 DOES NOT RESPOND` means it failed. That is the gate — not
+the countdown, which is only the visible consequence of passing.
+
+### 104.6 We have never observed the ADSP in service mode
+
+The hunch that the service-mode check is the ADSP's *first* invocation is
+untested, and the repository contains nothing that would confirm or refute it.
+The gap is total:
+
+- **No service-mode ADSP capture exists.** Every committed ADSP artifact is
+  `input: "none"` — `adsp-som-transaction-f551` is explicitly *"one power-on,
+  no-input ADSP DM/SOMCLK/SOMLATCH/GINT transaction"* at frame 551, and
+  `adsp-output-use-20261017` is `input: "none"` over frames 820-840 and
+  1100-1110.
+- **No ADSP instrument can even be pointed at service mode.**
+  `tools/mame-adsp-window --input` accepts
+  `{none,coin_start,sw_off_prestart,late,late_drive}`, and
+  `mame/lua/adsp-window.lua` carries event tables for exactly those four.
+  `capture-adsp-som-transaction` and `capture-adsp-output-use` expose no
+  `--input` at all. A `service` schedule already exists elsewhere in the tree
+  to copy — `mame/lua/gsp-vram-dump.lua` presses `:mainpcb:IN0` "Service Mode"
+  at frames 60 and 120.
+- **Nothing from service mode is ported.** `reproduction/adsp/` contains only
+  the SOM producer chain — `control_word`, `record_schedule`, `som_clamp`,
+  `som_producer`, `source_table`, `som_transaction` — and every one of them
+  derives from the single frame-551 normal-path capture. The routine the ROM
+  actually executes to decide *whether* the DSP is alive has never been read or
+  transcribed.
+
+**Why this is the cheapest thing to do next.** If the check is the ADSP's first
+invocation, a service-mode capture shows the *minimum* the DSP must do to be
+judged alive, which is a far smaller target than the normal-path geometry
+pipeline — and it bounds the emulator's scope before anyone writes one. If the
+ADSP has already been running before the check, the capture shows that instead,
+which is equally decisive and equally cheap. Either answer changes the design.
+Neither requires writing any ADSP code.
 
 Caveat for whoever wires this up: `STUNRUN_CAPTURE_FRAME=N` writes one PNG and
 the shell then **keeps running** unless `STUNRUN_FRAMES=N` is also given.
