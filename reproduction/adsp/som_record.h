@@ -71,6 +71,11 @@ typedef struct stunrun_adsp_som_record {
     uint16_t start_y;  /* DM(I0,M0) */
     const stunrun_adsp_som_span_t *spans;
     size_t span_count;
+    /* Surviving AX0 from the terminal pointer comparison in the walk. In the
+     * observed 9-record transaction the last record's value is written to
+     * GINT by the caller at PC $004C. */
+    uint16_t completion_ax0;
+    int completion_ax0_valid;
 } stunrun_adsp_som_record_t;
 
 /* Words the emitter writes for a record with `span_count` spans, including the

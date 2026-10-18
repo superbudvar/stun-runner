@@ -12,12 +12,12 @@
  * values; they are NOT a claim about the game's coordinate system, and the
  * colours are a documented ramp over one raw 16-bit field, not a palette.
  *
- * The one thing this does assert is derived, not drawn: the word stream. Each
- * record's 16 words come from the data-memory window and the coefficient table
- * alone, through stunrun_adsp_som_derive_record, with no measured value fed in.
- * Those words are then compared with the capture, and the comparison is reported
- * per record. If the C were wrong, the picture would be a picture of the wrong
- * thing, so `records_matching` is the number that matters, not the pixels.
+ * The word stream is derived from measured source-DM/PM inputs, sparse SIMBUF
+ * selector/coefficient words, source selection, the ring producer, and the SOM
+ * scan/walk. No ring, span list, interpolation result or record word is supplied
+ * as a derivation input. The resulting 146 SOM words and GINT value are compared
+ * with the capture; `records_matching` and `transaction_matches_capture` are the
+ * claims, not the pixels.
  *
  * See docs/mc68010-boot-findings.md sections 66-72.
  */
@@ -29,6 +29,7 @@
 #include "render.h"
 #include "som_fixture.h"
 #include "som_record.h"
+#include "som_transaction.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -75,13 +76,17 @@ typedef struct stunrun_adsp_som_view {
     unsigned records_matching;
     unsigned long run_rows_min;
     unsigned long run_rows_max;
+    stunrun_adsp_som_transaction_t transaction;
+    int transaction_matches_capture;
 } stunrun_adsp_som_view_t;
 
-/* Derive every captured record from the shared fixture and self-check it.
+/* Derive the frame-551 transaction through source-table production, SIMBUF
+ * selection, the two-pass ring transform, clipping, SOM walk/emit and the bus
+ * envelope; compare the derived record and transaction streams with capture.
  *
- * Inputs are DM($0030..$0045) and the coefficient table and nothing else: no
- * pointer, no span list, no side value. Each record's word stream is then
- * compared with the captured SOMLATCH words.
+ * Entry DM/SIMBUF/PM operands and the record-start schedule are the shared
+ * measured fixtures. No ring, span list, interpolated side value or record word
+ * is supplied as an input to the derivation.
  *
  * Returns 1 on success. Returns 0, writing nothing, on a NULL argument or if
  * any record fails to derive, emit, or fit -- a partial view would be a picture

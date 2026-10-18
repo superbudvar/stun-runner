@@ -114,15 +114,43 @@ write stream. `source_producer_fixture.c` keeps these operands and expectations
 separate from the implementation. The observed `SE=-2` staging shift is
 captured for this path; other incoming shift states are rejected.
 
+`som_source_table.c` composes that routine into the bounded absolute table used
+by the selector. `som_selector_fixture.c` contains only a sparse synthetic
+`mainpcb:user1` word image populated at the captured selector and coefficient
+addresses; it does not contain a commercial ROM image. Selector starts and the
+control word remain explicit captured entry inputs, rather than inferred caller
+semantics.
+
 `adsp-som-source-select-slice-c` now builds the table with this producer,
 selects source tuples with `$01E8/$01B0`, then composes the `$04B2` transform
 and SOM walk. This reproduces the nine observed SOM records from the measured
-DM/SIMBUF/PM entry operands. It still does not derive those initial operands
-from the upstream caller, model the E8 MR2/caller-loop flags, exercise alternate
-branches, or reproduce SOM bank/address/GINT orchestration. The PM operands are
-same-run values, not read from the later run-end program image; the retained
-capture is `reference/experiments/stunrun/adsp-som-pm-reads-f551/run-1/result.json`
-and its repeat is `run-2/result.json`.
+DM/SIMBUF/PM entry operands. The transaction envelope below then composes the
+derived records into the captured SOM bank/address/GINT stream. The measured
+record-start schedule and control word remain entry inputs; the upstream
+dispatch that selects them and E8 MR2/caller-loop flags are not modeled, and
+alternate branches remain unsupported. The PM operands are same-run values,
+not read from the later run-end program image; the retained capture is
+`reference/experiments/stunrun/adsp-som-pm-reads-f551/run-1/result.json` and
+its repeat is `run-2/result.json`.
+
+## SOM bus transaction envelope (`som_transaction.c`)
+
+`som_transaction.c` wraps the nine derived 16-word records with the two
+observed zero prologue words, assigns each latch word its SOM address and
+opposite-bank destination, and emits the completion value after the 146th
+SOMLATCH write. The completion value is not a table constant: the SOM walk now
+retains its terminal `AX0`, checked against the same-run register snapshots at
+PC `$05D4`; the final record leaves `$0045`, which the caller writes to GINT at
+PC `$004C`. The captured `$0046` command word has request bit `$4000` set, so
+this bounded path asserts GINT. Other request states fail rather than pretending
+to reproduce another caller branch.
+
+The integrated source-selector CTest checks all 146 `(bank,address,value)`
+writes in order against the captured transaction and verifies GINT follows the
+last word. It uses selected bank 1, producer bank 0, and SOMCLK word 0 from the
+capture; the address-wrap rule is separately covered at the 8K-word boundary.
+This composes the observed transaction but does not emulate the host CPU's
+subsequent IRQ acknowledge or general ADSP scheduling.
 
 ## Looking at it: `./run.sh --adsp-som`
 

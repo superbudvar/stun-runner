@@ -53,6 +53,14 @@ static int report(const stunrun_adsp_som_view_t *view)
            view->run_rows_min, view->run_rows_max);
     printf("adsp-som: derived words matching the capture: %u/%u\n\n",
            view->records_matching, view->record_count);
+    printf("adsp-som: SOM bank %u -> %u, start %04X, %u latch writes; "
+           "GINT PC %04X data %04X after write %u: %s\n\n",
+           view->transaction.host_bank, view->transaction.producer_bank,
+           view->transaction.som_start_word,
+           (unsigned)view->transaction.som_write_count,
+           view->transaction.gint_pc, view->transaction.gint_value,
+           (unsigned)view->transaction.gint_after_write_count,
+           view->transaction_matches_capture ? "matches capture" : "MISMATCH");
 
     printf("  rec ctl   start_x  start_y  entry   spans  match   fields\n");
     for (i = 0; i < view->record_count; i++) {
@@ -71,6 +79,8 @@ static int report(const stunrun_adsp_som_view_t *view)
         if (!record->matches_capture)
             all_match = 0;
     }
+    if (!view->transaction_matches_capture)
+        all_match = 0;
 
     if (!all_match) {
         fprintf(stderr,

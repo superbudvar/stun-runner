@@ -14,13 +14,18 @@
 #include "som_producer.h"
 #include "source_producer_fixture.h"
 #include "som_source_select.h"
+#include "som_selector_fixture.h"
+#include "som_source_table.h"
+#include "som_transaction.h"
 #include "som_walk.h"
 
-#define DM_BASE 0x010au
-#define DM_WORDS 60u
-#define USER1_BASE_WORD 0u
-#define USER1_WORDS 0x199cau
+#define DM_BASE STUNRUN_ADSP_SOM_SOURCE_TABLE_BASE
+#define DM_WORDS STUNRUN_ADSP_SOM_SOURCE_TABLE_WORDS
+#define USER1_BASE_WORD STUNRUN_ADSP_SOM_SELECTOR_ROM_BASE_WORD
+#define USER1_WORDS STUNRUN_ADSP_SOM_SELECTOR_ROM_WORDS
 #define RECORDS 9u
+#define USER1 (stunrun_adsp_som_selector_fixture_rom())
+#define SIMCLK_START (stunrun_adsp_som_selector_fixture_simclk_starts())
 #define RECORD_DM_BASE STUNRUN_ADSP_SOM_FIXTURE_DM_BASE
 #define RECORD_DM_WORDS STUNRUN_ADSP_SOM_FIXTURE_DM_WORDS
 #define RECORD_WORDS STUNRUN_ADSP_SOM_FIXTURE_REC_WORDS
@@ -40,34 +45,11 @@ static int failures;
  * source tuple table. */
 static uint16_t DM_TABLE[DM_WORDS];
 
-/* Sparse synthetic user1 word image: only the observed MP=1 SIMBUF stream
- * and the two observed $04B2 coefficient words are populated. */
-static const uint16_t USER1[USER1_WORDS] = {
-    [0x1208Cu] = 0x07DEu,
-    [0x123ACu] = 0x072Du,
-    [0x1999Du] = 0x000Bu,[0x1999Eu] = 0x0001u,
-    [0x1999Fu] = 0x0002u,[0x199A0u] = 0x0003u,[0x199A1u] = 0xFFFFu,
-    [0x199A2u] = 0x000Cu,[0x199A3u] = 0x0004u,
-    [0x199A4u] = 0x0002u,[0x199A5u] = 0x0005u,[0x199A6u] = 0xFFFFu,
-    [0x199A7u] = 0x000Du,[0x199A8u] = 0x0003u,
-    [0x199A9u] = 0x0002u,[0x199AAu] = 0x0004u,[0x199ABu] = 0xFFFFu,
-    [0x199ACu] = 0x000Eu,[0x199ADu] = 0x0006u,
-    [0x199AEu] = 0x0002u,[0x199AFu] = 0x0001u,[0x199B0u] = 0xFFFFu,
-    [0x199B1u] = 0x000Fu,[0x199B2u] = 0x0005u,
-    [0x199B3u] = 0x0002u,[0x199B4u] = 0x0007u,[0x199B5u] = 0xFFFFu,
-    [0x199B6u] = 0x0010u,[0x199B7u] = 0x0008u,
-    [0x199B8u] = 0x0002u,[0x199B9u] = 0x0009u,[0x199BAu] = 0xFFFFu,
-    [0x199BBu] = 0x0011u,[0x199BCu] = 0x0007u,
-    [0x199BDu] = 0x0002u,[0x199BEu] = 0x000Au,[0x199BFu] = 0xFFFFu,
-    [0x199C0u] = 0x0012u,[0x199C1u] = 0x0009u,
-    [0x199C2u] = 0x0002u,[0x199C3u] = 0x0006u,[0x199C4u] = 0xFFFFu,
-    [0x199C5u] = 0x0013u,[0x199C6u] = 0x0008u,
-    [0x199C7u] = 0x000Au,[0x199C8u] = 0x0002u,[0x199C9u] = 0xFFFFu,
-};
-
-static const uint16_t SIMCLK_START[RECORDS] = {
-    0x999Du,0x99A2u,0x99A7u,0x99ACu,0x99B1u,
-    0x99B6u,0x99BBu,0x99C0u,0x99C5u,
+/* AX0 at each captured PC $05D4, from the same-run register companion. The
+ * final record's value survives to PC $004C and is the observed GINT payload. */
+static const uint16_t EXPECTED_COMPLETION_AX0[RECORDS] = {
+    0x0045u,0x0041u,0x0041u,0x0045u,0x0041u,
+    0x0043u,0x0043u,0x0043u,0x0045u
 };
 
 static const uint16_t EXPECTED_WEIGHTS[RECORDS][STUNRUN_ADSP_SOM_WEIGHT_WORDS] = {
@@ -99,27 +81,19 @@ static int build_dm_table(void)
 {
     const stunrun_adsp_source_fixture_t *fixture =
         stunrun_adsp_source_fixture();
-    uint32_t first_pm[STUNRUN_ADSP_SOURCE_FIRST_PM_READS];
-    uint32_t second_pm[STUNRUN_ADSP_SOURCE_SECOND_PM_READS];
-    uint16_t writes[STUNRUN_ADSP_SOURCE_TOTAL_WRITES];
 
-    if (!stunrun_adsp_source_fixture_fill_pm(first_pm, second_pm) ||
-        !stunrun_adsp_source_produce(
-            fixture->simbuf_words, STUNRUN_ADSP_SOURCE_SIMBUF_READS, -2,
-            first_pm, STUNRUN_ADSP_SOURCE_FIRST_PM_READS,
-            fixture->first_aux_words, STUNRUN_ADSP_SOURCE_FIRST_WRITES,
-            second_pm, STUNRUN_ADSP_SOURCE_SECOND_PM_READS, writes) ||
-        !same_words(writes, fixture->expected_dm_writes,
-                    STUNRUN_ADSP_SOURCE_TOTAL_WRITES))
+    if (!stunrun_adsp_som_build_source_table(DM_TABLE, DM_WORDS, DM_BASE))
         return 0;
-
-    memset(DM_TABLE, 0, sizeof(DM_TABLE));
-    memcpy(&DM_TABLE[0x010du - DM_BASE], writes, sizeof(writes));
-    return 1;
+    return same_words(&DM_TABLE[0x010du - DM_BASE],
+                      fixture->expected_dm_writes,
+                      STUNRUN_ADSP_SOURCE_TOTAL_WRITES);
 }
 
 static void test_composed_source_selection_and_som_derivation(void)
 {
+    uint16_t all_record_words[RECORDS][RECORD_WORDS];
+    uint16_t final_ax0 = 0u;
+    int final_ax0_valid = 0;
     size_t record_index;
 
     for (record_index = 0; record_index < RECORDS; record_index++) {
@@ -163,12 +137,49 @@ static void test_composed_source_selection_and_som_derivation(void)
             dm, RECORD_DM_WORDS, RECORD_DM_BASE,
             stunrun_adsp_som_fixture_pm(), STUNRUN_ADSP_SOM_FIXTURE_PM_WORDS,
             spans, 8u, &record));
+        check(record.completion_ax0_valid);
+        if (record.completion_ax0 != EXPECTED_COMPLETION_AX0[record_index])
+            printf("completion AX0 record=%zu got=%04X expected=%04X\n",
+                   record_index + 1u, record.completion_ax0,
+                   EXPECTED_COMPLETION_AX0[record_index]);
+        check(record.completion_ax0 ==
+              EXPECTED_COMPLETION_AX0[record_index]);
+        final_ax0 = record.completion_ax0;
+        final_ax0_valid = record.completion_ax0_valid;
         check(stunrun_adsp_som_emit_record(&record, som_words,
                                            RECORD_WORDS) == RECORD_WORDS);
         check(same_words(som_words,
-                         stunrun_adsp_som_fixture_expected(
-                             (unsigned)record_index),
-                         RECORD_WORDS));
+                          stunrun_adsp_som_fixture_expected(
+                              (unsigned)record_index),
+                          RECORD_WORDS));
+        memcpy(all_record_words[record_index], som_words, sizeof(som_words));
+    }
+
+    {
+        stunrun_adsp_som_transaction_t transaction;
+        size_t word;
+        check(stunrun_adsp_som_transaction_build(
+            &all_record_words[0][0], RECORDS * RECORD_WORDS,
+            1u, 0u, final_ax0_valid, final_ax0, 0x4000u, &transaction));
+        check(transaction.host_bank == 1u);
+        check(transaction.producer_bank == 0u);
+        check(transaction.som_start_word == 0u);
+        check(transaction.som_write_count == STUNRUN_ADSP_SOM_TRANSACTION_WORDS);
+        check(transaction.writes[0].address_word == 0u &&
+              transaction.writes[0].value == 0u);
+        check(transaction.writes[1].address_word == 1u &&
+              transaction.writes[1].value == 0u);
+        for (word = 0; word < RECORDS * RECORD_WORDS; ++word) {
+            size_t slot = word + STUNRUN_ADSP_SOM_TRANSACTION_PROLOGUE_WORDS;
+            check(transaction.writes[slot].address_word == slot);
+            check(transaction.writes[slot].value ==
+                  all_record_words[word / RECORD_WORDS][word % RECORD_WORDS]);
+        }
+        check(transaction.gint_written == 1);
+        check(transaction.gint_pc == 0x004cu);
+        check(transaction.gint_value == 0x0045u);
+        check(transaction.gint_after_write_count ==
+              STUNRUN_ADSP_SOM_TRANSACTION_WORDS);
     }
 }
 

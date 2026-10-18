@@ -16,9 +16,12 @@
  *      is not the criterion;
  *   6. rejection of NULL and of a short record list, rather than a partial view.
  *
- * Inputs are the shared fixture (reproduction/adsp/som_fixture.c), whose own
- * invariants are checked by tools/check-adsp-som-fixture. See
- * docs/mc68010-boot-findings.md sections 66-72.
+ * Inputs include the record/math fixture (`som_fixture.c`), sparse observed
+ * selector words (`som_selector_fixture.c`), and measured source producer
+ * operands (`source_producer_fixture.c`). No ring, span or record output is
+ * supplied to the derivation. The record fixture's invariants are checked by
+ * `tools/check-adsp-som-fixture`. See
+ * docs/mc68010-boot-findings.md sections 66-72 and 92-95.
  */
 #include <stdio.h>
 #include <string.h>
@@ -83,7 +86,21 @@ static void test_builds_and_matches_capture(void)
     check(view.total_words == 144u);
     check(view.total_spans == 18u);
     check(view.records_matching == STUNRUN_ADSP_SOM_FIXTURE_RECORDS);
+    check(view.transaction_matches_capture);
+    check(view.transaction.host_bank == 1u);
+    check(view.transaction.producer_bank == 0u);
+    check(view.transaction.som_start_word == 0u);
+    check(view.transaction.som_write_count ==
+          STUNRUN_ADSP_SOM_TRANSACTION_WORDS);
+    check(view.transaction.writes[0].value == 0u);
+    check(view.transaction.writes[1].value == 0u);
+    check(view.transaction.gint_written);
+    check(view.transaction.gint_pc == 0x004cu);
+    check(view.transaction.gint_value == 0x0045u);
+    check(view.transaction.gint_after_write_count ==
+          STUNRUN_ADSP_SOM_TRANSACTION_WORDS);
     for (i = 0; i < view.record_count; i++) {
+        unsigned word;
         check(view.records[i].matches_capture);
         check(view.records[i].word_count ==
               STUNRUN_ADSP_SOM_FIXTURE_REC_WORDS);
@@ -96,6 +113,13 @@ static void test_builds_and_matches_capture(void)
         check(view.records[i].start_y == WANT_START_Y[i]);
         check(view.records[i].entry_i1 == WANT_ENTRY[i]);
         check(view.records[i].entry_i2 == WANT_ENTRY[i]);
+        for (word = 0; word < STUNRUN_ADSP_SOM_FIXTURE_REC_WORDS; word++) {
+            unsigned bus_slot = STUNRUN_ADSP_SOM_TRANSACTION_PROLOGUE_WORDS +
+                i * STUNRUN_ADSP_SOM_TRANSACTION_RECORD_WORDS + word;
+            check(view.transaction.writes[bus_slot].address_word == bus_slot);
+            check(view.transaction.writes[bus_slot].value ==
+                  view.records[i].words[word]);
+        }
     }
     check(view.run_rows_min == 1u);
     check(view.run_rows_max == 8u);

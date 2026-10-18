@@ -216,6 +216,16 @@ add_executable(stunrun-native-shell
   ../reproduction/adsp/adsp_init_image.c
   ../reproduction/adsp/adsp_control_seq.c
   ../reproduction/adsp/adsp_upload_stream.c
+  ../reproduction/adsp/som_clamp.c
+  ../reproduction/adsp/som_math.c
+  ../reproduction/adsp/som_producer.c
+  ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_source_select.c
+  ../reproduction/adsp/som_source_table.c
+  ../reproduction/adsp/som_transaction.c
+  ../reproduction/adsp/som_walk.c
+  ../reproduction/adsp/source_producer.c
+  ../reproduction/adsp/source_producer_fixture.c
   ../reproduction/maincpu/fifo_block.c
   ../reproduction/gsp/text_cursor.c
   ../reproduction/gsp/text_record.c
@@ -498,6 +508,17 @@ set_target_properties(stunrun-adsp-som-clamp-slice-test PROPERTIES
   C_STANDARD 99 C_STANDARD_REQUIRED ON)
 add_test(NAME adsp-som-clamp-slice-c
   COMMAND stunrun-adsp-som-clamp-slice-test)
+# SOM bus envelope: opposite bank, wrapping SOM word addresses, and the
+# completion write after the bounded nine-record latch stream.
+add_executable(stunrun-adsp-som-transaction-slice-test
+  ../reproduction/adsp/som_transaction.c
+  ../reproduction/adsp/som_transaction_test.c)
+target_include_directories(stunrun-adsp-som-transaction-slice-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-som-transaction-slice-test PROPERTIES
+  C_STANDARD 99 C_STANDARD_REQUIRED ON)
+add_test(NAME adsp-som-transaction-slice-c
+  COMMAND stunrun-adsp-som-transaction-slice-test)
 # Bounded ADSP $04B2 two-pass source transform: DM source tuples, MP=1 SIMBUF
 # coefficient reads, and the pass-2 ring update, checked through the SOM walk.
 add_executable(stunrun-adsp-som-producer-slice-test
@@ -535,6 +556,9 @@ add_executable(stunrun-adsp-som-source-select-test
   ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/som_source_select.c
+  ../reproduction/adsp/som_selector_fixture.c
+  ../reproduction/adsp/som_source_table.c
+  ../reproduction/adsp/som_transaction.c
   ../reproduction/adsp/som_walk.c
   ../reproduction/adsp/source_producer.c
   ../reproduction/adsp/source_producer_fixture.c
@@ -547,14 +571,23 @@ add_test(NAME adsp-som-source-select-slice-c
   COMMAND stunrun-adsp-som-source-select-test)
 # View of the ADSP SOM producer's derived output, so the reproduction slices can
 # be looked at rather than only read about: `./run.sh --adsp-som`. Needs no ROM,
-# no MAME and no Verilator, because the transaction it derives is committed under
-# reference/. It draws decoded record FIELDS -- the GSP's consumer of the record
-# is not decoded, so no coordinate space and no colour meaning is claimed.
+# no MAME and no Verilator, because the measured inputs and expected transaction
+# are retained in reference/ and reproduction/adsp/. It draws decoded record
+# FIELDS -- the GSP consumer is not decoded, so no coordinate space or colour
+# meaning is claimed.
 add_executable(stunrun-adsp-som-view-test
   ../reproduction/adsp/som_fixture.c
+  ../reproduction/adsp/som_clamp.c
   ../reproduction/adsp/som_math.c
+  ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_selector_fixture.c
+  ../reproduction/adsp/som_source_select.c
+  ../reproduction/adsp/som_source_table.c
+  ../reproduction/adsp/som_transaction.c
   ../reproduction/adsp/som_walk.c
+  ../reproduction/adsp/source_producer.c
+  ../reproduction/adsp/source_producer_fixture.c
   adsp_som_view.c
   render.c
   adsp_som_view_test.c)
@@ -569,9 +602,17 @@ add_test(NAME adsp-som-view-slice-c COMMAND stunrun-adsp-som-view-test)
 # a machine with no ROMs and no Verilator at all.
 add_executable(stunrun-adsp-som-view
   ../reproduction/adsp/som_fixture.c
+  ../reproduction/adsp/som_clamp.c
   ../reproduction/adsp/som_math.c
+  ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/som_selector_fixture.c
+  ../reproduction/adsp/som_source_select.c
+  ../reproduction/adsp/som_source_table.c
+  ../reproduction/adsp/som_transaction.c
   ../reproduction/adsp/som_walk.c
+  ../reproduction/adsp/source_producer.c
+  ../reproduction/adsp/source_producer_fixture.c
   adsp_som_view.c
   adsp_som_main.c
   render.c)

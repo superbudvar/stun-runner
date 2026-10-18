@@ -194,6 +194,8 @@ int stunrun_adsp_som_derive_record(
     built.start_y = walk.start_y;
     built.spans = spans;
     built.span_count = walk.span_count;
+    built.completion_ax0 = walk.final_ax0;
+    built.completion_ax0_valid = walk.final_ax0_valid;
     *record = built;
     return 1;
 }
@@ -223,6 +225,8 @@ int stunrun_adsp_som_walk_record(
     result.start_y = 0u;
     result.span_count = 0u;
     result.terminated = 0;
+    result.final_ax0 = 0u;
+    result.final_ax0_valid = 0;
 
     reg_i1.length = length;
     reg_i2.length = length;
@@ -300,6 +304,11 @@ int stunrun_adsp_som_walk_record(
 
             /* $0589/$05A9/$05C3 converge here: I7 += 5, then compare the two
              * chain pointers and stop when they meet. */
+            /* The instruction pair just before each compare copies I4 to AF
+             * and I0 to AX0. A subsequent tail guard can terminate without
+             * another compare, so retain this last copied value. */
+            result.final_ax0 = reg_i0.index;
+            result.final_ax0_valid = 1;
             if (reg_i4.index == reg_i0.index) {
                 result.terminated = 1;
                 break;

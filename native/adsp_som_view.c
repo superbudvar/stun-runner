@@ -3,6 +3,12 @@
 
 #include <string.h>
 
+#include "som_clamp.h"
+#include "som_producer.h"
+#include "som_selector_fixture.h"
+#include "som_source_select.h"
+#include "som_source_table.h"
+#include "source_producer_fixture.h"
 #include "som_walk.h"
 
 /* Layout. The interesting structure is a run-length encoding: each record is a
@@ -180,25 +186,75 @@ void stunrun_adsp_som_view_side_color(uint16_t side_hi, uint8_t *red,
 
 int stunrun_adsp_som_view_build(stunrun_adsp_som_view_t *view)
 {
+    uint16_t dm_table[STUNRUN_ADSP_SOM_SOURCE_TABLE_WORDS];
+    uint16_t all_record_words[STUNRUN_ADSP_SOM_TRANSACTION_RECORDS *
+                              STUNRUN_ADSP_SOM_TRANSACTION_RECORD_WORDS];
+    const uint16_t *object_rom = stunrun_adsp_som_selector_fixture_rom();
+    const uint16_t *simclk_starts =
+        stunrun_adsp_som_selector_fixture_simclk_starts();
     unsigned index;
     size_t total_words = 0;
+    uint16_t final_ax0 = 0u;
+    int final_ax0_valid = 0;
 
     if (view == NULL)
         return 0;
     memset(view, 0, sizeof(*view));
 
+    if (!stunrun_adsp_som_build_source_table(
+            dm_table, STUNRUN_ADSP_SOM_SOURCE_TABLE_WORDS,
+            STUNRUN_ADSP_SOM_SOURCE_TABLE_BASE))
+        return 0;
+
     for (index = 0; index < STUNRUN_ADSP_SOM_FIXTURE_RECORDS; index++) {
-        const uint16_t *dm = stunrun_adsp_som_fixture_dm(index);
+        const uint16_t *captured_dm = stunrun_adsp_som_fixture_dm(index);
         const uint16_t *expected = stunrun_adsp_som_fixture_expected(index);
         stunrun_adsp_som_view_record_t *record = &view->records[index];
         stunrun_adsp_som_span_t spans[STUNRUN_ADSP_SOM_VIEW_MAX_SPANS];
+        stunrun_adsp_som_source_selection_t selected;
         stunrun_adsp_som_record_t derived;
+        uint16_t source_dm[STUNRUN_ADSP_SOM_SOURCE_WORDS];
+        uint16_t pass1[STUNRUN_ADSP_SOM_RING_WORDS];
+        uint16_t ring[STUNRUN_ADSP_SOM_RING_WORDS];
+        uint16_t clipped_ring[STUNRUN_ADSP_SOM_RING_WORDS];
+        uint16_t dm[STUNRUN_ADSP_SOM_FIXTURE_DM_WORDS];
         size_t span;
 
-        if (dm == NULL || expected == NULL) {
+        if (captured_dm == NULL || expected == NULL) {
             memset(view, 0, sizeof(*view));
             return 0;
         }
+
+        if (!stunrun_adsp_som_select_source_window(
+                dm_table, STUNRUN_ADSP_SOM_SOURCE_TABLE_WORDS,
+                STUNRUN_ADSP_SOM_SOURCE_TABLE_BASE,
+                object_rom, STUNRUN_ADSP_SOM_SELECTOR_ROM_WORDS,
+                STUNRUN_ADSP_SOM_SELECTOR_ROM_BASE_WORD, 1u,
+                simclk_starts[index], &selected)) {
+            memset(view, 0, sizeof(*view));
+            return 0;
+        }
+        memcpy(source_dm, selected.source_words,
+               STUNRUN_ADSP_SOM_SOURCE_WINDOW_WORDS * sizeof(*source_dm));
+        /* The captured $04C9 prefetch is outside the selected 9-word window;
+         * retain its measured value as an explicit bounded input. */
+        source_dm[STUNRUN_ADSP_SOM_SOURCE_WINDOW_WORDS] = 0u;
+        if (!stunrun_adsp_som_produce_ring(
+                source_dm, STUNRUN_ADSP_SOM_SOURCE_WORDS, 0x0040u, 0x0040u,
+                object_rom, STUNRUN_ADSP_SOM_SELECTOR_ROM_WORDS,
+                STUNRUN_ADSP_SOM_PASS2_GUARD,
+                STUNRUN_ADSP_SOM_PASS2_Y_MULTIPLIER, pass1, ring) ||
+            !stunrun_adsp_som_clamp_ring(
+                ring, STUNRUN_ADSP_SOM_RING_WORDS, clipped_ring)) {
+            memset(view, 0, sizeof(*view));
+            return 0;
+        }
+
+        memcpy(dm, captured_dm, sizeof(dm));
+        memcpy(&dm[0x0040u - STUNRUN_ADSP_SOM_FIXTURE_DM_BASE],
+               clipped_ring, sizeof(clipped_ring));
+        dm[STUNRUN_ADSP_SOM_CNTR_ADDR - STUNRUN_ADSP_SOM_FIXTURE_DM_BASE] =
+            selected.dm0039;
         memset(spans, 0, sizeof(spans));
         if (!stunrun_adsp_som_derive_record(
                 dm, STUNRUN_ADSP_SOM_FIXTURE_DM_WORDS,
@@ -261,6 +317,10 @@ int stunrun_adsp_som_view_build(stunrun_adsp_som_view_t *view)
             }
         }
         total_words += record->word_count;
+        memcpy(&all_record_words[index * STUNRUN_ADSP_SOM_TRANSACTION_RECORD_WORDS],
+               record->words, sizeof(record->words));
+        final_ax0 = derived.completion_ax0;
+        final_ax0_valid = derived.completion_ax0_valid;
     }
 
     view->record_count = STUNRUN_ADSP_SOM_FIXTURE_RECORDS;
@@ -268,6 +328,43 @@ int stunrun_adsp_som_view_build(stunrun_adsp_som_view_t *view)
      * $0035/$0039, which no slice here produces. Getting this far means the
      * nine records came out whole, which is the same statement. */
     if (total_words + 2u != 146u) {
+        memset(view, 0, sizeof(*view));
+        return 0;
+    }
+    if (!stunrun_adsp_som_transaction_build(
+            all_record_words, total_words, 1u, 0u,
+            final_ax0_valid, final_ax0, STUNRUN_ADSP_SOM_GINT_REQUEST_MASK,
+            &view->transaction)) {
+        memset(view, 0, sizeof(*view));
+        return 0;
+    }
+    view->transaction_matches_capture =
+        view->transaction.host_bank == 1u &&
+        view->transaction.producer_bank == 0u &&
+        view->transaction.som_write_count ==
+            STUNRUN_ADSP_SOM_TRANSACTION_WORDS &&
+        view->transaction.gint_written &&
+        view->transaction.gint_value == 0x0045u;
+    for (index = 0; view->transaction_matches_capture &&
+                     index < STUNRUN_ADSP_SOM_TRANSACTION_WORDS; ++index) {
+        uint16_t expected_word;
+        if (index < STUNRUN_ADSP_SOM_TRANSACTION_PROLOGUE_WORDS) {
+            expected_word = 0u;
+        } else {
+            size_t record_index =
+                (index - STUNRUN_ADSP_SOM_TRANSACTION_PROLOGUE_WORDS) /
+                STUNRUN_ADSP_SOM_TRANSACTION_RECORD_WORDS;
+            size_t word_index =
+                (index - STUNRUN_ADSP_SOM_TRANSACTION_PROLOGUE_WORDS) %
+                STUNRUN_ADSP_SOM_TRANSACTION_RECORD_WORDS;
+            expected_word = stunrun_adsp_som_fixture_expected(
+                (unsigned)record_index)[word_index];
+        }
+        if (view->transaction.writes[index].address_word != index ||
+            view->transaction.writes[index].value != expected_word)
+            view->transaction_matches_capture = 0;
+    }
+    if (!view->transaction_matches_capture) {
         memset(view, 0, sizeof(*view));
         return 0;
     }

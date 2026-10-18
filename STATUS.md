@@ -98,21 +98,22 @@ live-prefix regression are now in place (`stun-runner-3vb` closed).
 transcribes the captured two-pass tuple transform: it resolves three `SIMCLK`
 addresses through the `/MP=1` object-ROM word window, reproduces all 54
 pass-1/pass-2 ring writes, and composes the derived rings with the existing SOM
-scan/walk to match all nine 16-word records. The source DM tuple window is still
-supplied from the capture; caller-side production, alternate branches, clamp,
-SOM/GINT orchestration, and native-shell wiring remain open. This is not an
-integrated ADSP/gameplay replacement. See findings §92 and
-`reproduction/adsp/README.md`.
+scan/walk to match all nine 16-word records. The source DM table and selected
+tuples are now produced from bounded captured DM/SIMBUF/PM operands; the record
+schedule, control word and selector starts remain measured entry inputs.
+Alternate branches, `$04EB-$04FD` wrapper state, and live gameplay scheduling
+remain open. See findings §92-95 and `reproduction/adsp/README.md`.
 
 **ADSP source-table C slice (2026-10-17).** `reproduction/adsp/source_producer.c`
 now derives the 57 observed `$015C/$0171` writes in `$0147-$0173` from the
 same-run DM/SIMBUF/PM operands. The composed source-selector test constructs
 that table before selecting tuples and walking SOM records. The transaction
 artifact retains two repeated same-seed captures with 171 PM read events each.
-Upstream caller inputs, E8 MR2/caller-loop behavior, alternate branches,
-the `$04EB-$04FD` caller wrapper and `$0663` mode, SOM/GINT orchestration, and
-native-shell wiring remain open;
-`stun-runner-alo` is not complete. See findings §93 and
+The record schedule, control word, selector starts, and entry data for the
+upstream dispatch remain measured inputs; E8 MR2/caller-loop flags, alternate
+branches, `$04EB-$04FD` wrapper state and live gameplay scheduling remain
+unmodeled. The single-transaction SOM/GINT envelope is now composed below.
+See findings §93 and
 `reproduction/adsp/README.md`.
 
 **ADSP ring clamp slice (2026-10-18).** `reproduction/adsp/som_clamp.c` now
@@ -121,6 +122,22 @@ the SOM walk. The frame-551 oracle path leaves all 54 ring words unchanged;
 synthetic boundary vectors cover the disassembled saturation branches, which
 remain unobserved at runtime. The preceding `$04EB-$04FD` caller logic and
 alternate `$0663` mode are still open. See findings §94.
+
+**ADSP transaction envelope (2026-10-18).** The C path now composes the complete
+two-zero-prologue plus nine-record SOMLATCH stream with opposite-bank addresses,
+then derives GINT `$0045` from the final record's walk `AX0`, not a completion
+table. Per-record final `AX0` values match same-run PC `$05D4` snapshots; the
+command request bit at PC `$0046` remains an explicit captured entry input. The
+ROM-free `./run.sh --adsp-som` diagnostic view now uses this full derivation
+path. This is still not live gameplay/ADSP scheduling, and non-captured caller
+modes remain unmodeled. See findings §95 and `adsp-som-view-slice-c`.
+
+**Fixture checker cross-checks the oracle capture (2026-10-18).**
+`tools/check-adsp-som-fixture` no longer relies only on identities internal to
+the transcription: it verifies the committed capture's 146-word stream against
+its own recorded digest and requires the nine fixture records to appear at that
+stream's offsets, so a uniformly wrong record can no longer pass. A negative
+control corrupts a single side value. See findings §96.
 
 Distinct from M5. The GSP has no ROM: `mainpcb:user1` is the ADSP object ROM,
 and the 68010 programs the GSP through VRAM. Until a GSP executes, the display

@@ -69,6 +69,8 @@ typedef struct stunrun_adsp_som_walk {
                          * by whichever exit: the pointers meeting at
                          * $058E or a guard failing at $0594/$059A/
                          * $05B4/$05CE */
+    uint16_t final_ax0; /* AX0 left by the last $058C/$05AC/$05C6 I0 copy */
+    int final_ax0_valid; /* false when the prologue guard jumps to $05D1 */
 } stunrun_adsp_som_walk_t;
 
 /* Walk one record's spans, including the two interpolated side values.
