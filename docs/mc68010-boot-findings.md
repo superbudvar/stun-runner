@@ -16563,3 +16563,131 @@ Recorded because both produced numbers that looked fine.
    mistake a second time**, in the same shape: boundary sampling of a
    frame-periodic wait, read as state. The integral counters were the
    trustworthy instrument and the histogram was not.
+
+## 118. Service mode never enters the self-test; the native draws one string and loops
+
+Answers §117.5 by mapping **code to screens**. The service-mode screen set is
+readable straight out of the ROM, and the native's behaviour against it is a
+single unambiguous screen.
+
+### 118.1 Every service screen, from the ROM
+
+The 360-entry string pointer table at `$10136` holds **321** strings. The
+self-test flow, by index:
+
+| index | screen |
+|---|---|
+| `0x47` | `PRESS START TO BYPASS SELFTEST` |
+| `0x49` | `USING THE TEST MENU:` |
+| `0x15`/`0x16` | `STUN RUNNER VERSION V20.2` / `COPYRIGHT ATARI GAMES 1989` |
+| `0x19`–`0x1f` | `MAIN BOARD GSP TESTS` / `ROM CHECKSUMS` / `ZRAM TEST` / `ADSP BOARD TESTS` / `SOUND BOARD TESTS` / `PROCESSOR STATUS DATA` |
+| `0x2b` | `VRAM SIMPLE TEST: 18 SECONDS` |
+| `0x2c` | `VRAM VERIFY TEST: 90 SECONDS` |
+| `0x2d` | `VRAM COMPLETE TEST: 11 MINUTES` |
+| `0x11c`/`0x66` | `COLOR RAM LOOP TEST` / `GSP COLOR RAM TEST IN PROGRESS` |
+| `0xdb`–`0xe0` | `ADSP RAM TESTED BY 68010.` / `ADSP PROGRAM MEMORY TEST .2100.` / `ADSP DATA MEMORY TEST .2100.` / `2100 TEST` / `IRQ TEST` / `ROM CHECKSUMS` |
+| **`0x5e`** | **`ADSP TEST: 35 SECS - 3 MINS`** |
+| `0x5f`/`0x60`/`0x61`/`0x62` | `ADSP BOARD OK` / `BAD ADSP RAM` / `ADSP-2100 DOES NOT RESPOND` / `BAD ADSP ROM CHECKSUM` |
+| `0x63` | `PRESS START TO SELECT TEST MENU` |
+| `0xe2`–`0xe9` | `2100 RESPONDS` / `2100 IRQS OK` / `NO 2100 IRQS` / `ADSP TIMEOUT` / `ADSP TEST ABORTED` |
+| `0xeb`–`0xf1` | six ADSP chip checksums + `LOC. CHKSUM EXPECT` |
+
+**Frame budgets must respect those pauses.** `18 SECONDS`, `90 SECONDS`,
+`11 MINUTES`, `35 SECS - 3 MINS` are ~1080, ~5400, ~39,600 and ~2100 frames.
+A "run 4800 frames and look" cannot see the end of the VRAM verify test, let
+alone the 11-minute one. This is why §117's 4800-frame service measurement is
+a *lower* bound on what MAME reaches, not a ceiling.
+
+### 118.2 The native draws exactly one screen
+
+`STUNRUN_PC_HIST` (per-instruction, so §117.6's sampling caveat does not
+apply), `--service`, 4800 frames:
+
+```text
+total instructions retired: 43,301,004   distinct PCs: 565
+  in the $13EC /VSYNCB wait: 40,453,271  (93.42%)
+  $13EC entered 4,705 times, $1416 (rts) 4,706 times   <- vsync completes每frame
+  $25E8 text drawer: 1      $2638 char loop: 30
+  text-drawing stub $5092: 1              (index 0x47, 30 chars)
+```
+
+The boot chain is a callback chain (`lea (6,PC),A0` + `bra`, returning via
+`jmp (A0)`), and it stops after the first string:
+
+```text
+$506C  movea.l #$ffffc000,A7     ; reset entry
+$5076  bra $53F2 -> $548E -> $54C2
+$508A  move.w #$47,D0 ; jmp $25e8 ; draw "PRESS START TO BYPASS SELFTEST"
+$5098  bra $6086
+$608C  btst #$5, $60c001.l      ; 0x0020 = SELF-TEST
+$609C  btst #$2, $a80001.l      ; bit2 = IPT_START1 (harddriv.cpp:1123-1127)
+$60A6  jmp $0f94
+```
+
+`$50a0` (index `0x54`), `$566a` and `$56e6` are **not executed**. So the native
+never reaches `USING THE TEST MENU:`, never reaches the board tests, and never
+reaches the ADSP board test at all.
+
+Polarity note, because I got it backwards first: `PORT_SERVICE(0x20,
+IP_ACTIVE_LOW)` means bit 5 **clear is Service Mode pressed**. `IN0=0xC7` does
+assert service mode, the native does draw the prompt, and the `btst #5` taking
+`beq` is correct behaviour, not a bug.
+
+### 118.3 Where it then sits
+
+`$0f94` is the ADSP handshake init, and the native stays in it:
+
+```text
+$0F94  entry reached once
+$0FF8  clr.w $801e.w   ... $1010 clr.w $8086.w   (7 clears, once)
+$1032  bsr $1368        4,704 times
+$1036  tst.w $8036.w    4,705 times
+```
+
+So the 68010 clears the seven handshake flags once and then re-enters the
+`$1032` loop every frame. **This is the stall.**
+
+`$8036` is at address `0x8036`, inside MAME's `map(0x000000, 0x0fffff).rom()`
+— absolute-short addressing, so it is **ROM, not the ADSP window at
+`0x800000`**. The bytes there are ASCII text (`$801e`="ER", `$8036`="AT",
+`$8056`="68", `$8086`="0."), all non-zero, so `tst.w $8036.w` is never zero
+and the `beq $105a` at `$103a` is never taken on either machine.
+
+**And MAME never reaches that loop.** Read+write tap on `0x8000-0x80ff`,
+service arm, 4800 frames: **256 accesses**, from `$60d8` (128) and `$6138`
+(128) — **none from `$1036`**. So the divergence is upstream of `$0f94`, in
+whichever branch MAME takes at or before `$609c` that the native does not.
+
+`$60ac` (the branch the native does *not* take) is the ADSP board-test driver
+proper: `lea $5ff6.l,A1`, `D4 = D2 * $12`, `tst.w (A1,D4.w)`, `cmpi.w #$7,D2`,
+`movea.l ($6,A1,D4.w),A0` — a table of eight `$12`-byte test descriptors, i.e.
+the self-test menu. MAME plausibly goes there instead of `$0f94`.
+
+**Open.** Which read differs. `btst #$2, $a80001.l` is the last branch before
+the split and the native takes the `clear` arm; the native's own comment at
+`musashi_cpu.c:2090-2096` records that stubbing this port to `0xff` once sent
+the build down the *diagnostics* path at `$4dae`, so this port has already
+caused one wrong-turn. The next measurement is a PC-range count around
+`$609c`/`$60ac` on both machines, not another boundary sample.
+
+### 118.4 Normal boot is a different machine entirely
+
+Same instrument, no `--service`, 4800 frames:
+
+| | service | normal |
+|---|---:|---:|
+| instructions retired | 43,301,004 | 205,556,986 |
+| distinct PCs | 565 | **5,332** |
+| `$0f94` (ADSP handshake) | entered | **never executed** |
+
+Service mode executes **nine times less code** than normal boot, because it
+never leaves the entry prompt. Normal boot runs the game and runs further than
+service mode does — the opposite of what a working self-test looks like.
+
+### 118.5 What this costs the §117 conclusion
+
+§117 said the 68010 "reaches none of the ADSP work". That stands for the data
+window and the status register, but it is now sharper: the native never even
+reaches the code that *starts* the ADSP handshake, because it is one screen
+behind. The §117 table (1 vs 319,298 writes) is a symptom three stages
+downstream of the actual divergence.
