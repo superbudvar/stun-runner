@@ -118,6 +118,27 @@
       "observation_only": true,
       "purpose": "MD-12 triage. internal_regs_map exposes offsets 0x00-0x1ff while m_IOregs holds 64 entries and IOREG() indexes it unmasked. Prints sizeof(m_IOregs), the byte delta to m_shiftreg, and where each out-of-bounds offset actually lands, rather than inferring it from the class layout.",
       "added": "2026-10-14, authored outside this session; recorded by tests/test_mame_local_patches.py, which failed on it as designed"
+    },
+    {
+      "tag": "STUNRUN_CPU_WCOUNT",
+      "files": [
+        "src/mame/atari/harddriv.h",
+        "src/mame/atari/harddriv_m.cpp",
+        "src/mame/atari/harddriv.cpp"
+      ],
+      "function": "harddriv_state::init_cpu_wcount",
+      "env": [
+        "STUNRUN_CPU_WCOUNT",
+        "STUNRUN_CPU_WCOUNT_START",
+        "STUNRUN_CPU_WCOUNT_END",
+        "STUNRUN_CPU_WCOUNT_FROM",
+        "STUNRUN_CPU_WCOUNT_PC",
+        "STUNRUN_CPU_WCOUNT_AT",
+        "STUNRUN_CPU_WCOUNT_STEP"
+      ],
+      "observation_only": true,
+      "purpose": "Count 68010 writes into one address window, with the issuing PC. Lua memory taps do not fire on this 68010 in this build -- install_read_tap and install_write_tap both report zero over ranges the same arm writes heavily (0x00C00000, 780,315 writes natively) -- so no Lua tap result is usable and the C++ passthrough tap is required. Exists to settle the $0209E4 contradiction: harddriv.cpp:603 maps 0x608000-0x60bfff write-only to the watchdog and the ROM stores there ending every pass of the $0209DA countdown, so a zero count would be inconsistent with leaving that loop. Installed as a passthrough tap so the existing handler still runs; armed only when STUNRUN_CPU_WCOUNT_START is set. Reports on NOTIFY_EXIT. See findings section 115.",
+      "added": "2026-10-18"
     }
   ],
   "behaviour_changes": [

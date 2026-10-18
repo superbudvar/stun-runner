@@ -16239,3 +16239,83 @@ it settles what boundary PC sampling cannot. Note the caution this raises for
 frame's cycles, so *being sampled inside it* is unremarkable and the 36-frame
 edge may still be a phase artefact. It needs the same integral treatment
 before it is trusted.
+
+## 115. The watchdog cadence matches; §110.2's 36-frame "divergence" is a sampling artefact
+
+Settles the contradiction `8b365b8` would not explain away, and withdraws
+§110.2's headline.
+
+### 115.1 The instrument, and why it had to be C++
+
+Lua memory taps do not work on this 68010 in this pinned build.
+`install_read_tap` and `install_write_tap` both reported **zero** over ranges
+the same arm writes heavily — a control at `0x00C00000`, where native counts
+780,315 writes. `manager.machine.debugger` exposes no methods either, so
+watchpoints are unavailable from Lua too. Nothing may be concluded from either
+zero; both were dead instruments, not measurements.
+
+So the tap is a C++ passthrough: `STUNRUN_CPU_WCOUNT`, in
+`harddriv_state::init_cpu_wcount()`, installed alongside `init_adsp()`,
+observation-only, armed only when `STUNRUN_CPU_WCOUNT_START` is set. Recorded
+in `analysis/mame-local-patches.json` as tag `STUNRUN_CPU_WCOUNT`;
+`tests/test_mame_local_patches.py` passes. The MAME binary was rebuilt:
+`sha256 7816d35a271b824e…`, previously `55956f2b26c0d5ca…`. **Do not compare a
+capture across the two.**
+
+### 115.2 The measurement
+
+Same arm (`--input none`), same 320 frames, same window `0x608000-0x60BFFF`:
+
+| | writes to the watchdog window |
+|---|---:|
+| MAME | **1263** |
+| native | **1259** |
+
+A difference of **4 in ~1260, 0.3%**. The `$0209E4` store happens, at the same
+rate, on both. Writer-PC histogram on the MAME side:
+
+```text
+  900  pc=000006A0
+  256  pc=000209E4     <- the watchdog store, confirmed
+   96  pc=0000066E
+    5  pc=0002241C
+    1  pc=00022454
+```
+
+`8b365b8`'s `watchdog-w=0` was §114's destroyed-CPU read, not a modelling
+result, and its `$209E4` disassembly — checked against MAME's own listing — was
+right. Its provisional retraction is withdrawn, and so is mine.
+
+### 115.3 §110.2's 36-frame edge is withdrawn
+
+The loop at `$0209E0` exits about **four times per frame** and occupies roughly
+a fifth of a frame's cycles. Being *sampled inside it* at a frame boundary is
+therefore unremarkable, and "the last frame at which the boundary sample landed
+in the loop" is a phase artefact, not a behavioural difference. The integrals
+agree; the phase sampling did not mean what it appeared to.
+
+This also disposes of the caution §110.4 itself raised. §110's frame rate
+measurement (59.50 vs 59.952 Hz) and the IRQ5 period (32,768 cycles, exact) both
+survive — they were correct, they were just not the explanation. What survives
+of §110 is that the PC tracks the oracle and the cycle budget is right; the
+divergence claim does not.
+
+### 115.4 Where the ADSP question now stands
+
+§109 is re-confirmed on a live instance: with the same 320-frame run, every
+ADSP counter is zero while the watchdog and sound-reset counters are non-zero.
+So the 68010 really does not touch any ADSP window — program, data, buffer,
+control or status — on either path.
+
+The `/GINT` mechanism probe (`STUNRUN_ADSP_PROBE_GINT`, `shell.c`) works and
+holds: asserted at frame 100 it reads back `irq=1` and stays `adsp-irq=1`
+through frame 400. What it has **not** yet done is change the service screen:
+with the flag set, frame 4300 still renders `hash=0x7D611DC5 lit=0 colours=0`.
+
+That null result is now trustworthy in a way it was not before, because the
+counter plumbing underneath it is fixed. So the ROM does not reach its
+`ADSP-2100 DOES NOT RESPOND` verdict by polling the status register we
+identified — at least not on the frame we chose. Two readings remain open: the
+probe fires too early or too late for the check that is actually running, or
+the ROM reads something else entirely. The next step is to sweep the probe
+frame rather than guess one, which is cheap and can only be informative.
