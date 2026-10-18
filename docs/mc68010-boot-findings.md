@@ -15546,3 +15546,81 @@ by `f=1692`). The **service** arm, however, shows the ADSP leaving `$0014` at
 4300. So either the release has a second cause, or the service run releases
 later than the window measured. §106.3 should be read as scoped to the normal
 path until a run extending past ~4300 settles it.
+
+## 108. The ADSP contract with the GSP is empty — the 68010 is the only intermediary
+
+§107 established the ADSP<->68010 interface from the pinned source. This
+settles the third leg, and it is a negative result worth having on the record.
+
+### 108.1 There is no ADSP-to-GSP path
+
+`m_som_memory[0x8000/2]` is a plain board array (`harddriv.h:386`). Across
+`src/mame/atari/*.cpp` it is touched in exactly three places:
+
+- `harddriv.cpp:498` — cleared at reset;
+- `harddriv_m.cpp:687` — written by `hdadsp_special_w` case 2, the ADSP's
+  **SOMLATCH** pin, at `(bank^1)*0x2000 + (m_adsp_som_address++ & 0x1fff)`;
+- `harddriv_m.cpp:680` — read by `hd68k_adsp_buffer_r`, the 68010's window.
+
+**Nothing else reads it. The GSP never does.** The ADSP device's whole
+connection to the rest of the board is `adsp_program_map` and `adsp_data_map`
+plus those pins; there is no ADSP-to-GSP wiring in the driver at all.
+
+### 108.2 So the chain is
+
+```text
+ADSP  --SOMLATCH-->  m_som_memory[bank^1]
+                          |
+                          |  68010 reads  hd68k_adsp_buffer_r (0x810000-0x813FFF)
+                          v
+                        68010   <-- /GINT (IPL2, autovector 26, $0213FE)
+                          |
+                          |  host port: HSTADR / HSTDAT / HSTCTL  (0x00C00000)
+                          v
+                         GSP   --VRAM-->  scanout
+```
+
+The GSP is fed **exclusively by the 68010**. That reframes the standing worry
+that "we don't know when or why the ADSP talks to the GSP": it never does.
+Every ADSP->GSP effect is mediated by 68010 code we can read and transcribe.
+
+### 108.3 What is established, leg by leg
+
+**ADSP <-> 68010** — from the pinned source plus measurement (§106, §107):
+
+| direction | mechanism | MAME site |
+|---|---|---|
+| 68010 -> ADSP | program RAM upload, `$00000000-$00007FFF` on the ADSP side | `hd68k_adsp_program_r/w` :615 |
+| 68010 -> ADSP | data window `0x808000-0x80BFFF` | `hd68k_adsp_data_r/w` :651 |
+| 68010 <- ADSP | SOM output window `0x810000-0x813FFF`, `0x2000` words/bank x 4 | `hd68k_adsp_buffer_r/w` :680 |
+| 68010 -> ADSP | control: reset, `/HALT`, `/BR`, buffer bank, LEDs — **bit 3 of offset is the value, data ignored** | `hd68k_adsp_control_w` :751 |
+| 68010 -> ADSP | clear the DSP interrupt | `hd68k_adsp_irq_clear_w` :817 |
+| 68010 <- ADSP | status `$FFFD` silent / `$FFFC` after /GINT / `$FFFF` after /XOUT (**unreachable**) | `hd68k_adsp_irq_state_r` :827 |
+| ADSP -> 68010 | /GINT at PM `$2006` -> IPL2 -> autovector 26 -> `$0213FE` | `hdadsp_special_w` :868 |
+| ADSP -> 68010 | release handshake: 68010 stores `$0000` to `DM($1FFF)` | measured, §106.3 (normal arm) |
+
+**ADSP -> GSP**: nothing. §108.1.
+
+**68010 <-> GSP**: the most heavily evidenced leg in the repository — host-port
+register encode, the display-list interpreter (`native/gsp_display_list.cpp`,
+ROM `$000225B0-0x00022748`), the ADSP-buffer->GSP FIFO block framing, and
+`tools/check-gsp-replay` byte-identical over 524,288 bytes.
+
+### 108.4 What is NOT established
+
+Three gaps, and they are implementation rather than specification:
+
+1. **The ADSP does not execute in our model** (`adsp pc=0 astat=0`). Everything
+   downstream of SOMLATCH is therefore starved, which is the §105 observation
+   that `REGION_ADSP_IRQ` is permanently `$FFFD`.
+2. **The 68010's SOM->GSP submission path is only partly transcribed.** The
+   display-list interpreter and the FIFO framing are ported; whether the
+   ROM's *per-frame* schedule for reading `m_som_memory` and submitting to the
+   GSP is ported is not established.
+3. **The `DM($1FFF)` release has a loose end** (§107.5): it explains the normal
+   arm and not the service arm's exit from `$0014` at frame 4298-4300.
+
+What is *not* on this list, and used to be: the interface itself. Before §107
+the shape of the ADSP<->68010 contract was unknown; it is now read directly off
+the driver, so item 1 is bounded by "`$004C` executes" rather than "figure out
+what an ADSP has to do".
