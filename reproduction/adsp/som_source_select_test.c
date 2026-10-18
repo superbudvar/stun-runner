@@ -13,6 +13,7 @@
 #include "som_clamp.h"
 #include "som_producer.h"
 #include "source_producer_fixture.h"
+#include "record_schedule.h"
 #include "som_source_select.h"
 #include "som_selector_fixture.h"
 #include "som_source_table.h"
@@ -25,11 +26,21 @@
 #define USER1_WORDS STUNRUN_ADSP_SOM_SELECTOR_ROM_WORDS
 #define RECORDS 9u
 #define USER1 (stunrun_adsp_som_selector_fixture_rom())
-#define SIMCLK_START (stunrun_adsp_som_selector_fixture_simclk_starts())
 #define RECORD_DM_BASE STUNRUN_ADSP_SOM_FIXTURE_DM_BASE
 #define RECORD_DM_WORDS STUNRUN_ADSP_SOM_FIXTURE_DM_WORDS
 #define RECORD_WORDS STUNRUN_ADSP_SOM_FIXTURE_REC_WORDS
 #define RING_OFFSET (0x0040u - RECORD_DM_BASE)
+
+/* DM($0034) as $0174 finds it: one measured caller input. The routine's own
+ * origin for it is the SIMBUF read at $0172, which is upstream of this slice. */
+#define SCHEDULE_ENTRY_DM0034 0x9989u
+
+/* The nine starts the capture latched at $01A7. These are the ORACLE, compared
+ * against what record_schedule derives from the object-ROM pointer chain; the
+ * selection below then runs on the DERIVED values, not on these. */
+#define CAPTURED_STARTS (stunrun_adsp_som_selector_fixture_simclk_starts())
+
+static stunrun_adsp_record_schedule_t schedule;
 
 static int failures;
 
@@ -89,6 +100,24 @@ static int build_dm_table(void)
                       STUNRUN_ADSP_SOURCE_TOTAL_WRITES);
 }
 
+/* Derive the record schedule from the object ROM, then check it against what
+ * the capture latched at $01A7 before anything downstream uses it. */
+static int build_schedule(void)
+{
+    size_t index;
+
+    if (!stunrun_adsp_record_schedule_run(
+            USER1, USER1_WORDS, USER1_BASE_WORD, 1u,
+            SCHEDULE_ENTRY_DM0034, &schedule))
+        return 0;
+    if (schedule.record_count != RECORDS)
+        return 0;
+    for (index = 0; index < RECORDS; ++index)
+        if (schedule.passes[index].record_start != CAPTURED_STARTS[index])
+            return 0;
+    return 1;
+}
+
 static void test_composed_source_selection_and_som_derivation(void)
 {
     uint16_t all_record_words[RECORDS][RECORD_WORDS];
@@ -107,9 +136,12 @@ static void test_composed_source_selection_and_som_derivation(void)
         uint16_t dm[RECORD_DM_WORDS];
         uint16_t som_words[RECORD_WORDS];
 
+        /* The start comes from the DERIVED schedule, not from the captured
+         * array; build_schedule() already compared the two. */
         check(stunrun_adsp_som_select_source_window(
             DM_TABLE, DM_WORDS, DM_BASE, USER1, USER1_WORDS,
-            USER1_BASE_WORD, 1u, SIMCLK_START[record_index], &selected));
+            USER1_BASE_WORD, 1u, schedule.passes[record_index].record_start,
+            &selected));
         memcpy(source_dm, selected.source_words,
                STUNRUN_ADSP_SOM_SOURCE_WINDOW_WORDS * sizeof(*source_dm));
         /* PC $04C9 reads the unused final x prefetch from DM[$0049]. The
@@ -192,14 +224,15 @@ int main(void)
     size_t record;
 
     check(build_dm_table());
+    check(build_schedule());
     if (failures != 0)
         return 1;
 
     for (record = 0; record < RECORDS; record++) {
         check(stunrun_adsp_som_select_source_window(
             DM_TABLE, DM_WORDS, DM_BASE,
-            USER1, USER1_WORDS, USER1_BASE_WORD, 1u, SIMCLK_START[record],
-            &out));
+            USER1, USER1_WORDS, USER1_BASE_WORD, 1u,
+            schedule.passes[record].record_start, &out));
         check(same_words(out.source_words, EXPECTED_SOURCE[record],
                          STUNRUN_ADSP_SOM_SOURCE_WINDOW_WORDS));
         check(same_words(out.weight_words, EXPECTED_WEIGHTS[record],
@@ -218,7 +251,7 @@ int main(void)
     altered_user1[0x1999Fu] = 0x0003u;
     check(stunrun_adsp_som_select_source_window(
         DM_TABLE, DM_WORDS, DM_BASE,
-        altered_user1, USER1_WORDS, USER1_BASE_WORD, 1u, SIMCLK_START[0],
+        altered_user1, USER1_WORDS, USER1_BASE_WORD, 1u, schedule.passes[0].record_start,
         &changed));
     check(!same_words(changed.source_words, EXPECTED_SOURCE[0],
                       STUNRUN_ADSP_SOM_SOURCE_WINDOW_WORDS));
@@ -227,23 +260,23 @@ int main(void)
     altered_table[0x10Du - DM_BASE] = 0u;
     check(stunrun_adsp_som_select_source_window(
         altered_table, DM_WORDS, DM_BASE,
-        USER1, USER1_WORDS, USER1_BASE_WORD, 1u, SIMCLK_START[0], &changed));
+        USER1, USER1_WORDS, USER1_BASE_WORD, 1u, schedule.passes[0].record_start, &changed));
     check(changed.source_words[0] == 0u);
 
     /* Unsupported branch/count shapes and truncated object/DM windows reject
      * rather than return plausible-looking source words. */
     check(!stunrun_adsp_som_select_source_window(
         DM_TABLE, DM_WORDS, DM_BASE,
-        USER1, USER1_WORDS, USER1_BASE_WORD, 0u, SIMCLK_START[0], &changed));
+        USER1, USER1_WORDS, USER1_BASE_WORD, 0u, schedule.passes[0].record_start, &changed));
     check(!stunrun_adsp_som_select_source_window(
         DM_TABLE, DM_WORDS, DM_BASE,
-        USER1, 0x199A1u, USER1_BASE_WORD, 1u, SIMCLK_START[0], &changed));
+        USER1, 0x199A1u, USER1_BASE_WORD, 1u, schedule.passes[0].record_start, &changed));
     check(!stunrun_adsp_som_select_source_window(
         DM_TABLE, 8u, DM_BASE,
-        USER1, USER1_WORDS, USER1_BASE_WORD, 1u, SIMCLK_START[0], &changed));
+        USER1, USER1_WORDS, USER1_BASE_WORD, 1u, schedule.passes[0].record_start, &changed));
     check(!stunrun_adsp_som_select_source_window(
         DM_TABLE, DM_WORDS, DM_BASE,
-        USER1, USER1_WORDS, USER1_BASE_WORD, 1u, SIMCLK_START[0], NULL));
+        USER1, USER1_WORDS, USER1_BASE_WORD, 1u, schedule.passes[0].record_start, NULL));
 
     test_composed_source_selection_and_som_derivation();
 

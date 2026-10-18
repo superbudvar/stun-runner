@@ -3,6 +3,7 @@
 
 #include <string.h>
 
+#include "record_schedule.h"
 #include "som_clamp.h"
 #include "som_producer.h"
 #include "som_selector_fixture.h"
@@ -184,14 +185,20 @@ void stunrun_adsp_som_view_side_color(uint16_t side_hi, uint8_t *red,
     }
 }
 
+/* DM($0034) as $0174 found it in the frame-551 run, read from the capture at
+ * PC $0179. One measured caller input; its own origin is the SIMBUF read at
+ * $0172, which is upstream of the schedule routine. */
+#define STUNRUN_ADSP_VIEW_SCHEDULE_ENTRY_DM0034 0x9989u
+
 int stunrun_adsp_som_view_build(stunrun_adsp_som_view_t *view)
 {
     uint16_t dm_table[STUNRUN_ADSP_SOM_SOURCE_TABLE_WORDS];
     uint16_t all_record_words[STUNRUN_ADSP_SOM_TRANSACTION_RECORDS *
                               STUNRUN_ADSP_SOM_TRANSACTION_RECORD_WORDS];
     const uint16_t *object_rom = stunrun_adsp_som_selector_fixture_rom();
-    const uint16_t *simclk_starts =
+    const uint16_t *captured_starts =
         stunrun_adsp_som_selector_fixture_simclk_starts();
+    stunrun_adsp_record_schedule_t schedule;
     unsigned index;
     size_t total_words = 0;
     uint16_t final_ax0 = 0u;
@@ -205,6 +212,21 @@ int stunrun_adsp_som_view_build(stunrun_adsp_som_view_t *view)
             dm_table, STUNRUN_ADSP_SOM_SOURCE_TABLE_WORDS,
             STUNRUN_ADSP_SOM_SOURCE_TABLE_BASE))
         return 0;
+
+    /* The record starts are derived from the object-ROM pointer chain, not read
+     * from the captured array; the array is only the oracle they are checked
+     * against. */
+    if (!stunrun_adsp_record_schedule_run(
+            object_rom, STUNRUN_ADSP_SOM_SELECTOR_ROM_WORDS,
+            STUNRUN_ADSP_SOM_SELECTOR_ROM_BASE_WORD, 1u,
+            STUNRUN_ADSP_VIEW_SCHEDULE_ENTRY_DM0034, &schedule))
+        return 0;
+    if (schedule.record_count != STUNRUN_ADSP_SOM_FIXTURE_RECORDS)
+        return 0;
+    for (index = 0; index < STUNRUN_ADSP_SOM_FIXTURE_RECORDS; index++) {
+        if (schedule.passes[index].record_start != captured_starts[index])
+            return 0;
+    }
 
     for (index = 0; index < STUNRUN_ADSP_SOM_FIXTURE_RECORDS; index++) {
         const uint16_t *captured_dm = stunrun_adsp_som_fixture_dm(index);
@@ -230,7 +252,7 @@ int stunrun_adsp_som_view_build(stunrun_adsp_som_view_t *view)
                 STUNRUN_ADSP_SOM_SOURCE_TABLE_BASE,
                 object_rom, STUNRUN_ADSP_SOM_SELECTOR_ROM_WORDS,
                 STUNRUN_ADSP_SOM_SELECTOR_ROM_BASE_WORD, 1u,
-                simclk_starts[index], &selected)) {
+                schedule.passes[index].record_start, &selected)) {
             memset(view, 0, sizeof(*view));
             return 0;
         }

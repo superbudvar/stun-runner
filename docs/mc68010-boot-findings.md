@@ -14081,3 +14081,278 @@ deterministic capture on that reasoning would have been the opposite error.
 untouched (it predates this session and is the author's call to delete); it is
 safe to remove because every event in it is already committed under
 `m5-object-pointer-deref-correlation/`.
+
+## 98. `$0174-$01A9` is the record walk, and its exit is the RTS at `$0187` — not the `$019F` test
+
+`reproduction/adsp/record_schedule.c` transcribes the bounded ADSP-2100 routine at
+`$0174-$01A9`. It is the routine the frame-551 producer runs between `CALL $0174`
+at `$00AB` and the return to `$00AC`: a walk over a stride-2 pointer chain in the
+object ROM that reads two words per pass, latches a record start, and derives two
+six-bit fields from the second word. Its output is the per-record
+`DM($2001)` start plus `DM($0036)`, `DM($0035)` and `DM($0038)`, the pass and
+record counts, and the DM state the routine leaves behind.
+
+**The exit the capture actually took was the RTS at `$0187`, not the `IF EQ` at
+`$019F`.** Both were open readings before this slice, and they are not the same
+path: `$019F` runs *after* `$019B` has already advanced `DM($0034)`, while
+`$0187` is reached from `$0186` and returns before any of that. The evidence is
+in the tenth pass. `[ROM]` The capture's last events for the routine are, in
+`seq` order:
+
+```text
+seq=986848 pc=$017A R addr=$0034 data=$999B
+seq=986849 pc=$017B W addr=$2001 data=$999B
+seq=986850 pc=$017E W addr=$0038 data=$0000
+seq=986851 pc=$017F R addr=$2000 data=$0000
+seq=986852 pc=$0182 R addr=$2000 data=$0000
+seq=986853 pc=$00AC R addr=$002E data=$0000
+```
+
+`seq=986853` is the instruction *after* `CALL $0174`, so the routine returned to
+`$00AC` — which only `$0187`'s RTS can do, because `$0174` has exactly one
+caller and one return site. There is no `$019B`, `$01A0`, `$01A6` or `$01A7`
+event after `seq=986852` in the whole 4,009-event window. So the tenth pass
+leaves `DM($0034)` at `$999B`, leaves `DM($2001)` at `$999B` (the pointer `$017B`
+latched, not a record start), and does not rewrite `DM($0036)` or `DM($0035)`.
+The nine starts are `$999D $99A2 $99A7 $99AC $99B1 $99B6 $99BB $99C0 $99C5`, each
+with `DM($0036)=$0002` and `DM($0035)=$0001`.
+
+**Verbatim transcription.** From `tools/disasm-adsp` over the frame-551
+program image, MAME's own disassembler (`2100dasm.cpp`) compiled standalone
+against the shim in `tools/emu_shim.py`, so the decoding is MAME's and cannot
+drift:
+
+```text
+0x0174  0x0034000b  L3 = $0000
+0x0175  0x00380008  L4 = $0000
+0x0176  0x00380009  L5 = $0000
+0x0177  0x0038000a  L6 = $0000
+0x0178  0x0038000b  L7 = $0000
+0x0179  0x00900348  DM($0034) = SI
+0x017a  0x00800345  AY1 = DM($0034)
+0x017b  0x00920015  DM($2001) = AY1
+0x017c  0x00340009  L1 = $0000
+0x017d  0x0034000a  L2 = $0000
+0x017e  0x00940389  DM($0038) = L1
+0x017f  0x00820001  AX1 = DM($2000)
+0x0180  0x00401874  AY0 = $0187
+0x0181  0x00340008  L0 = $0000
+0x0182  0x00820008  SI = DM($2000)
+0x0183  0x000f10f4  SR = LSHIFT SI BY -12 (LO)
+0x0184  0x0022660f  AR = SR0 + AY0
+0x0185  0x000d080a  I4 = AR
+0x0186  0x000b000f  JUMP (I4)
+0x0187  0x000a000f  RTS
+0x0188  0x0018197f  JUMP $0197
+0x0189  0x00000000  NOP          (indices 2..14 are seven NOPs at $0189-$0195)
+0x0196  0x0018199f  JUMP $0199
+0x0197  0x00400014  AY0 = $0001
+0x0198  0x00900384  DM($0038) = AY0
+0x0199  0x00400020  AX0 = $0002
+0x019a  0x0022680f  AR = AX0 + AY1
+0x019b  0x0090034a  DM($0034) = AR
+0x019c  0x004003f4  AY0 = $003F
+0x019d  0x000d00a8  AR = SI
+0x019e  0x0023820f  AR = AR AND AY0
+0x019f  0x00181e40  IF EQ JUMP $01E4
+0x01a0  0x0090036a  DM($0036) = AR
+0x01a1  0x004003f4  AY0 = $003F
+0x01a2  0x000f10fa  SR = LSHIFT SI BY -6 (LO)
+0x01a3  0x0027860f  AF = SR0 AND AY0
+0x01a4  0x00263000  IF EQ AF = AF + 1
+0x01a5  0x0022100f  AR = AF
+0x01a6  0x0090035a  DM($0035) = AR
+0x01a7  0x00920011  DM($2001) = AX1
+0x01a8  0x001c1e8f  CALL $01E8
+0x01a9  0x00181e45  IF GE JUMP $01E4
+```
+
+Address range `$0174-$01A9` in `mainpcb:user1` / ADSP program space; source chip
+ADSP-2100, read out of the `adsp_pgm_memory` share. `[ROM]` **Provenance:** the
+same-run capture
+`reference/experiments/stunrun/adsp-som-pm-reads-f551/run-1/result.json`
+(sha256 `52d0c8fb9e235348368c4dc4d8898565a53bb575d7a618026c7662825865c1ce`,
+matching its `metadata.json`) is stock-behaviour MAME
+`75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06`, `input=none`,
+power-on with a disposable NVRAM seed, transaction at frame 551, 4,009
+untruncated `producer_events`. `run-2` carries the same transaction SHA-256
+`deaee6477ef283e756bdf81bfa6ecee14e9f29f83efded70216e7bd352d6e91c`. The
+disassembly image used above is a local `/tmp` artifact
+(`adsp-producer-semantics-same-run/out/adsp2100.bin`), which is not evidence on
+its own; what anchors it to committed data is that every PC it names — `$017A`,
+`$017B`, `$017E`, `$017F`, `$0182`, `$019B`, `$01A0`, `$01A6`, `$01A7` — appears
+in the capture at exactly the address and value the disassembly says, and the
+return to `$00AC` fixes the `$0186` target.
+
+**[ROM] The chain's words come from the ROM, not from the capture.**
+`tools/read-adsp-object-rom-words roms --index 0x9989 … 0x999c` re-reads the
+twenty pointer/field words from the six `mainpcb:user1` lanes and prints exactly
+the committed sparse image's values:
+
+```text
+0x9989 (word 0x19989): 0x999D    0x998a: 0xF002    0x998b: 0x99A2
+0x998c: 0xF002    0x998d: 0x99A7    0x998e: 0xF002    0x998f: 0x99AC
+0x9990: 0xF002    0x9991: 0x99B1    0x9992: 0xF002    0x9993: 0x99B6
+0x9994: 0xF002    0x9995: 0x99BB    0x9996: 0xF002    0x9997: 0x99C0
+0x9998: 0xF002    0x9999: 0x99C5    0x999a: 0xF002    0x999b: 0x0000
+0x999c: 0x0000
+```
+
+`--verify-fixture reproduction/adsp/som_selector_fixture.c --json` reports
+`status ok`, `fixture_addresses_checked 67`, `fixture_words 67`,
+`checks_failed []`, with the six lane sha256 values it read. The terminal
+`$999B/$999C` pair is a real ROM zero, not a missing word, and it is the only
+reason the walk stops.
+
+**Confirmed (disassembly + capture).** `$0174-$0178` clear L3-L7 and `$0179`
+stores SI into `DM($0034)`; `$017A/$017B` latch it into `DM($2001)`; `$017C/$017E`
+store zero into `DM($0038)` on every pass; `$017F/$0182` read two consecutive
+SIMBUF words, and the capture has `DM($0034)`/`DM($2001)` at `$9989` for the first
+of them; `$0183` is a **logical right shift by twelve** — `shift_op_imm()` takes
+the count as `(int8_t)op` and shifts right for a negative count, and `SR0` is the
+low half of the 32-bit SR (`2100ops.hxx:2180-2186`, `adsp2100.h:311-319`) [S10] —
+so `$0184`-`$0186` index `$0187 + (SI >> 12)`; `$0199/$019A/$019B` add two to the
+latched pointer and store it back; `$019C-$019E` mask `DM($0036)` to `SI AND
+$003F`; `$01A2/$01A3` mask `DM($0035)` to `(SI >> 6) AND $003F`; `$01A4` adds one
+only when that mask is zero; `$01A7` latches `AX1` as the record start. The tenth
+pass reads `$0000` twice, so `SI >> 12 == 0` and `$0186` lands on the RTS.
+
+**Inferred (reading, not measurement).** Two things:
+
+1. *That the SIMBUF read address is the value `$017B` latched.* `DM($2001)` is
+   `/SIMLD` and `DM($2000)` is `/SIMBUF` in MAME's map
+   (`harddriv.cpp:688-693`, `harddriv_m.cpp:842-903`) [S10][S7], and on the board
+   the read address is the latched one, auto-incrementing per read. **MAME does
+   not implement that**: `hdadsp_special_w`'s `case 1` is `/SIMLD` and does
+   nothing, while `hdadsp_special_r`'s `case 0` serves
+   `m_sim_memory[m_adsp_eprom_base + m_adsp_sim_address++]` from a shadow
+   variable that only `/SIMCLK` sets. So under MAME the latch has no effect at
+   all and the pointer advances purely by the two reads per pass. The two
+   readings produce identical results on all ten captured passes, because
+   `$019B` advances `DM($0034)` by exactly the two words the port consumes. The
+   slice models the latch, with the per-read increment the capture does show, and
+   **which of the two is the real board mechanism remains `UNKNOWN`** — this
+   evidence cannot separate them.
+2. *That `$0174`'s `L3`-`L7` clears and `$0179`'s `DM($0034) = SI` matter only
+   for entry.* The loop back-edge is `$01E1 IF EQ JUMP $017A`, i.e. the re-entry
+   point is `$017A`, so `$0174-$0179` run once. `[ROM]` Confirmed by the capture:
+   `$0179` has one event, `$017A` has ten.
+
+**`UNKNOWN`, and rejected in code rather than guessed.** Only two of the sixteen
+jump-table entries were executed:
+
+- **Index 0 → `$0187` RTS** — executed once, on the tenth pass, and proven by the
+  return to `$00AC`.
+- **Index 15 → `$0196` JUMP `$0199`** — executed nine times, and the ten `$019B`
+  events are its only `$0199`-path writes.
+
+The other fourteen are `UNKNOWN` at runtime:
+
+- **Index 1 → `$0188` JUMP `$0197`, `$0197` `AY0 = $0001`, `$0198` `DM($0038) =
+  AY0`.** The disassembly is unambiguous — `DM($0038)` would become `$0001` on
+  that pass — and `$01C4 AR = DM($0038)` / `$01C6 IF NE` read it immediately
+  afterwards, so the write is not dead. `[ROM]` But `[ROM]` `DM($0038)` has **ten
+  writes in the whole window and all ten are `$017E`'s zero**, so the index-1
+  path never ran and the slice refuses it. Whether the game ever produces a chain
+  word whose high nibble is 1 is `UNKNOWN`.
+- **Indices 2..14 → seven NOPs at `$0189-$0195`, falling into `$0196`.**
+  Behaviourally identical to index 15 in the disassembly, but also unexecuted, so
+  also refused.
+- **`$019F IF EQ JUMP $01E4`.** Requires index 15 with `SI AND $003F == 0`, e.g.
+  `$F000`. Never taken. `$01E4`'s `MR0 = DM($2000)` / `AR = NOT MR0` /
+  `IF NE JUMP $01E4` drain loop and the `$01DF` count-down that rejoins it are
+  outside this slice, so this exit is refused rather than followed.
+- **`$01A8 CALL $01E8` / `$01A9 IF GE JUMP $01E4`.** The E8 flags `$01A9` tests
+  come from a routine this slice does not model, so the decision is `UNKNOWN`.
+  `[ROM]` Never taken: there is no exit through `$01A9` in the capture. The slice
+  treats each pass as followed by exactly one more, which is what the capture
+  shows. `[ROM]` Corroborating detail outside the slice: `$01DF AR = DM($0035)`
+  has nine events and always reads `$0001`, which is consistent with `$01E0`/
+  `$01E1` re-entering at `$017A` whenever the count has reached one.
+
+**What the test asserts, and why.** `EXPECTED_TRACE` in
+`record_schedule_test.c` is the capture's own `producer_events`, filtered to the
+nine modelled PCs and left in `seq` order — 86 events, nine per record pass and
+five for the terminating pass — with no value supplied by the implementation.
+`flatten()` turns a run into the same `(pc, address, value)` sequence and the
+test compares element by element, so the assertion is on the ordered stream of
+latched DM values, not on a count. On top of that it asserts each `$017F`/`$0182`
+read came from the object-ROM word index `$10000 + $9989 + 2n` / `+1`, that both
+`DM($0038)` writes are `$0000`, that `pass_count` is 10 and `record_count` is 9,
+and that the exit leaves `DM($2001) == $999B` and `DM($0034) == $999B`. The last
+is the assertion that distinguishes the two `DM($2001)` stores: a `$0187` exit
+keeps the `$017B` pointer, not a record start.
+
+A second block runs a chain whose words appear nowhere in the captured fixture
+(`$F508`, `$F820`, `$F710`, `$F002`) and checks the derived values move with the
+words. That block exists because the captured field word is always `$F002`, which
+pins `DM($0036)` at `$0002` and `DM($0035)` at `$0001` and therefore cannot tell a
+`$003F` mask from a `$000F` one; the first version of it did not distinguish
+them and the corresponding mutant survived. Eighteen mutants were run and all
+eighteen failed the test: stride `+2`→`+1` and `+2`→`+4`; `DM($0036)` mask
+`$003F`→`$0037`, `→$000F`, `→$3F00`; `DM($0035)` mask `→$000F` and shift
+`>>6`→`>>4`; the `$01A4` `+1` made unconditional and removed; the `$019F` exit
+made unreachable; the index-15 test narrowed and removed; the jump index shifted
+`>>12`→`>>8`; `$01A7` made to store the latched pointer instead of `AX1`;
+`dm2001_final` made to hold `DM($0036)`; a record emitted on the terminating
+pass; the `$0182` read moved to the `$017F` address; and the reported next port
+address off by one. Rejection is checked for NULL rom, NULL out, `mp != 1`, a
+zero-length window, a base above the entry, an entry outside the `/MP=1` bank, a
+window cut inside the chain, and each unobserved branch — each verified to leave
+the output buffer byte-for-byte as the caller left it.
+
+**Limits.** This is one measured caller input (`DM($0034) = $9989`, whose own
+origin is the `SI = DM(I0,M0)` SIMBUF read at `$0172` and stays an input) and one
+chain. Nothing here assigns meaning to a record start, to `DM($0036)`,
+`DM($0035)` or `DM($0038)`. `dm0036_final` is what `$01A0` wrote and not what
+`DM($0036)` holds once the rest of the routine has run: `[ROM]` in this capture
+`DM($0036)` is written three times per record — `$01A0=$0002` (this slice), then
+`$0236` and `$01D0`, both `$0030`. The slice does not model `$01A8`'s E8 flags,
+the `$01E1` re-entry condition, `$01E4`'s drain, `$0214`/`$0271`/`$04B2`/`$04EB`/
+`$0663`, or any ADSP execution. It is not an ADSP emulator and it does not claim
+the record starts are objects, or that `DM($0035)` is a count of anything.
+
+**Refutation — how we got this wrong first.** Before delegating this slice I
+read the same capture and concluded the walk ends at `$019F IF EQ JUMP $01E4`,
+on this reasoning: the tenth pass reads `$0000` at `$0182`, `SI AND $003F` is
+therefore zero, and `$019F` is the branch that tests exactly that. The reading
+was confidently wrong, and the reasoning shows why: it was plausible, it fit
+the `$0000` read, and it was never checked against what happened **after** the
+tenth `$0182`. `[ROM]` The next event is `$00AC`, not `$019B`. `$019F` runs after
+`$019B` has already advanced `DM($0034)`, so a walk that exited there would have
+left a `$019B` event for the tenth pass; there is none anywhere in the 4,009
+events. The mistake was inferring control flow from the operand of a test
+instead of from the branch actually taken. Two habits would have caught it: read
+the event *after* the last one you care about, and check that a claimed exit has
+its own event.
+
+**Integration.** The schedule is now a derivation input to the composition
+rather than a fixture array: `adsp-som-source-select-slice-c` and the
+`--adsp-som` view call `stunrun_adsp_record_schedule_run()` and compare its
+derived starts against the captured `$01A7` values *before* selecting anything,
+then run the selection on the derived values. The captured array survives only as
+that oracle. Mutants of `record_schedule.c` — pointer stride `+2`→`+3`,
+`record_start` taking the latched pointer instead of `AX1`, and the jump index
+`>>12`→`>>8` — are all caught by the composed test at `build_schedule()`, so the
+composition is load-bearing rather than decorative. CTest target:
+`adsp-record-schedule-slice-c`.
+
+**One mutant that survives, and why no assertion can kill it.** `dm2001_final`
+and `dm0034_final` are equal on every accepted path: `$017B` copies `DM($0034)`
+into `DM($2001)` at the top of each pass, and the only exit is index 0, which
+returns before `$019B` could advance `DM($0034)`. Swapping the two therefore
+survives. This is not a weak assertion that needs strengthening — the two
+quantities are the same number, so no input and no oracle separates them. What
+the pair does decide is that the register was left on the *terminating pointer*
+rather than on the last record's start, and the test asserts that directly
+(`dm2001_final != passes[record_count - 1].record_start`). Both the header and
+the test now say so, so the next reader does not mistake one line for two
+independent pins.
+
+**Check command.** `cc -std=c99 -Wall -Wextra -Werror -pedantic -I
+reproduction/adsp reproduction/adsp/record_schedule.c
+reproduction/adsp/record_schedule_test.c
+reproduction/adsp/som_selector_fixture.c -o /tmp/recsched && /tmp/recsched`
+prints `PASS` and exits 0. The third source is the committed ROM fixture the test
+reads its chain words from; without it the test does not link. `ctest -R
+adsp-record-schedule-slice-c` runs it with the rest of the C suite.

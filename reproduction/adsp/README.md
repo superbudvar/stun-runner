@@ -89,6 +89,22 @@ branches; those saturation values were not observed in the captured run. The
 earlier `$04EB-$04FD` caller/early-return checks and the alternate `$0663` mode
 remain outside this slice.
 
+## Walking the record schedule (`record_schedule.c`)
+
+`record_schedule.c` transcribes `$0174-$01A9`, the routine that walks the
+stride-2 pointer chain out of the object ROM and produces each record's SIMBUF
+start. Its inputs are the sparse object-ROM words and one measured caller value,
+`DM($0034) = $9989`; its outputs are the nine latched starts, the `DM($0036)`/
+`DM($0035)`/`DM($0038)` writes, and the walk's exit. `$01A7` in the capture is
+what the test compares against, so the schedule is derived rather than supplied.
+
+Two things this slice deliberately does **not** do: it does not model `$01A8`'s
+call to `$01E8` or the flags `$01A9` tests, and it refuses the fourteen
+jump-table entries the capture never executed instead of transcribing them from
+the disassembly. Both are recorded as `UNKNOWN` in findings §98, which also
+carries the evidence that the walk exits through the `RTS` at `$0187` rather
+than the `IF EQ` at `$019F`.
+
 ## Selecting the three source tuples (`som_source_select.c`)
 
 The `$01E8/$01B0` data-side slice reads the measured MP=1 SIMBUF selector stream,

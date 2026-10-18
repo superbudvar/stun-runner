@@ -220,6 +220,7 @@ add_executable(stunrun-native-shell
   ../reproduction/adsp/som_math.c
   ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/record_schedule.c
   ../reproduction/adsp/som_source_select.c
   ../reproduction/adsp/som_source_table.c
   ../reproduction/adsp/som_transaction.c
@@ -547,6 +548,20 @@ set_target_properties(stunrun-adsp-source-producer-slice-test PROPERTIES
   C_STANDARD 99 C_STANDARD_REQUIRED ON)
 add_test(NAME adsp-source-producer-slice-c
   COMMAND stunrun-adsp-source-producer-slice-test)
+# Bounded ADSP $0174-$01A9 record schedule: the stride-2 object-ROM pointer
+# chain that produces each record's SIMBUF start and the walk's exit. Reads the
+# sparse object-ROM words; asserts every latched value against the captured
+# producer events.
+add_executable(stunrun-adsp-record-schedule-test
+  ../reproduction/adsp/record_schedule.c
+  ../reproduction/adsp/som_selector_fixture.c
+  ../reproduction/adsp/record_schedule_test.c)
+target_include_directories(stunrun-adsp-record-schedule-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-record-schedule-test PROPERTIES
+  C_STANDARD 99 C_STANDARD_REQUIRED ON)
+add_test(NAME adsp-record-schedule-slice-c
+  COMMAND stunrun-adsp-record-schedule-test)
 # Captured $01E8/$01B0 source-window selection: resolve two SIMBUF pointer
 # words and the sentinel-terminated point-index list into DM($0040..$0048).
 add_executable(stunrun-adsp-som-source-select-test
@@ -555,6 +570,7 @@ add_executable(stunrun-adsp-som-source-select-test
   ../reproduction/adsp/som_math.c
   ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
+  ../reproduction/adsp/record_schedule.c
   ../reproduction/adsp/som_source_select.c
   ../reproduction/adsp/som_selector_fixture.c
   ../reproduction/adsp/som_source_table.c
@@ -582,6 +598,7 @@ add_executable(stunrun-adsp-som-view-test
   ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/som_selector_fixture.c
+  ../reproduction/adsp/record_schedule.c
   ../reproduction/adsp/som_source_select.c
   ../reproduction/adsp/som_source_table.c
   ../reproduction/adsp/som_transaction.c
@@ -607,6 +624,7 @@ add_executable(stunrun-adsp-som-view
   ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/som_selector_fixture.c
+  ../reproduction/adsp/record_schedule.c
   ../reproduction/adsp/som_source_select.c
   ../reproduction/adsp/som_source_table.c
   ../reproduction/adsp/som_transaction.c

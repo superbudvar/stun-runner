@@ -139,6 +139,20 @@ its own recorded digest and requires the nine fixture records to appear at that
 stream's offsets, so a uniformly wrong record can no longer pass. A negative
 control corrupts a single side value. See findings §96.
 
+**ADSP record schedule slice (`stun-runner-e4l`, 2026-10-18).**
+`reproduction/adsp/record_schedule.c` transcribes `$0174-$01A9` and now derives
+the nine record starts from the object-ROM pointer chain plus one measured
+`DM($0034)` input, so the source-selector composition and the `--adsp-som` view
+take a derived schedule rather than a captured array (which survives only as the
+oracle they are checked against). The commit that licensed the input words,
+`60576c4`, added `tools/read-adsp-object-rom-words`: all 67 populated words of
+the sparse fixture are re-verified against the six `mainpcb:user1` lanes, and
+`oracle-test` now runs that check. Two corrections landed with the slice: the
+walk exits via the `RTS` at `$0187`, not the `IF EQ` at `$019F` (our earlier
+reading, refuted in §98), and `DM($0035)` is the inner count-down `$01DF` tests,
+not only a field `$01A6` writes. The `DM($0036) = $0030` control word still comes
+from `$0236`, which is not transcribed. See findings §98.
+
 **Untracked `m5-vehicle-pointer-correlation/` is not committable (2026-10-18).**
 It is the same measurement as the committed
 `m5-object-pointer-deref-correlation/` with a narrower read-PC filter: zero read
