@@ -54,12 +54,26 @@ comparison is between two scanout implementations over the shell's available
 board state.
 
 **Superseded for the live path.** `./run.sh` now presents the Verilated core's
-own output: 84,337 nonzero words, `core-set=[DPYSTRT DPYCTL]`,
-`lit=122880/122880 colours=225`, and captured PNGs show the game's screen (a
-logo band and text rows), stable across frames 500/700/900. Findings §39.
-Judging this by `hash=` alone is not possible — every wrong-origin defect here
-produced a stable hash; use `lit=`/`colours=`. Still open in §39.6: colour
-equality against MAME, a sheared image, and the unresolved cycle offset.
+own output: **84,787** nonzero words, `core-set=[DPYSTRT DPYCTL]`, and the
+render is recognisably the game's **title screen** — logo band, craft, top and
+bottom text rows. Judging this by `hash=` alone is not possible — every
+wrong-origin defect here produced a stable hash; use `lit=`/`colours=`.
+
+> **§39's numbers are the pre-§40 baseline and no longer describe this build.**
+> §39 recorded `board vram nonzero words=84337` and
+> `lit=122880/122880 colours=225`. 84,787 is the expected post-§40.4 value
+> (§40.9 item 3). `lit=`/`colours=` re-measured 2026-10-18: **`lit=41094/122880
+> colours=252`**, identical at frames 600/900/1200/1800 and across two fresh
+> runs. `lit=122880` was §39's *unvalidated gold palette* filling the frame —
+> "fully lit", not "fully drawn". Findings §100.
+
+Still open: colour equality against MAME (§39.6 item 1 — the palette is still
+wrong; the gradient background renders black, not the MAME pink/red), the
+sheared/vertically-offset image (§39.6 item 2 — **re-confirmed** 2026-10-18 by
+`tools/compare-frame --frame 480`, 122,146/122,880 differing pixels; see §100),
+and the unresolved cycle offset (§39.6 item 3). §100 also records that the
+`lit=41094` figure is stable, and that a window grab is **not** a valid
+instrument for judging this — compare against the oracle PNG instead.
 
 The CPU-free oracle replay is **not** a matching screen: at frame 450 the
 renderer differs from MAME on 99.72% of pixels. MAME frame 240/480 remain the

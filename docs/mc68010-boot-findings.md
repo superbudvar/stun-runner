@@ -14631,3 +14631,158 @@ results were a missing `-I` path, i.e. the tool never compiled, so they measured
 nothing; re-running with the header copied under its real name killed eight of
 ten and exposed the surviving `$0230` mutant. Ten mutants are now killed and none
 survive.
+
+## 100. `lit=122880/122880 colours=225` is the gold palette, not a drawn screen
+
+This is a refutation of **our own** reading of §39, and of the STATUS.md line
+that repeated it. No ROM or MAME defect: both figures are honest measurements
+of a build that no longer exists in the tree.
+
+### 100.1 The claim that was wrong
+
+§39.6 recorded, for `./run.sh` at 600/900 frames:
+
+```text
+board vram nonzero words = 84337
+render frame=900 lit=122880/122880 colours=225
+```
+
+and STATUS.md repeated `lit=122880/122880 colours=225` as current. `lit` is a
+count of non-black pixels over a 512×240 = 122,880-pixel frame, so
+`lit=122880/122880` reads as "every pixel drawn" — a fully rasterised screen.
+
+It is not. On today's tree (2026-10-18, `925597b`):
+
+```text
+shell: gsp-rtl board vram nonzero words=84787
+frame-log f=600 lit=41094 colours=252
+frame-log f=1200 lit=41094 colours=252
+frame-log f=1800 lit=41094 colours=252
+render frame=900 width=512 height=240 hash=0xFC1E2F7B mode=live-gsp-share \
+       lit=41094/122880 colours=252
+```
+
+Identical across two fresh runs and across frames 600–1800, so this is the
+steady state, not a transient.
+
+### 100.2 Both halves of the discrepancy are already accounted for
+
+- **84,337 → 84,787** is not a regression. §40.9 item 3 records it as the
+  *expected* post-fix value: "GSP VRAM write count grows past the frozen
+  84,337 — MET, 84,337 → 84,787". The IPL2/INTOUT work in §40 is what adds the
+  450 words. STATUS.md was quoting the frozen pre-§40.4 baseline.
+- **122,880 → 41,094** follows the palette/scanout correction
+  (`3a30ec8`, "fix(native): correct GSP palette and scanout addressing").
+  §39.6 item 1 already said the background "renders as gold", where the
+  service capture shows black — and a gold fill across the whole frame is
+  exactly `lit=122880`. Correcting the palette to black is what *lowered* the
+  count. `lit=` falling is the fix landing, not the picture emptying.
+
+So `lit=122880/122880` was never evidence of a fully drawn screen. It was
+evidence of an unvalidated palette painting every pixel. `STATUS.md`'s own
+advice — "judging this by `hash=` alone is not possible ... use `lit=`/
+`colours=`" — was sound; the number it was attached to was being read for
+something it does not measure.
+
+### 100.3 What is actually on screen now
+
+Captured off the live X display (`xdotool search --name Scanout` →
+`import -window <id>`), both windows of a live `./run.sh`:
+
+- `GSP Scanout (CPU Reference)`, 1024×480 — content bounding box image rows
+  120–230, full width.
+- `OpenGL GSP Scanout`, 1024×480 — same rows 120–230, letterboxed.
+
+The picture is **recognisably the S.T.U.N. Runner title screen**: slanted logo,
+the craft, `INSERT 1 COIN`-style text at the top and
+`Copyright 1989 ATARI GAMES`/`CREDITS 0` at the bottom — the same layout as
+`reference/experiments/stunrun/normal-frames-1-600/screens/frame-000480.png`.
+So the GSP **is** executing an uploaded display list and rasterising the game's
+own title art. There is no missing display list. (`native/gsp_display_list.cpp`
+is the *producer* half — the 68010-side interpreter at ROM
+`0x000225B0-0x00022748` — and it is already transcribed.)
+
+Two defects remain, and they are colour/extent, not geometry:
+
+1. **Colour.** The logo renders red/magenta where MAME has blue, the craft is
+   rainbow-speckled, and the pink/red gradient background is black. This is
+   §39.6 item 1, still open.
+2. **Vertical extent.** Rows 0–119 are black; content occupies rows 120–230.
+   MAME fills the frame.
+
+### 100.4 The shear claim STANDS — and the measurement that appeared to refute it was the wrong instrument
+
+§39.6 item 2 — "The image is sheared. The horizontal bands are skewed" — was
+re-measured on 2026-10-18 and **holds**. Do not drop it.
+
+The correct instrument is `tools/compare-frame --frame 480`, which drives the
+shell itself and compares pixels against
+`reference/experiments/stunrun/normal-frames-1-600/screens/frame-000480.png`:
+
+```text
+native render_summary: render frame=480 width=512 height=240 hash=0x7CF45A24
+                      mode=live-gsp-share lit=40637/122880 colours=252
+differing pixels: 122,146 / 122,880  (99.40%)
+```
+
+`side-by-side.png` and the native frame show it directly: the `S.T.U.N.` /
+`RUNNER` logo is a diagonal smear where the oracle has readable slanted
+lettering, the image is vertically offset (content starts ~row 118 against the
+oracle's ~row 5), and it is vertically compressed (logo occupies ~55 rows
+against the oracle's ~75). That is the §39.6 item 2 signature — a bad starting
+`rowaddr`/trajectory, not a bad per-line advance, which §39.6 already isolated
+as the suspect.
+
+#### The failed refutation, kept
+
+I first tried to retract item 2 from a window grab: `xdotool search --name
+Scanout` → `import -window <id>` on a live run, downscaled 2×, then best-match
+horizontal shift between consecutive rows over the content band. It returned
+`step = 0` for nearly every row, which read as "no per-row skew".
+
+That result was **worthless**, for three separate reasons, each sufficient on
+its own:
+
+1. **Wrong pixels.** A window grab captures the SDL window's scaled presentation
+   of the framebuffer, under the WM, at whatever moment the compositor had
+   drawn. It is not the renderer's 512×240 output. `compare-frame` gets the
+   framebuffer, via `STUNRUN_CAPTURE_FRAME`.
+2. **Wrong resolution.** 2× downscale with a Lanczos filter blurs a skew whose
+   per-row displacement is a small fraction of a pixel after scaling.
+3. **Wrong cost function.** Minimum mean absolute difference between adjacent
+   rows over content that is mostly colour-noise picks the shift that best
+   matches *noise*, which is a flat function with no meaningful minimum. The
+   `±80` outliers at the noise-band edges in that output were the tell.
+
+I then compounded it: having "measured" no shear, I went looking for a reason
+the logo looked slanted, found that the original logo *is* slanted
+(`frame-000480.png`), and promoted that coincidence to an explanation. The
+oracle comparison kills it — the original slant is a clean consistent skew
+across two word-rows; ours diverges progressively through a single one.
+
+So: a refutation needs a control. Had this measurement been trusted, §39.6
+item 2 — a correct, load-bearing open item — would have been deleted on the
+strength of an instrument never shown to be able to fail. The
+`compare-frame` number above is the one that counts, and it is reproducible.
+
+### 100.5 Not established
+
+- **Why** it is sheared. §39.6 item 2 names the suspect (starting `rowaddr` /
+  trajectory, since `dpyadr_advance()` matches `tms34010.cpp:1391-1402`) but
+  does not confirm it. Not investigated.
+- The vertical offset and compression are reported here as observed alongside
+  the shear; they are not separated from it. They may be one defect or two.
+- Colour (item 1 above) remains the dominant term in the 99.40%: the gradient
+  background alone accounts for most of the frame. Pixel difference is not a
+  geometry instrument.
+- The horizontal extent difference between the two live windows (CPU content
+  spans the full 512 columns; the GL window's content measured narrower).
+  Possibly window scaling rather than a shader bug — unmeasured.
+- `shadow DPYTAP=0x0200` is an initialiser, not a core value (`core-set` is
+  `[DPYSTRT DPYCTL]`), so the vertical extent cannot be attributed to DPYTAP
+  without first getting the core's own value.
+- `tools/compare-frame` warns that the supplied oracle PNG's sha256 does not
+  match `reference/checkpoints/title/metadata.json`'s `screenshot.sha256`. That
+  is expected — the fixture is from `normal-frames-1-600`, not the title
+  checkpoint — but it means the comparison above is against a *fixture* oracle,
+  not a checkpoint-verified one.
