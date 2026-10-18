@@ -14012,3 +14012,72 @@ This closes a self-checking gap rather than changing behaviour: the reference
 stream is verified against its own recorded digest, and the fixture's expected
 records are verified against the reference. What remains unchanged is that
 neither says a SOMLATCH word *means* anything.
+
+## 97. An untracked 39 MB "new experiment" was the committed one, re-filtered
+
+`reference/experiments/stunrun/m5-vehicle-pointer-correlation/` sat untracked
+since 2026-10-17: five runs of `mame.log` + `result.json` + `summary.json`,
+39 MB, no `metadata.json`. It reads at first like fresh canonical evidence.
+It is not. It is **the same measurement** as the committed
+`m5-object-pointer-deref-correlation/`, with a narrower filter, and it is not
+committed, for three separate reasons.
+
+**1. It carries no provenance.** `EVIDENCE.md` requires that every canonical
+experiment identify enough to reproduce it. This directory records no ROM
+manifest hash, no MAME binary or hash, no machine-map revision, and no tool or
+Lua sha. Nothing in it says which build produced it, so it cannot be compared
+against anything — including itself. That alone disqualifies it, whatever else
+were true.
+
+**2. Its read events are a strict subset of the committed capture.** The
+committed sibling traces six reader PCs (`$02E220`, `$02E226`, `$02E22A`,
+`$02E230`, `$02E25A`, `$02E264`) over read window `0x00047000-0x00FFDEFF` and
+holds 205 read events; the untracked directory traces only `$02E226` over
+`0x00FF9C00-0x00FFDEFF` and holds 46. Comparing the event tuples
+`(frame, pc, address, data)` across the two captures: **zero reads unique to
+the untracked directory**, all 46 present in the sibling. It therefore adds no
+observation that is not already committed.
+
+**3. Its 24,474 write events are the sibling's, and the apparent difference is
+an artifact — which is the part worth keeping.** The `order` field differs on
+every write event (max write `order` 24,679 vs 24,520), so a naive diff of the
+two files reports 13,495 events "only in sibling" and 13,495 "only in
+untracked". That difference is not real:
+
+- Ignoring `order`, the two write streams are **the same 4,345 unique
+  `(frame, pc, address, data)` tuples** — zero unique to either side, and
+  identical per-address counts for all 198 addresses.
+- `order` is a **single counter shared by the read and write taps**. In the
+  sibling, read orders occupy 10,924-12,763 inside the write order range
+  1-24,679, with zero overlap; the untracked capture's read orders occupy
+  10,924-11,104. It captured 205 read events against 46, so 159 extra
+  insertions shift later write `order` values by up to 159.
+- The per-write offset takes 24 distinct values because reads interleave with
+  writes at different points, so the shift is not even a constant that could be
+  subtracted off.
+
+**The rule: `order` is comparable only within one capture.** Two runs of the
+same window whose read filters differ will show a large apparent write
+divergence that is pure bookkeeping. `tools/diff-ram-write-trace` already
+excludes `order` from its event key and so is immune;
+`tools/analyze-gsp-read-write-correlation` uses `order` to order reads against
+writes inside a single capture, which is legitimate for the same reason. A
+future comparison across captures with different read filters must drop
+`order` or it will invent a divergence.
+
+**This also corrects a reading of the nondeterminism trap.** `AGENTS.md` trap 4
+warns that any `--input` schedule alternates between arms run-to-run, and
+`stun-runner-0p0` tracks that. Both of these captures use `input=late_drive`, and
+**all five runs of each are byte-identical in event content** (write and read
+stream hashes match run to run; only the path-scoped `canonical_log_sha256`
+differs, which `EVIDENCE.md` §283-288 already says is not a run identity). So
+within this window the recorded event content is deterministic. That does not
+weaken trap 4 — the trap is about *replaying inputs to reproduce a frame*, and
+these runs do not claim that — but "scripted input, therefore this capture is
+noise" would have been the wrong conclusion, and discarding 39 MB of a
+deterministic capture on that reasoning would have been the opposite error.
+
+**Disposition:** not committed. The untracked directory is left on disk
+untouched (it predates this session and is the author's call to delete); it is
+safe to remove because every event in it is already committed under
+`m5-object-pointer-deref-correlation/`.

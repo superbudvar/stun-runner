@@ -139,6 +139,16 @@ its own recorded digest and requires the nine fixture records to appear at that
 stream's offsets, so a uniformly wrong record can no longer pass. A negative
 control corrupts a single side value. See findings §96.
 
+**Untracked `m5-vehicle-pointer-correlation/` is not committable (2026-10-18).**
+It is the same measurement as the committed
+`m5-object-pointer-deref-correlation/` with a narrower read-PC filter: zero read
+events unique to it, identical write tuples, and no `metadata.json` recording
+ROM manifest, MAME binary or harness hashes. Its apparent write divergence is
+an artifact — `order` is one counter shared by the read and write taps, so a
+differing read filter shifts it. Compare `order` only within one capture. Both
+captures are also byte-identical across all five runs despite `input=late_drive`.
+See findings §97.
+
 **Bounded ADSP producer acceptance met (`stun-runner-alo`, 2026-10-18).** For
 one reproducible frame-551 transaction the C path derives the pass-1 words, the
 six-word ring, and all nine SOM records from measured DM/SIMBUF/PM and
