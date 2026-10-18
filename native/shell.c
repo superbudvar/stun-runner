@@ -324,6 +324,10 @@ static bool g_gsp_indexed_backend_frame = false;
 static unsigned g_capture_frame = UINT32_MAX;  /* UINT32_MAX = disabled */
 /* STUNRUN_FRAME_LOG=N: print lit=/colours= every N frames. 0 disables. */
 static unsigned g_frame_log = 0u;
+/* Diagnostic only: frame at which to assert the ADSP /GINT flag by
+ * fiat, 0 = never. See musashi_cpu_adsp_probe_gint(). */
+static unsigned g_adsp_probe_frame = 0u;
+static unsigned adsp_irq_latched = 0u;
 static bool g_capture_all = false;
 static char g_capture_dir[256] = "capture";
 static char g_dump_dir[256] = {0};
@@ -1251,11 +1255,18 @@ static int run_walk(void)
             printf("DEBUG: STUNRUN_FRAME_LOG='%s' -> every %u frames\n",
                    flog, g_frame_log);
         }
+        const char *apf = getenv("STUNRUN_ADSP_PROBE_GINT");
+        if (apf && apf[0]) {
+            g_adsp_probe_frame = (unsigned)strtoul(apf, NULL, 0);
+            printf("DEBUG: STUNRUN_ADSP_PROBE_GINT='%s' -> frame %u "
+                   "(DIAGNOSTIC: asserts the DSP /GINT flag with no DSP; "
+                   "tests only whether the ROM polls that status word)\n",
+                   apf, g_adsp_probe_frame);
+        }
         const char *cf = getenv("STUNRUN_CAPTURE_FRAME");
         if (cf && cf[0]) {
             g_capture_frame = (unsigned)atoi(cf);
-            printf("DEBUG: STUNRUN_CAPTURE_FRAME='%s' -> %u\n", cf, g_capture_frame);
-        }
+            printf("DEBUG: STUNRUN_CAPTURE_FRAME='%s' -> %u\n", cf, g_capture_frame);        }
         if (getenv("STUNRUN_CAPTURE_ALL")) {
             g_capture_all = true;
             printf("DEBUG: STUNRUN_CAPTURE_ALL set\n");
@@ -2132,6 +2143,45 @@ static int run_walk(void)
                  *
                  * lit=0 is the only honest "this frame is empty" signal; see
                  * render.c's content_stats for why a hash cannot tell. */
+                /* ADSP /GINT mechanism probe -- see musashi_cpu_adsp_probe_gint.
+                 *
+                 * DIAGNOSTIC ONLY. STUNRUN_ADSP_PROBE_GINT=<frame> asserts the
+                 * DSP's /GINT flag at that frame with no DSP behind it, to test
+                 * whether hd68k_adsp_irq_state_r is really the register the ROM
+                 * polls before printing "ADSP-2100 DOES NOT RESPOND"
+                 * (findings 107.4). It feeds nothing: som_memory stays empty,
+                 * so any ROM path that reads records still sees nothing.
+                 *
+                 * A screen that changes proves the mechanism. A screen that does
+                 * NOT change proves the ROM reads something else. Both are worth
+                 * having, which is why this is a flag and not a fabricated DSP.
+                 *
+                 * Deliberately OUTSIDE the frame-log conditional below. The
+                 * first attempt sat inside it and the probe silently never
+                 * fired -- a run without STUNRUN_FRAME_LOG took the other
+                 * branch, and "no output" was indistinguishable from "the
+                 * mechanism is not it". An instrument whose firing depends on
+                 * unrelated configuration is one you cannot trust to have run. */
+                {
+                    musashi_cpu_adsp_io_t aio_now;
+                    musashi_cpu_adsp_io(&aio_now);
+                    adsp_irq_latched = aio_now.irq_state;
+                }
+                if (g_adsp_probe_frame != 0u && frame == g_adsp_probe_frame) {
+                    musashi_cpu_adsp_probe_gint(g_cpu, 1);
+                    /* Read it straight back. If this prints irq=0 the write
+                     * did not land on the instance the accessor reads, and
+                     * every "no effect" result from here on would be void. */
+                    {
+                        musashi_cpu_adsp_io_t rb;
+                        musashi_cpu_adsp_io(&rb);
+                        printf("shell: ADSP-PROBE gint asserted at frame=%u "
+                               "readback-irq=%u (diagnostic, not a DSP)\n",
+                               frame, rb.irq_state);
+                    }
+                    fflush(stdout);
+                }
+
                 if (g_frame_log != 0u && (frame % g_frame_log) == 0u) {
                     unsigned lit = 0u, colours = 0u;
                     stunrun_render_content_stats(&renderer, &lit, &colours);
@@ -2162,9 +2212,10 @@ static int run_walk(void)
                      * sides), same frame number, compare PC. findings 109
                      * showed the ADSP windows see zero traffic, so the
                      * divergence has to be found on the CPU side. */
-                    printf(" 68010-pc=0x%06x 68010-cyc=%lu",
+                    printf(" 68010-pc=0x%06x 68010-cyc=%lu adsp-irq=%u",
                            (unsigned)musashi_cpu_get_pc(g_cpu),
-                           (unsigned long)musashi_cpu_total_cycles(g_cpu));
+                           (unsigned long)musashi_cpu_total_cycles(g_cpu),
+                           adsp_irq_latched);
                     printf("\n");
                     fflush(stdout);
                 }
@@ -2781,6 +2832,35 @@ static int run_walk(void)
     emit_model_checkpoint(image, STUNRUN_ADSP_INIT_STATE_WORDS);
     stunrun_gsp_video_free(&video);
 
+    /* Snapshot the board-interface counters BEFORE the CPU is destroyed.
+     *
+     * This line used to sit AFTER musashi_cpu_destroy(), which sets s_cpu to
+     * NULL and frees the struct. musashi_cpu_adsp_io() reads s_cpu and
+     * null-guards every field, so the whole report printed ZEROS -- not
+     * because the counters were zero, but because it was reading a dead
+     * instance. That is not a cosmetic bug: it produced an authoritative
+     * "the 68010 never touches the ADSP windows" result (findings 109) and a
+     * "watchdog-w=0 contradicts the $209E4 store" contradiction, both of
+     * which were artefacts. Snapshot first, print anywhere. */
+    {
+        static musashi_cpu_adsp_io_t aio_snap;
+        if (g_cpu) musashi_cpu_adsp_io(&aio_snap);
+        printf("shell: adsp-io dm$1fff-triggers=%lu ctrl-bank=%lu "
+               "ctrl-reset=%lu ctrl-halt=%lu som-bank=%u xflag=%u irq=%u "
+               "irq-polls=%lu prog-r=%lu prog-w=%lu\n"
+               "           zram-r=%lu zram-w=%lu zram-gated=%lu zp1=%u zp2=%u\n"
+               "           rom-tail-r=%lu watchdog-w=%lu watchdog32=%lu soundrst16=%lu soundrst32=%lu\n",
+               aio_snap.dm_trigger, aio_snap.ctrl_bank, aio_snap.ctrl_reset,
+               aio_snap.ctrl_halt, aio_snap.som_bank, aio_snap.xflag,
+               aio_snap.irq_state, aio_snap.irq_reads, aio_snap.prog_reads,
+               aio_snap.prog_writes,
+               aio_snap.zram_reads, aio_snap.zram_writes, aio_snap.zram_gated,
+               aio_snap.zp1, aio_snap.zp2, aio_snap.rom_tail,
+               aio_snap.watchdog, aio_snap.watchdog32, aio_snap.soundrst16,
+               aio_snap.soundrst32);
+        fflush(stdout);
+    }
+
     /* Shut down backends, destroy window, and shut down SDL after the final frame */
     if (g_cpu) {
         musashi_cpu_destroy(g_cpu);
@@ -2788,27 +2868,6 @@ static int run_walk(void)
         g_mc68010_active = false;
     }
     if (g_sound_dispatch_active) {
-        /* ADSP board interface, findings 107/108. Every one of these was
-         * silently dropped before, so a run log could not distinguish "the
-         * ROM never touched the DSP windows" from "we discarded it".
-         * `dm$1fff` is the release trigger MAME keys on
-         * (harddriv_m.cpp:657-668). */
-        {
-            musashi_cpu_adsp_io_t aio;
-            musashi_cpu_adsp_io(&aio);
-            printf("shell: adsp-io dm$1fff-triggers=%lu ctrl-bank=%lu "
-                   "ctrl-reset=%lu ctrl-halt=%lu som-bank=%u xflag=%u irq=%u "
-                   "irq-polls=%lu prog-r=%lu prog-w=%lu\n"
-                   "           zram-r=%lu zram-w=%lu zram-gated=%lu zp1=%u zp2=%u\n"
-                   "           rom-tail-r=%lu watchdog-w=%lu watchdog32=%lu soundrst16=%lu soundrst32=%lu\n",
-                   aio.dm_trigger, aio.ctrl_bank, aio.ctrl_reset,
-                   aio.ctrl_halt, aio.som_bank, aio.xflag, aio.irq_state,
-                   aio.irq_reads, aio.prog_reads, aio.prog_writes,
-                   aio.zram_reads, aio.zram_writes, aio.zram_gated,
-                   aio.zp1, aio.zp2, aio.rom_tail, aio.watchdog, aio.watchdog32,
-                   aio.soundrst16, aio.soundrst32);
-        }
-
         printf("shell: sound-dispatch stats frames=%llu commands=%llu "
                "oki-bytes=%llu samples-enqueued=%llu sample-rate=%u\n",
                (unsigned long long)g_sound_dispatch.frames_dispatched,

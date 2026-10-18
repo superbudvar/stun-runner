@@ -3578,6 +3578,12 @@ void musashi_cpu_text_log_disable(void)
     g_text_log_enabled = 0;
 }
 
+void musashi_cpu_adsp_probe_gint(musashi_cpu_t *cpu, int asserted)
+{
+    if (cpu == NULL) return;
+    cpu->adsp_irq_state = asserted ? 1u : 0u;
+}
+
 void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out)
 {
     if (out == NULL) return;

@@ -16164,3 +16164,78 @@ measurement §113.5 asked for and it has not been done.
 - **§110.2's divergence frames should be treated as provisional** until the
   pass count is measured, because §114.3 shows the evidence they rest on is
   internally inconsistent.
+
+## 114. The all-zero `adsp-io` report was reading a destroyed CPU
+
+Resolves the contradiction raised in `8b365b8`, and corrects two results of
+this session that were built on the same broken report.
+
+### 114.1 The defect
+
+`musashi_cpu_adsp_io()` reads the module-static `s_cpu` and null-guards every
+field. The `shell: adsp-io …` line sat **after** `musashi_cpu_destroy(g_cpu)`,
+which sets `s_cpu = NULL` and frees the struct. So the line printed zeros for
+every field — not because the counters were zero, but because it read a dead
+instance.
+
+The fix snapshots into a `static` **before** the destroy and prints from that.
+Order matters and is now commented at the site.
+
+### 114.2 What the counters actually say
+
+Normal boot, 320 frames, after the fix:
+
+```text
+dm$1fff-triggers=0 ctrl-bank=0 ctrl-reset=0 ctrl-halt=0 som-bank=0
+xflag=0 irq=0 irq-polls=0 prog-r=0 prog-w=0
+zram-r=0 zram-w=0 zram-gated=0 zp1=1 zp2=0
+rom-tail-r=0 watchdog-w=1259 watchdog32=0 soundrst16=742 soundrst32=0
+```
+
+**`watchdog-w=1259`, `soundrst16=742`, `zp1=1`.** The 68010 *does* write
+`$608000` — 1259 times in 320 frames, about 4 per frame. That is the store at
+`$0209E4` that ends every pass of the `$0209DA` countdown.
+
+So `8b365b8`'s `watchdog-w=0` was this bug, not a modelling result, and the
+`$209E4` disassembly — checked against MAME's own listing — was right all
+along. Its provisional retraction of §110.2 is withdrawn: nothing about
+`$209E4` was ever contradictory.
+
+`zp1=1` also confirms `gsp_boot.h`'s documented boot `clr.w $60400c`.
+
+### 114.3 §109 survives, now on a trustworthy read
+
+Every ADSP counter is **still zero**, but this time from a live instance. So
+§109's conclusion stands and is now sound where it was previously
+unverifiable: our 68010 makes no access to any ADSP window — program, data,
+buffer, control or status — on either path, while it makes 1259 watchdog and
+742 sound-reset writes in the same run.
+
+The distinction that made this possible is worth stating: the same report line
+was authoritative for the watchdog and worthless for the ADSP, because the
+counters differ in what they are sensitive to. A zero from a null-guarded
+struct is indistinguishable from a zero from a real count until you check one
+you know must be nonzero.
+
+### 114.4 A failed measurement, recorded because it was attempted
+
+The natural cross-check — count MAME's `$608000` writes for the same 320 frames
+and compare integrals rather than boundary PC samples — **did not work**.
+A Lua `install_write_tap` on the 68010 program space over `0x608000`,
+`0x604000` and a control at `0x00C00000` all reported **zero**, including the
+control: the same arm shows 780,315 GSP host-port writes natively. An earlier
+`install_read_tap` attempt behaved identically.
+
+**Lua memory taps do not fire on this 68010 in this pinned build.** That is a
+tooling limit, not a machine fact, and no conclusion may be drawn from either
+zero. The $208000/$604000 comparison the other agent asked for still needs a
+different instrument — a counting tap compiled into the driver, or a replay of
+a captured host stream through a board model that counts.
+
+The integral comparison remains the right measurement. $4 services per frame is
+a whole-frame quantity and does not depend on where a frame boundary lands, so
+it settles what boundary PC sampling cannot. Note the caution this raises for
+§110.2 regardless: the loop provably exits ~4x per frame and is ~20% of a
+frame's cycles, so *being sampled inside it* is unremarkable and the 36-frame
+edge may still be a phase artefact. It needs the same integral treatment
+before it is trusted.

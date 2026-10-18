@@ -120,6 +120,25 @@ typedef struct musashi_cpu_adsp_io {
 
 void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out);
 
+/* DIAGNOSTIC: assert the ADSP /GINT flag by fiat, with no DSP behind it.
+ *
+ * This is a mechanism probe, NOT a reproduction, and it is deliberately crude
+ * so that it can fail. hd68k_adsp_irq_state_r (harddriv_m.cpp:827) returns
+ * $FFFD while silent and $FFFC once /GINT has fired, and the ROM polls that
+ * register to decide whether the DSP is alive -- findings 107.4. Driving the
+ * flag directly answers exactly one question: is that status word really the
+ * thing the ROM is looking at?
+ *
+ * If the service screen stops saying ADSP-2100 DOES NOT RESPOND, the mechanism
+ * is confirmed and the missing work is on the DSP side. If it does not change,
+ * the ROM reads something else and this probe has told us that for the cost of
+ * one run. Either outcome is evidence; a probe that could only confirm would
+ * be worth nothing.
+ *
+ * It does NOT feed som_memory, so any ROM path that reads records will still
+ * see an empty ferry. Do not report a passing screen from this as parity. */
+void musashi_cpu_adsp_probe_gint(musashi_cpu_t *cpu, int asserted);
+
 /* ── Frame pacing ──
  *
  * Cycles of 8 MHz MC68010 time per displayed frame.  The multisync screen is
