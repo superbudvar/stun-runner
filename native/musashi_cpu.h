@@ -105,6 +105,10 @@ typedef struct musashi_cpu_adsp_io {
     unsigned      irq_state;       /* hd68k_adsp_irq_state_r bit 0 */
     unsigned long irq_reads;       /* polls of the status register */
     unsigned long data_reads;      /* 0x808000-0x80BFFF reads */
+    unsigned long data_writes;     /* 0x808000-0x80BFFF writes, ALL offsets */
+    unsigned long ctrl_writes;     /* 0x818000-0x81FFFF writes, ALL offsets */
+    unsigned      data_off[16];    /* data-window write histogram, offsets 0-15 */
+    unsigned      ctrl_off[16];    /* control-window write histogram, offsets 0-15 */
     unsigned long som_reads;       /* 0x810000-0x813FFF reads (the SOMLATCH ferry) */
     unsigned long prog_reads;      /* 0x800000-0x807FFF reads */
     unsigned long prog_writes;     /* 0x800000-0x807FFF writes */

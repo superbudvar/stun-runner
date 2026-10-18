@@ -16385,3 +16385,181 @@ string in the ROM, disassemble what references it, and read the code that
 chooses between the `ADSP TEST: 35 SECS - 3 MINS` path and the error path. That
 is `tools/dis68k` over the de-interleaved main-CPU image — the same instrument
 that settled §110.3's disassembly — and it is the next thing to do.
+
+## 117. The ADSP-2100 was never the problem: the 68010 diverges before it touches the DSP
+
+This answers §116.4, and **reverses two of §116's own conclusions.** §116's
+*measurements* were sound; its *interpretation* mistook our native's failure
+for a property of the ROM.
+
+### 117.1 The string format, and why a text search could never find the code
+
+The ADSP self-test strings are 8-bit with `*` for space and a four-byte record
+header. `tools/dis68k` over the de-interleaved main-CPU image settles the
+format outright, from the text drawer at `$25e8`:
+
+```text
+00002604: movea.l (A0,D0.l), A0     ; A0 = long from table $10136, indexed by D0
+0000260a: move.b  ($2,A0), D7
+00002614: move.b  ($1,A0), D0
+00002620: move.b  ($0,A0), D1
+0000262e: move.b  ($3,A0), D3
+00002632: adda.l  #$4, A0          ; text starts at record + 4
+00002638: move.b  (A0)+, D1
+0000263a: subi.b  #$2a, D1         ; '*' decodes to space
+00002644: lsl.w   #4, D1
+00002646: lea     $1fbc.l, A1      ; font glyph
+```
+
+`subi.b #$2a` is why `*` renders as a space, and `lea $10136.l, A0` +
+`movea.l (A0,D0.l), A0` is the whole reason the earlier hunt failed: the
+strings are reached through a **360-entry pointer table at `$10136`**, indexed
+by `D0`, not by a literal address in the flow of the drawing code. Only 7 of
+the 203 string starts in `0x6b00-0x8700` are the target of a long anywhere in
+the image, because the rest are reached through that table.
+
+The drawer is entered by `jmp $25e8.l` from **30 jump-table stubs**, each with
+the idiom `move.w #$xx, D0` / `lea (8,PC), A2` / `jmp $25e8.l`. Mapping the 30
+indices to the table gives the ADSP board test:
+
+| index | string | site |
+|---|---|---|
+| 94 (`$5e`) | `ADSP TEST: 35 SECS - 3 MINS` | `$5286` |
+| 95 (`$5f`) | `ADSP BOARD OK` | `$5300` |
+| 96 (`$60`) | `BAD ADSP RAM` | `$5336` |
+| **97 (`$61`)** | **`ADSP-2100 DOES NOT RESPOND`** | **`$5312`** |
+| 98 (`$62`) | `BAD ADSP ROM CHECKSUM` | `$5324` |
+| 99 (`$63`) | `PRESS START TO SELECT TEST MENU` | `$533c` |
+
+### 117.2 What actually gates the message
+
+`$5224`-`$52a2`, read verbatim:
+
+```text
+00005224: jsr    $b864.l
+0000522a: cmpi.w #$5555, D7
+0000522e: bne    $530a           ; -> "ADSP-2100 DOES NOT RESPOND"
+00005232: jsr    $b8b4.l
+00005238: cmpi.w #$5555, D7
+0000523c: bne    $530a
+00005240: jsr    $b916.l
+00005246: cmpi.w #$5555, D7
+0000524a: bne    $530a
+0000524e: cmpi.b #$17, D4  ...   ; six ADSP ROM checksum bytes
+00005252: bne    $531c           ; -> "BAD ADSP ROM CHECKSUM"
+0000527e: move.w #$5e, D0        ; "ADSP TEST: 35 SECS - 3 MINS"
+```
+
+Three subroutines must each return **`$5555` in D7**. They are ADSP-2100
+liveness tests, not ROM arithmetic:
+
+```text
+$B864  bsr $b1e8
+       clr.w $81800a.l                  ; ADSP control
+       move.w #$0, $808002.l            ; DM
+       move.w #$2, $808000.l
+       clr.w $808006.l
+       move.w #$1234, D3
+       move.w D3, $808006.l             ; DM[6] = $1234
+       clr.w $81801a.l
+       nop x4
+       clr.w $81800a.l
+       move.w $80800a.l, D0             ; read DM[$0A]
+       cmp.w D0, D3                     ; == $1234 ?
+       move.w #$5555, D7                ; pass
+$B8B4  clr.w $818060.l                  ; /IRQ clear
+       ... move.l #$1770, D3 ; countdown
+       btst #$0, $838001.l              ; poll ADSP IRQ status
+       bne  loop                        ; $5555 on ack, 0 on timeout
+```
+
+`$B864` is a **loopback through the DSP**: the 68010 writes `$1234` to `DM[6]`,
+the running ADSP program copies it to `DM[$0A]`, and the 68010 reads it back.
+No DSP, no copy, `DM[$0A]` stays zero, `D7` stays zero, message. `$B8B4`
+additionally polls the ADSP IRQ status register at `$838001` bit 0 with a
+`$1770`-iteration timeout.
+
+### 117.3 Reversal: §116.3 was wrong, and §107.4 was right
+
+§116.3 concluded "the ROM does not reach its verdict by polling the status
+register we identified" and withdrew §107.4's inference. **Both are false, and
+§107.4 is reinstated.** Measured on MAME, service arm, 4800 frames, read tap
+on `0x838000-0x838001`:
+
+```text
+STUNRUN_CPU_WCOUNT_HIST dir=read start=00838000 total=21789
+  STUNRUN_CPU_WCOUNT_BYPC 0000B8F8 3175     <- $B8B4's btst #$0,$838001.l
+  STUNRUN_CPU_WCOUNT_BYPC 0000B972 18614
+```
+
+`$B8F8` is exactly the poll in `$B8B4`. The ROM reads the ADSP status register
+thousands of times. The status register *was* mis-wired to the idle `$FFFD`
+(so that fix stands), and the ROM *does* poll it.
+
+§116 went wrong in a way worth naming: `irq-polls=0` was a true observation of
+**our native**, and I wrote it up as a statement about **the ROM**. A zero from
+a machine that has already diverged describes the divergence, not the design.
+
+### 117.4 The ADSP windows are heavily used by the ROM, and we use them not at all
+
+`STUNRUN_CPU_WCOUNT`, write tap on `0x808000-0x80bfff`, MAME service arm,
+4800 frames:
+
+```text
+STUNRUN_CPU_WCOUNT_HIST dir=write start=00808000 total=802934
+  000033F4 262144   000033F2 262144   0000334E 262144   000032C4 16384
+  0000339C 32       0000339A 32       000032FA 32
+  0000B888 1   0000B8CA 1   0000B8D2 1   0000B8DA 1   0000B936 1 ...
+```
+
+**`0xB888` is `$B864`'s `move.w D3, $808006.l`.** MAME executes the very test
+that gates the message. The `$33xx` writers are bulk DM loops (`move.w D0,(A0)`
+with A0 walking the window).
+
+Same tap, **normal** boot, 4800 frames: MAME **319,298** writes.
+Native, same arm and frames: **1** (`dm-w=1`, `dm-off[*]=0`).
+
+| arm | MAME writes to `0x808000-0x80bfff` | native |
+|---|---:|---:|
+| normal boot, 320 frames | 0 | 0 |
+| normal boot, 4800 frames | 319,298 | **1** |
+| service, 4800 frames | 802,934 | **0** |
+
+At 320 frames both are zero, so this is not a divergence at boot — it is where
+the two machines part company later. Ours also reports `prog-r=0`, `prog-w=0`,
+`som-r=0`, `irq-polls=0` over the same span.
+
+### 117.5 So the question changes
+
+§116.4 offered three readings and ranked them; the first is now excluded. The
+verdict **does** come from ADSP-window access (`$B864`/`$B8B4`), and the ROM
+uses those windows hundreds of thousands of times. There is no path by which
+the native reaches the same code.
+
+That kills the "port the ADSP boot path so the self-test passes" plan. Passing
+the self-test is downstream of the 68010 doing the ADSP work the ROM asks it
+to do, and our 68010 does none of it. **The next question is not ADSP at all:**
+it is where the 68010 first stops agreeing with MAME in the *normal* path,
+which is where the divergence is earliest and cheapest to find.
+
+### 117.6 Two of our own errors this round
+
+Recorded because both produced numbers that looked fine.
+
+1. **A misaligned `printf` reported garbage as measurements.** Widening the
+   `adsp-io` line to add write histograms left `dm-w`/`ctrl-w` with no
+   arguments, then emitted 12 `data_off` arguments for a 16-slot format. The
+   output still printed — `soundrst16=140733193388052` is a pointer — and
+   `zram-gated=7029` silently inherited the watchdog's value. The calibration
+   counters (`zp1`, the watchdog) were the only reason it was caught. Fixed by
+   counting specifiers against arguments, and the control (`watchdog-w=1259`)
+   re-checked before the reading was used.
+2. **I read a frame-boundary PC histogram as a stall.** In service mode the
+   68010 samples at `0x13fa`/`0x1404` almost every frame, which looks like a
+   hang. `$13ec` is `clr.w $608000` then wait for `$60c001` bit 2 to go 1 and
+   back to 0 — and `$60c001` bit 2 is **`/VSYNCB`** (harddriv_m.cpp:267-282,
+   `0x0004 = /VSYNCB`). It is the per-frame vertical-sync wait, and a sample
+   taken at the frame boundary lands in it every time. **This is §110.2's
+   mistake a second time**, in the same shape: boundary sampling of a
+   frame-periodic wait, read as state. The integral counters were the
+   trustworthy instrument and the histogram was not.

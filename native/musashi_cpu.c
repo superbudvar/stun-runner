@@ -303,6 +303,10 @@ struct musashi_cpu {
     uint8_t  m68k_zp2;
     uint32_t adsp_dm_trigger_writes;
     uint32_t adsp_ctrl_bank_writes;
+    uint32_t adsp_ctrl_writes;
+    uint32_t adsp_dm_writes;
+    uint32_t adsp_dm_off[16];
+    uint32_t adsp_ctrl_off[16];
     uint32_t adsp_ctrl_reset_writes;
     uint32_t adsp_ctrl_halt_writes;
 
@@ -2504,6 +2508,16 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
          * the address is visible in a run log. */
         unsigned dm = offset & (MUSASHI_ADSP_DM_WORDS - 1u);
         s_cpu->adsp_dm[dm] = (uint16_t)value;
+        /* Every write is counted, not just DM($1FFF). Counting only the
+         * trigger made findings 116 read as "the 68010 never writes the ADSP
+         * data window", when in fact the routine that decides whether to
+         * print "ADSP-2100 DOES NOT RESPOND" ($b864, ROM $b876-$b888) writes
+         * offsets 0, 2 and 6 -- all of which the trigger-only counter
+         * discarded. Same undercount on this side as the read-side gap 116
+         * itself had just closed. */
+        s_cpu->adsp_dm_writes++;
+        if (dm < 16u)
+            s_cpu->adsp_dm_off[dm]++;
         if (dm == 0x1FFFu)
             s_cpu->adsp_dm_trigger_writes++;
         break;
@@ -2522,6 +2536,12 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
          * rather than pretended. */
         unsigned sel = offset & 7u;
         unsigned val = (offset >> 3u) & 1u;
+        /* Same reason as the data window: $b864's `clr.w $81800a.l` has
+         * sel == 2, which MAME treats as an LED no-op, and the per-function
+         * counters below therefore never saw it. */
+        s_cpu->adsp_ctrl_writes++;
+        if ((offset & 15u) < 16u)
+            s_cpu->adsp_ctrl_off[offset & 15u]++;
         /* The 8- and 32-bit arms both log here; the 16-bit one did not, so a
          * normal `move.w` to 0x818000 was invisible while an 8-bit write to
          * the same window was logged. The 68010 is a 16-bit bus, which made
@@ -3609,6 +3629,12 @@ void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out)
     out->irq_state   = s_cpu ? (unsigned)s_cpu->adsp_irq_state : 0u;
     out->irq_reads   = s_cpu ? (unsigned long)s_cpu->adsp_irq_reads : 0ul;
     out->data_reads  = s_cpu ? (unsigned long)s_cpu->adsp_data_reads : 0ul;
+    out->data_writes = s_cpu ? (unsigned long)s_cpu->adsp_dm_writes : 0ul;
+    out->ctrl_writes = s_cpu ? (unsigned long)s_cpu->adsp_ctrl_writes : 0ul;
+    for (unsigned i = 0; i < 16u; i++) {
+        out->data_off[i] = s_cpu ? s_cpu->adsp_dm_off[i] : 0u;
+        out->ctrl_off[i] = s_cpu ? s_cpu->adsp_ctrl_off[i] : 0u;
+    }
     out->som_reads   = s_cpu ? (unsigned long)s_cpu->adsp_som_reads : 0ul;
     out->prog_reads  = s_cpu ? (unsigned long)s_cpu->adsp_prog_reads : 0ul;
     out->prog_writes = s_cpu ? (unsigned long)s_cpu->adsp_prog_writes : 0ul;

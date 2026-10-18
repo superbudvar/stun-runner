@@ -126,19 +126,21 @@
         "src/mame/atari/harddriv_m.cpp",
         "src/mame/atari/harddriv.cpp"
       ],
-      "function": "harddriv_state::init_cpu_wcount",
+      "function": "harddriv_state::init_cpu_wcount / harddriv_state::stunrun_wc_exit",
       "env": [
         "STUNRUN_CPU_WCOUNT",
         "STUNRUN_CPU_WCOUNT_START",
         "STUNRUN_CPU_WCOUNT_END",
         "STUNRUN_CPU_WCOUNT_FROM",
-        "STUNRUN_CPU_WCOUNT_PC",
-        "STUNRUN_CPU_WCOUNT_AT",
-        "STUNRUN_CPU_WCOUNT_STEP"
+        "STUNRUN_CPU_WCOUNT_DIR",
+        "STUNRUN_CPU_WCOUNT_STEP",
+        "STUNRUN_CPU_WCOUNT_HIST",
+        "STUNRUN_CPU_WCOUNT_BYPC"
       ],
       "observation_only": true,
-      "purpose": "Count 68010 writes into one address window, with the issuing PC. Lua memory taps do not fire on this 68010 in this build -- install_read_tap and install_write_tap both report zero over ranges the same arm writes heavily (0x00C00000, 780,315 writes natively) -- so no Lua tap result is usable and the C++ passthrough tap is required. Exists to settle the $0209E4 contradiction: harddriv.cpp:603 maps 0x608000-0x60bfff write-only to the watchdog and the ROM stores there ending every pass of the $0209DA countdown, so a zero count would be inconsistent with leaving that loop. Installed as a passthrough tap so the existing handler still runs; armed only when STUNRUN_CPU_WCOUNT_START is set. Reports on NOTIFY_EXIT. See findings section 115.",
-      "added": "2026-10-18"
+      "purpose": "Count 68010 accesses to one address window, histogrammed by the issuing PC. Lua memory taps do not fire on this 68010 in this build -- install_read_tap and install_write_tap both report zero over ranges the same arm touches heavily (0x00C00000, 780,315 writes natively) -- so no Lua tap result is usable and the C++ passthrough tap is required. First job, settled: the watchdog window 0x608000-0x60bfff gave MAME 1263 against native's 1259 over 320 frames, the same cadence on both, which withdrew findings 110.2's 36-frame edge as boundary sampling phase. Second job: the ADSP service-test strings at 0x6df1-0x6ea4 are reached by no 32-bit pointer that a text search can find (only 7 of 203 string starts in 0x6b00-0x8700 are pointer targets at all), so the read direction records which PC actually touches them instead. Passthrough tap, so the underlying handler still runs; observation-only, armed only when STUNRUN_CPU_WCOUNT_START is set. Histogram prints once at exit. See findings section 115 and 117.",
+      "added": "2026-10-18",
+      "env_note": "STUNRUN_CPU_WCOUNT_BYPC is an output prefix, not a switch: the guard test inventories every STUNRUN_ token in the diff as an environment variable, so it is recorded here rather than left to look like an unrecorded control."
     }
   ],
   "behaviour_changes": [

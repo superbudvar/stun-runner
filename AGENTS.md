@@ -95,7 +95,7 @@ Each of these has already cost real time here.
 
     | name | path | sha256 | use it for |
     |---|---|---|---|
-    | **`md12-fixed`** (DEFAULT) | `/mnt/build/mame-ref/mame` | `55956f2b…` | **all new work.** Upstream MAME with MD-12 fixed, plus every observation hook, including `STUNRUN_GSP_IOBREPORT`. |
+    | **`md12-fixed`** (DEFAULT) | `/mnt/build/mame-ref/mame` | `07eb1378…` | **all new work.** Upstream MAME with MD-12 fixed, plus every observation hook, including `STUNRUN_GSP_IOBREPORT` and `STUNRUN_CPU_WCOUNT`. Rebuilt 2026-10-18 to add the CPU access counter; was `55956f2b…`. |
     | `stock-behaviour` | `/mnt/build/mame-oracle/mame` | `75b09ee4…` | **only** re-reproducing a capture recorded under it. Predates the MD-12 fix and lacks every hook added after 2026-10-09. |
     | *unrecorded* | — | `fcb54790…` | produced committed captures and is in neither recorded slot. See `stun-runner-w55`. |
 

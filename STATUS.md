@@ -496,6 +496,18 @@ The first oracle pipeline should support deterministic launch/input, bounded wai
 
 ## Current blockers
 
+- **The ADSP-2100 is not the divergence; the 68010 is, and it happens much
+  earlier (2026-10-18).** Findings §117 supersedes the framing in §114-116.
+  The ROM's `ADSP-2100 DOES NOT RESPOND` verdict is gated by `$b864` (write
+  `$1234` to `DM[6]`, the ADSP program must copy it to `DM[$0A]`, read it back)
+  and `$b8b4` (poll the ADSP IRQ status at `$838001` bit 0). MAME executes
+  both. Our 68010 writes the ADSP data window **1** time in 4800 frames of
+  normal boot where MAME writes it **319,298**, and **0** times in service mode
+  where MAME writes it **802,934**. So do **not** plan to "port the ADSP boot
+  path so the self-test passes": the native never reaches the code. §116.3's
+  withdrawal of §107.4 is also reversed -- the ROM does poll the status
+  register ($b8f8, 3,175 reads). The open question is the first point at which
+  our 68010 stops agreeing with MAME on the **normal** path.
 - **MD-14 (JR/JA executor form mismatch) is withdrawn.** Re-reading the form
   helpers showed the earlier report conflated `j_xx_0` and `j_xx_8`: the former
   uses the word-relative extension when its low nibble is zero; the latter uses
