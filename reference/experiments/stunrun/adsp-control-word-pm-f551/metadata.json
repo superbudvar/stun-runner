@@ -1,0 +1,75 @@
+{
+ "schema": "stunrun-experiment-metadata/v1",
+ "experiment": "adsp-control-word-pm-f551",
+ "purpose": "Retain the same-run ADSP PM program-space reads used by $0214-$0237, the routine that builds the DM($0036) record control word latched at $0514. The committed adsp-som-pm-reads-f551 capture retains PM reads for $0147-$0173 only, so the MAC loop's PM($1019)-PM($101E) operands were unavailable and the control word had to stay a measured entry input.",
+ "rom_manifest": "roms/stunrun.manifest.json",
+ "rom_manifest_sha256": "b3cf2b613752c494cb441f85090dd056f53b9006bdc4564eb53396d3c4ae729d",
+ "mame": {
+  "binary": "/mnt/build/mame-oracle/mame",
+  "binary_sha256": "75b09ee422732ebce54d4c641e3bf38ddc9de4976963844691c60c361fb46b06",
+  "role": "stock-behaviour, the same build as adsp-som-pm-reads-f551. Chosen deliberately: AGENTS.md forbids comparing captures across binaries, and this artifact is only meaningful next to the one it extends."
+ },
+ "machine_map": {
+  "path": "analysis/driver-mining/stunrun.machine-map.yaml",
+  "sha256": "b9106e5c04d8bd20b0c7bb4eab52553cd1655bd037e62be5f16a5f1bc21db02f"
+ },
+ "harness": {
+  "tool": "tools/capture-adsp-som-transaction",
+  "tool_sha256": "bed021c73eb042f52d4fc885af306fc4c73fb4b8b4ef8445e2a65e7bfc15a461",
+  "lua": "mame/lua/adsp-som-transaction.lua",
+  "lua_sha256": "31df63e4afc4e2e2f0f3d4d0b2eae50076895dacbf8a1d908ab1b1de05bfecac",
+  "invocation": "tools/capture-adsp-som-transaction roms OUT --frames 600 --start-frame 540 --pm-pc-range 0x0214:0x0237 --nvram-seed <seed> --mame /mnt/build/mame-oracle/mame",
+  "input": "none",
+  "start_condition": "power_on with a disposable copy of the recorded NVRAM seed"
+ },
+ "pm_pc_ranges": [
+  [
+   327,
+   371
+  ],
+  [
+   532,
+   567
+  ]
+ ],
+ "observed_each_run": {
+  "frame": 551,
+  "som_words": 146,
+  "pm_reads": 225,
+  "pm_reads_added_over_the_extended_capture": 54,
+  "producer_events": 4009,
+  "gint_data": "0x0045",
+  "gint_pc": "0x004C",
+  "control_word_pm_addresses": [
+   "0x1019",
+   "0x101A",
+   "0x101B",
+   "0x101C",
+   "0x101D",
+   "0x101E"
+  ],
+  "control_word_pm_reads_per_address": 9
+ },
+ "relation_to_committed_evidence": {
+  "extends": "reference/experiments/stunrun/adsp-som-pm-reads-f551/run-1/result.json",
+  "som_word_stream_identical": true,
+  "producer_event_stream_identical": true,
+  "earlier_pm_reads_retained_verbatim": true,
+  "note": "The same transaction with strictly more PM data: identical 146 (address_word, value, pc, seq) words, identical 4009 DM events, identical GINT event, and the earlier 171 PM reads unchanged. The differing whole-file hashes are the added PM rows only."
+ },
+ "runs": [
+  {
+   "result": "run-1/result.json",
+   "result_sha256": "fd2acd2aeab1dde50b595c4d4ea9b6c4e678a10e28555ee2484a9f41377f9ba1"
+  },
+  {
+   "result": "run-2/result.json",
+   "result_sha256": "3f1fd42995c47d23e54829241e3b0f0d7bf8e24e443098274a9831127b00f56b"
+  }
+ ],
+ "limits": [
+  "The PM dwords are operands, not meanings: nothing here says what $0214-$0237 computes with them.",
+  "PM($1019)-PM($101E) read the same value on all nine records in this one frame, so the capture cannot separate a mask or shift these particular values do not exercise.",
+  "One frame, one transaction. No claim that DM($0036) is $0030 in any other state."
+ ]
+}

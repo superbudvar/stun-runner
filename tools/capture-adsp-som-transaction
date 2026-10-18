@@ -99,11 +99,28 @@ def main() -> int:
     parser.add_argument(
         "--nvram-seed", type=pathlib.Path,
         help="copy this NVRAM root (containing stunrun/) into a disposable per-run directory")
+    parser.add_argument(
+        "--pm-pc-range", action="append", default=[], metavar="LO:HI",
+        help="also retain same-run PM program-space reads whose PC falls in this "
+             "hex range (repeatable). Default is the $0147-$0173 source-producer "
+             "window; add ranges for any other routine whose PM operands a C "
+             "slice needs. The retained ranges are recorded in the output.")
     parser.add_argument("--mame", default="mame")
     args = parser.parse_args()
     if args.frames < 2 or not (1 <= args.start_frame < args.frames) or \
             args.post_frames < 0 or args.max_events <= 0:
         parser.error("require frames>=2, 1<=start-frame<frames, post-frames>=0, max-events>0")
+    pm_ranges = [(0x0147, 0x0173)]
+    for spec in args.pm_pc_range:
+        try:
+            low_text, high_text = spec.split(":", 1)
+            low, high = int(low_text, 16), int(high_text, 16)
+        except ValueError:
+            parser.error(f"--pm-pc-range wants LO:HI in hex, got {spec!r}")
+        if not 0 <= low <= high <= 0xFFFF:
+            parser.error(f"--pm-pc-range out of order or out of range: {spec!r}")
+        if (low, high) not in pm_ranges:
+            pm_ranges.append((low, high))
     rompath = args.rompath.resolve()
     manifest = rompath / "stunrun.manifest.json"
     if not manifest.is_file():
@@ -178,7 +195,7 @@ def main() -> int:
     events = [parse_event(m) for m in EVENT.finditer(text)]
     pm_reads = [e for e in events if e["cpu"] == "adsp_program" and
                 start_seq <= int(e["seq"]) <= end_seq and
-                0x0147 <= int(e["pc"]) <= 0x0173]
+                any(low <= int(e["pc"]) <= high for low, high in pm_ranges)]
     if any(e["access"] != "R" or not 0x1000 <= int(e["address"]) <= 0x1fff
            for e in pm_reads):
         raise SystemExit("ADSP PM tap emitted an out-of-window or non-read event")
@@ -255,6 +272,7 @@ def main() -> int:
         # PM program-space reads were already tapped in Lua but previously
         # dropped from the parsed transaction. Preserve exact same-run operands.
         "pm_reads": pm_reads,
+        "pm_pc_ranges": [[low, high] for low, high in pm_ranges],
         "maincpu_irq_acks": related_irq_acks,
         # Ferry events occur after the GINT and can include unrelated traffic
         # during the post-frame window. Keep counts and small samples without
@@ -291,7 +309,7 @@ def main() -> int:
         "harness": "tools/capture-adsp-som-transaction + mame/lua/adsp-som-transaction.lua",
         "harness_sha256": {"python": sha256(pathlib.Path(__file__).resolve()),
                            "lua": sha256(script)},
-        "register_snapshots": "ADSP AR/AF/AX/AY/MY/MR/SR/SI/SE/I/M/L at PC 0x0570-0x0580 and 0x05DD-0x0630; same-run PM program-space reads for PC 0x0147-0x0173 are retained in transaction.pm_reads",
+        "register_snapshots": "ADSP AR/AF/AX/AY/MY/MR/SR/SI/SE/I/M/L at PC 0x0570-0x0580 and 0x05DD-0x0630; same-run PM program-space reads for the PC ranges listed in transaction.pm_pc_ranges are retained in transaction.pm_reads",
         "max_events": args.max_events,
         "truncated": False,
         "bank_events": banks,

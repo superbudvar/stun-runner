@@ -1252,6 +1252,71 @@ class PublicToolTests(unittest.TestCase):
             self.assertIn("ADSP PM tap emitted an out-of-window or non-read event",
                           result.stderr)
 
+    def test_capture_adsp_som_transaction_retains_only_requested_pm_pc_ranges(self):
+        """--pm-pc-range must widen retention and be recorded, not silently widen.
+
+        The default window is $0147-$0173. The control-word capture needed
+        $0214-$0237 as well, and the committed artifact records both ranges, so
+        a reader can tell which PM reads a C slice is entitled to use.
+        """
+        def stub(extra):
+            return (
+                "#!/usr/bin/env python3\n"
+                "print('M1_ADSP_TX_EVENT seq=10 frame=550 cpu=adsp access=W address=00002003 data=00000000 mask=0000FFFF pc=00000034 bank=1')\n"
+                "print('M1_ADSP_TX_EVENT seq=15 frame=550 cpu=adsp access=W address=00002002 data=00000030 mask=0000FFFF pc=00000515 bank=1')\n"
+                + extra +
+                "print('M1_ADSP_TX_EVENT seq=30 frame=550 cpu=adsp access=W address=00002006 data=00000045 mask=0000FFFF pc=0000004C bank=1')\n"
+                "print('M1_ADSP_TX_DONE frames=556 events=5 truncated=false bank_events=0 tx_start_frame=550 tx_start_seq=10 tx_end_frame=550 tx_end_seq=30 records=0')\n")
+
+        inside = "print('M1_ADSP_TX_EVENT seq=20 frame=550 cpu=adsp_program access=R address=00001019 data=00400000 mask=FFFFFFFF pc=00000224 bank=1')\n"
+        outside = "print('M1_ADSP_TX_EVENT seq=21 frame=550 cpu=adsp_program access=R address=00001019 data=00400000 mask=FFFFFFFF pc=000004B2 bank=1')\n"
+
+        with tempfile.TemporaryDirectory() as temp:
+            temp = pathlib.Path(temp)
+            roms = temp / "roms"
+            roms.mkdir()
+            (roms / "stunrun.manifest.json").write_text("{}\n", encoding="utf-8")
+
+            def run(extra, *options):
+                mame = temp / "mame-stub"
+                mame.write_text(stub(extra), encoding="utf-8")
+                mame.chmod(0o755)
+                out = temp / f"cap{len(options)}{abs(hash(extra)) % 1000}"
+                result = subprocess.run(
+                    [str(ROOT / "tools" / "capture-adsp-som-transaction"),
+                     str(roms), str(out), "--frames", "556",
+                     "--mame", str(mame), *options],
+                    cwd=ROOT, capture_output=True, text=True)
+                return result, out
+
+            # Default window: the $0224 read is dropped, the $04B2 one too.
+            result, out = run(inside + outside)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads((out / "result.json").read_text())
+            self.assertEqual(payload["transaction"]["pm_pc_ranges"], [[327, 371]])
+            self.assertEqual(payload["transaction"]["pm_reads"], [])
+
+            # Requested window: the $0224 read is kept and both ranges recorded.
+            result, out = run(inside + outside, "--pm-pc-range", "0x0214:0x0237")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads((out / "result.json").read_text())
+            self.assertEqual(payload["transaction"]["pm_pc_ranges"],
+                             [[327, 371], [532, 567]])
+            # $0224 = 548 is inside the requested window; the $04B2 read (1202)
+            # is still outside it, so it stays dropped.
+            self.assertEqual([e["pc"] for e in payload["transaction"]["pm_reads"]],
+                             [0x0224])
+
+            # A malformed range is rejected rather than ignored: a typo'd
+            # --pm-pc-range would otherwise produce a capture missing exactly the
+            # operands it was asked for.
+            result, _ = run(inside, "--pm-pc-range", "0x0214")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("--pm-pc-range", result.stderr)
+            result, _ = run(inside, "--pm-pc-range", "0x0237:0x0214")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("out of order", result.stderr)
+
     def test_capture_adsp_som_transaction_rejects_missing_gint_boundary(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = pathlib.Path(temp)
@@ -1753,7 +1818,7 @@ M1_RAM_WRITE frame=10 pc=00002656 addr=00C00002 data=FF896040 mask=FFFF a0=00FF8
 M1_RAM_WRITE frame=10 pc=00002656 addr=00C00004 data=00000000 mask=FFFF a0=00FF8960 a1=00001FBC a5=00000000
 M1_RAM_WRITE frame=11 pc=00002666 addr=00C0000C data=000000DF mask=FFFF a0=00FF8960 a1=00001FBC a5=00000000
 M1_RAM_WRITE frame=11 pc=FFF46590 addr=00C0000C data=0000ABCD mask=FFFF a0=00FF1234 a1=00FD0040 a5=00000002 a10=0000DBC0 a11=00000040
-M1_RAM_WRITE_DONE frames=12 events=4 truncated=false output=/dev/null
+M1_RAM_WRITE_DONE frames=12 events=5 truncated=false output=/dev/null
 """
 
     def _run_ram_write_trace_stub(self, temp, log):
