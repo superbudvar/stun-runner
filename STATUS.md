@@ -139,6 +139,17 @@ its own recorded digest and requires the nine fixture records to appear at that
 stream's offsets, so a uniformly wrong record can no longer pass. A negative
 control corrupts a single side value. See findings §96.
 
+**Bounded ADSP producer acceptance met (`stun-runner-alo`, 2026-10-18).** For
+one reproducible frame-551 transaction the C path derives the pass-1 words, the
+six-word ring, and all nine SOM records from measured DM/SIMBUF/PM and
+object-ROM inputs, then reproduces the 146 SOMLATCH words with their SOM
+addresses, the bank opposite the host-selected bank, and the GINT write that
+completes the block. Intermediate and final values are asserted against the
+captured MAME events, unsupported input is rejected rather than guessed, and
+behavior-changing mutants are caught. This is one transaction, not an ADSP
+emulator: the upstream dispatch, control word, selector schedule, alternate
+`$04C3`/`$0663` branches and gameplay semantics remain explicitly UNKNOWN.
+
 Distinct from M5. The GSP has no ROM: `mainpcb:user1` is the ADSP object ROM,
 and the 68010 programs the GSP through VRAM. Until a GSP executes, the display
 list is never rasterised and the 68010 spins at `$022766` waiting on a queue
