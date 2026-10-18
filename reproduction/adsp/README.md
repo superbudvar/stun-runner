@@ -89,6 +89,27 @@ branches; those saturation values were not observed in the captured run. The
 earlier `$04EB-$04FD` caller/early-return checks and the alternate `$0663` mode
 remain outside this slice.
 
+## Building the record control word (`control_word.c`)
+
+`control_word.c` transcribes `$0214-$0237`, the routine that turns the `$0002`
+`$01A0` wrote into `DM($0036)` into the `$0030` the records carry. It asserts
+both observable writes — `$022C`'s `DM($003A)` and `$0236`'s `DM($0036)` — against
+the capture, so a test that deleted the whole MAC loop would fail rather than
+still produce `$0030`.
+
+The capture's most interesting fact is that **`$022C`'s value is discarded**:
+the `$0238` callee reaches `$0252 AR = $0000` and `$0253 DM($003A) = AR`, so
+`$0230`'s multiply contributes nothing and the control word is exactly
+`((DM($0036) << 4) + $0010)`. Feeding each record's own `$022C` value back in
+changes the answer to `$003C`/`$0039`/`$0035`/`$0037`, and the test asserts that
+too.
+
+`DM($003A)` is an **input**, because `$0238-$0253` is a separate routine and is
+not transcribed; its value is zero in all nine captured records. `$021E/$021F`'s
+mask-and-return path, `$022B`'s conditional, and any command word that would take
+`$021D` the other way are `UNKNOWN` and rejected. Findings §99 has the
+arithmetic and the two corrections made during review.
+
 ## Walking the record schedule (`record_schedule.c`)
 
 `record_schedule.c` transcribes `$0174-$01A9`, the routine that walks the

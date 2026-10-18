@@ -14356,3 +14356,278 @@ reproduction/adsp/som_selector_fixture.c -o /tmp/recsched && /tmp/recsched`
 prints `PASS` and exits 0. The third source is the committed ROM fixture the test
 reads its chain words from; without it the test does not link. `ctest -R
 adsp-record-schedule-slice-c` runs it with the rest of the C suite.
+
+## 99. `$0214-$0237` builds the record control word, and `$0238` throws away what it builds
+
+`reproduction/adsp/control_word.c` transcribes the ADSP-2100 routine at `$0214-$0237`.
+It is the routine that writes the control word latched at `$0515` as `DM($0036)` —
+the `$0030` the records actually carry. `$01A0` writes `$0002` first (that half is
+`record_schedule.c`, §98) and `$01D0` rewrites `$0030` afterwards; `$0236` is the
+write that produces the value.
+
+**Verbatim transcription.** `tools/disasm-adsp` over the frame-551 program image,
+MAME's own disassembler (`2100dasm.cpp`) compiled standalone against
+`tools/emu_shim.py`:
+
+```text
+0x0214  0x00390190  I4 = $1019
+0x0215  0x00340143  I3 = $0014
+0x0216  0x00340015  M1 = $0001
+0x0217  0x00380014  M4 = $0001
+0x0218  0x00380008  L4 = $0000
+0x0219  0x0034003b  L3 = $0003
+0x021a  0x004001f4  AY0 = $001F
+0x021b  0x0080036a  AR = DM($0036)
+0x021c  0x0026e20f  AF = AR - AY0
+0x021d  0x00182214  IF LT JUMP $0221
+0x021e  0x0023820f  AR = AR AND AY0
+0x021f  0x0090036a  DM($0036) = AR
+0x0220  0x000a000f  RTS
+0x0221  0x0020980f  MR = 0
+0x0222  0x003c0025  CNTR = $0002
+0x0223  0x0014227e  DO $0227 UNTIL CE
+0x0224  0x00e8000d  MX0 = DM(I3,M1), MY0 = PM(I4,M4)
+0x0225  0x00e9000d  MR = MR + MX0 * MY0 (SS), MX0 = DM(I3,M1), MY0 = PM(I4,M4)
+0x0226  0x00e9000d  MR = MR + MX0 * MY0 (SS), MX0 = DM(I3,M1), MY0 = PM(I4,M4)
+0x0227  0x0021000f  MR = MR + MX0 * MY0 (SS)
+0x0228  0x0020580f  MR = MR + MX0 * 0 (RND)
+0x0229  0x0042d415  AY1 = $2D41
+0x022a  0x00226c0f  AR = MR1 + AY1
+0x022b  0x00221804  IF LT AR = 0
+0x022c  0x009003aa  DM($003A) = AR
+0x022d  0x001c238f  CALL $0238
+0x022e  0x008003aa  AR = DM($003A)
+0x022f  0x00400126  MY0 = $0012
+0x0230  0x0020220f  MR = AR * MY0 (RND)
+0x0231  0x00800368  SI = DM($0036)
+0x0232  0x000f1004  SR = LSHIFT SI BY 4 (LO)
+0x0233  0x00400104  AY0 = $0010
+0x0234  0x0026660f  AF = SR0 + AY0
+0x0235  0x0023b40f  AR = MR1 OR AF
+0x0236  0x0090036a  DM($0036) = AR
+0x0237  0x000a000f  RTS
+```
+
+**Correction to an earlier reading of the Y operand (parent review).** An
+earlier version of this section claimed that MAME's disassembler text and MAME's
+executor disagreed at `$0221` and `$0228`, and that the multiply was by `MF`
+with `MF` inferred to be zero. **Both claims were wrong, and the arithmetic was
+right only by coincidence.** MAME maps the two-bit MAC Y field through a fixed
+table (`adsp2100.cpp:247-250`):
+
+```text
+m_mac_yregs[0] = &m_core.my0;   m_mac_yregs[1] = &m_core.my1;
+m_mac_yregs[2] = &m_core.mf;    m_mac_yregs[3] = &m_core.zero;
+```
+
+Both opcodes carry Y field **3**, not 2:
+
+```text
+$0221  op=0x0020980f   BIT(op,11,2) = 3   -> zero register
+$0228  op=0x0020580f   BIT(op,11,2) = 3   -> zero register
+```
+
+So the executor computes `X * ZERO`; `MR` is zero **by construction**, `MF` is
+never read, and `2100dasm.cpp`'s "MR = 0" text is accurate, not shorthand. The
+error was mapping field 3 onto `MF` (which is field 2) and then reading the
+resulting phantom unknown as a real inference: "MF = 0, UNKNOWN whether the chip's
+MF was physically 0" was an invented unknown where the hardware has none. The
+nine `$022C` values are unchanged, because a zero register and an assumed-zero
+`MF` multiply identically — which is exactly why the mistake survived an
+arithmetic check and had to be caught by reading the register table.
+
+| PC | dasm prints | MAME's executor does | citation |
+|---|---|---|---|
+| `$021D` | `IF LT JUMP $0221` | condition field 4 = `an ^ av`, named `IF LT` by `2100dasm.cpp:35`; the reading is right, and the branch is *taken* here | `adsp2100.cpp:1123`, `2100dasm.cpp:31-46` |
+| `$0221` | `MR = 0` | `MR = MX0 * ZERO (SS)` — a real multiply whose result is zero because the Y field *is* the zero register. Text and executor agree. | `adsp2100.cpp:247-250`, `2100ops.hxx:1441-1447`, `2100dasm.cpp:75` |
+| `$0228` | `MR = MR + MX0 * 0 (RND)` | `MR = MR + MX0 * ZERO (RND)`. Text and executor agree. | `adsp2100.cpp:247-250`, `2100ops.hxx:1410-1424` |
+| `$022B` | `IF LT AR = 0` | `IF LT AR = AF` — here the `0` really is `2100dasm.cpp`'s "when y = 0" display column for the zero register, and `alu_op_ar` case 0x00 assigns `AF`. A genuine text/executor mismatch, harmless in this capture because the branch never fires. | `2100ops.hxx:732-736`, `2100dasm.cpp:88` |
+
+**Confirmed by disassembly plus capture.** `[ROM]` Per record, from
+`reference/experiments/stunrun/adsp-control-word-pm-f551/run-1/result.json`
+(sha256 `fd2acd2aeab1dde50b595c4d4ea9b6c4e678a10e28555ee2484a9f41377f9ba1`, matching
+its `metadata.json`; same transaction as `adsp-som-pm-reads-f551` — identical 146
+SOM words, identical 4,009 DM events, identical GINT event — with 54 extra PM reads;
+MAME `/mnt/build/mame-oracle/mame` `75b09ee4…`, `input=none`, frame 551):
+
+- `$021B` reads `DM($0036)=$0002` on all nine records.
+- Six DM reads at `$0224/$0225/$0226`, `DM($0014) DM($0015) DM($0016)` twice — the
+  second pass repeating the first is `L3=$0003` wrapping `DM($0016)+M1` back to
+  `DM($0014)` through `data_read_dag1` (`2100ops.hxx:599-622`).
+- Six PM reads at the same PCs, `$1019`-`$101E`, with the **same** dwords on all
+  nine records: `$00000000 $00400000 $00000000 $00000000 $00000000 $00C00000`.
+- `$022C` writes `DM($003A)` = `$5552 $5552 $580A $4033 $4033 $215A $2E91 $2E91 $215A`.
+- `$022E` reads `DM($003A)=$0000` back, `$0231` reads `DM($0036)=$0002`, `$0236`
+  writes `DM($0036)=$0030` — all nine.
+
+**The MAC arithmetic, which is not a detail.** `pgm_read_dag2` hands the MAC bits
+23:8 of the program dword (`2100ops.hxx:689-692`), so the `MY0` sequence is
+`$0000, $4000, $0000, $0000, $0000, $C000` — `0, 16384, 0, 0, 0, -16384`. Four of the
+six products are therefore zero and the whole `$022C` value comes from
+`DM($0015) x 16384` and `DM($0016) x -16384`.
+
+The MAC places its result one bit down (`int8_t shift = (m_mstat & MSTAT_INTEGER) ? 0 : 1`,
+`2100ops.hxx:1382`). That is **structural, not observed**: the machine's DSP is an
+`ADSP2100` (`harddriv.cpp:1598`), whose MSTAT write mask is `0x0f`
+(`adsp2100.cpp:167`), so `MSTAT_INTEGER` (`0x10`) cannot be set at all. So
+`[MAME]` every MAC term here is `2 * x * y`.
+
+With that, and `$0228`'s `(RND)` bias — `temp &= 0xffff; res += 0x8000; if (temp ==
+0x8000) res &= ~0x10000` (`2100ops.hxx:1419-1423`) — the accumulator collapses to
+
+```text
+MR = 2 * 16384 * (DM($0015) - DM($0016)) + 0x8000
+```
+
+because `$0221` and `$0228` multiply by the **zero register** (see the correction
+above), which kills their products while still letting `$0228`'s `+$8000` through.
+Record 1 then gives
+`MR = 2*16384*(0x3344 + 0x7389) + 0x8000 = 672,202,752 = 10257 * 65536` — an
+**exact** 64 Ki multiple — so `MR1 = $2811` and `$022C = $2811 + $2D41 = $5552`,
+which is what the capture recorded. All nine reproduce exactly.
+
+**The `+$8000` is load-bearing and the naive reading misses it.** Without the `(RND)`
+bias, MR1 is one lower on every record and every `$022C` value comes out one below
+the oracle: `$5551, $5551, $5809, $4033…`. This was the only thing standing between
+an exact nine-for-nine match and an off-by-one on seven of nine records, and it is
+*not* visible in the accumulator's own magnitude — it is visible only in the low bit
+of `MR1`, i.e. in `$022C` after the `$2D41` bias.
+
+**`MF` is not read here — there is no unknown to declare.** The earlier claim in this
+section that `MF` was zero "inferred, not observed" was itself the error, corrected
+above: the Y field is 3, which is `m_core.zero`, so the products vanish
+structurally. `MF` (`m_mac_yregs[2]`, `adsp2100.cpp:249`) is not an operand of any
+instruction in `$0214-$0237`. `MX0` *is* read, and it is genuinely stale — nothing in
+the routine sets it — but since the Y operand is zero the product is zero whatever
+`MX0` held, so it is not an input either. Nothing about register state is inferred
+here; that is the difference between this paragraph and the one it replaces.
+
+**The load-bearing consequence, stated so the next reader does not miss it.** Because
+`$0238`'s `$0253` overwrote `DM($003A)` with `$0000`, the value `$022C` stored is
+**discarded**. `$0230` therefore multiplies zero, `MR1` is `$0000`, and the control
+word is exactly `((DM($0036) << 4) + $0010)` — `$0030` for the observed `$0002`. Had
+`$0238` not run that write, `MR1` would have been non-zero: feeding each record's own
+`$022C` value back in as `DM($003A)` yields `$003C, $003C, $003C, $0039, $0039, $0035,
+$0037, $0037, $0035`. The test asserts all three halves of that — the arithmetic
+identity, that the two writes to `DM($003A)` differ, and that feeding the discarded
+value back *changes* the answer.
+
+**Why `dm003a` is an input.** `$022D CALL $0238` reaches `$0253`, which writes
+`DM($003A) = $0000`; `[ROM]` the capture shows exactly that on all nine records, with
+`DM($1FE6)=$0140` so the `IF EQ RTS` at `$023A` is not taken, and `$0247 IF EQ JUMP
+$024B` taken so `$0249` does not write. Removing the input means transcribing
+`$0238-$0253`: its `DM($1FE6)`, `DM($08EA)`, `DM($0033)`, `DM($1FE7)` and `DM($1FE8)`
+reads, the `I3=$1FE7` / `L3=0` walk at `$023B-$023C`, the `$023F` negate, the `$0240`
+`SE = AR` sign latch, the `$0241` `ASHIFT SI (LO)`, the `$0242`-`$0243` 32-bit
+subtract with borrow, the `$0244 IF LT RTS` early-out, the `$0246` `$FF00` mask, the
+`$024C`-`$024D` `ASHIFT`/`LSHIFT`/`OR` reassembly, the `$024F` `(SU)` multiply and
+both of its `DM($003A)` writes at `$0249` and `$0253`. None of that is in scope here
+and none of it is modelled.
+
+**Branches the capture never took, refused rather than invented.** `[ROM]`
+
+- `$021E/$021F AR = AR AND AY0` / `DM($0036) = AR`, reached when `$021C`'s
+  `DM($0036) - $001F` is non-negative. `DM($0036)` was `$0002` on all nine records and
+  `2 - 31` is negative, so `$021D` was always taken. **UNKNOWN** what the mask
+  would have left. Refused: `stunrun_adsp_control_word_build` returns 0 for
+  `dm0036_in >= $001F`, and the test drives that with `$001F`, `$0020` and `$003F`.
+- `$022B IF LT AR = AF`, i.e. `MR1 + $2D41 < 0`. `MR1` is positive on all nine
+  records. **UNKNOWN** what AF would have been stored instead (it would have been
+  `$021C`'s `DM($0036) - $001F`, i.e. `$FFE3`, but nothing confirms the routine ever
+  runs again after that store). Refused, and reachable with synthetic operands:
+  `DM($0015)=$7FFF` against `PM($101A)=16384` with `DM($0016)=$8000` gives
+  `MR = 65536 * 32768 = $80000000`, `MR1 = $8000`, and the sum is `$AD41`, negative.
+
+**The DAG mask is deliberately absent, and that is a decision with a cost.**
+`update_i` computes the base as `m_i & m_lmask[which]` (`2100ops.hxx:333-336`) from a
+15-entry table (`adsp2100.cpp:1088-1106`). For these two literals that reduces to the
+identity — `$0014 & $3FFC = $0014` and `$1019 & $3FFF = $1019` — and so does every
+other L from 0 to 31 whose mask differs (`$3FFE` at L=2). The slice therefore does
+**not** carry the table. It was written first, and a mutant changing its `$3FFC` entry
+to `$3FFF` **survived**: `I3` and `L3` are ROM literals, not inputs, so no test in
+this repository can separate the two, and leaving the code in would have been
+untestable weight next to a real assertion. A compile-time check
+(`stunrun_adsp_control_word_dag_base_is_identity`) now fails the build if `I3` is
+changed without re-deriving the reduction. The wrap **length**, which does come from
+`L` itself and not from the mask, is modelled and is policed: the test supplies a
+**three**-word DM window for six reads, and a linear walk would need `DM($0017)`-`$0019`
+and be refused.
+
+**This is a refutation of our own first reading, not a surprise in the ROM or in
+MAME.** The mask table is correct MAME, and nothing here is a defect in either; the
+error was in assuming a transcribed MAME mechanism is automatically a transcribed
+*behaviour*. It was not, for these two literals.
+
+**Contract note the parent must decide on.** The brief for this slice said the inputs
+are "ONLY these two DM values", `dm0036_in` and `dm003a`. The routine genuinely also
+reads `DM($0014)`-`DM($0016)` and `PM($1019)`-`PM($101E)` in its MAC loop, and the nine
+`$022C` values are a function of them; computing them from two scalars would require
+the lookup table this slice is forbidden to contain. They are therefore passed as two
+absolute-address windows, the same shape `som_math.c` uses, and documented as such in
+`control_word.h`. Whether the caller wants them folded into a wider record context is
+an integration decision, not one this slice can make.
+
+**What the test asserts, and why.** Nine literal records transcribed from the capture
+— `dm0036_in`, the three DM words, the `$022C` write, the `$022E` read-back and the
+`$0236` write — checked as two observable writes, not as a summary. The `$022C`
+assertion is the one that matters: a test asserting only `$0030` would pass with the
+entire MAC loop deleted. Around them: the discard identity; three single-bit operand
+perturbations worked out from MAME's `mac_op_mr` rather than from this
+implementation's output; a `(RND)` tie-case vector on `$0230`'s operands (it cannot
+be reached at `$0228`, whose Y operand is MF); a `DM($0036)` sweep below the `$001F`
+guard; a `DM($003A)` sweep through `$0230`; and eleven refusals, each checked to leave
+the caller's buffer byte-for-byte at `$A5`.
+
+**Mutants, all caught.** `$001F` guard → `$001E`; `$2D41` → `$2D40`; `(RND)` `+$8000`
+removed; `(RND)` tie case removed; shift 4 → 3; `$0010` → `$0000`; `OR` → `AND`; `L3`
+→ `$0000`; MAC shift 1 → 0; `MY0` bits 23:8 → 31:0; `$0012` → `$0011` and → `$0013`;
+`CNTR` → 3; two MACs per pass instead of three; `$0230` accumulating instead of
+assigning; `MR1` taken from bits 15:0; `MF` → 1; `I4` → `$101A`; `M1` → 2; `$021D`'s
+guard inverted; `$022B`'s guard removed; rejection replaced by publishing garbage; and
+`(SS)` made unsigned. Every one produces `FAIL`, none builds green.
+
+Two mutants are provably **equivalent**, not survivors: casting `mr1 + $2D41` through
+`uint16_t` on both operands (integer promotion makes it the same value), and dropping
+the `address < base` half of the window bounds check (`address - base` underflows to
+a value larger than any plausible count, so the count check already rejects it).
+
+**Check command.** `cc -std=c99 -Wall -Wextra -Werror -pedantic -I
+reproduction/adsp reproduction/adsp/control_word.c
+reproduction/adsp/control_word_test.c -o /tmp/ctrlword && /tmp/ctrlword` prints
+`PASS` and exits 0. It links alone — no ROM fixture, unlike
+`record_schedule_test.c`. CTest target: `adsp-control-word-slice-c`.
+
+**Parent review: four errors found, all in the reviewer's own work, none in the
+numbers.** The transcription reproduced all nine `$022C` values and all nine
+`$0236` values, and the review did not change a single derived number — but four
+claims around them were wrong and are corrected above and in the code:
+
+1. **The multiply is not by `MF`.** Y field 3 is `m_core.zero`, so `MR` is zero
+   by construction; `MF` is never read. This removed an invented `UNKNOWN`.
+2. **The MAC shift is 1.** A hand-derived test vector omitted it, giving
+   `MR1 = 0` where the implementation's `MR1 = 1` was right.
+3. **The `(RND)` tie test looks at the PRODUCT's low half**, not at `res` after
+   the bias: `temp &= 0xffff; res += 0x8000; if (temp == 0x8000) res &= ~0x10000`
+   (2100ops.hxx:1403-1407). The variant above it is `#if 0` and does not run. A
+   second hand-derived vector asserted `MR1 = 7` where MAME's is `9` — it had
+   tested `res` rather than `temp`.
+4. **The `$0230` assigning form was untested.** The slice expresses "assigns"
+   by passing `MR = 0` to an always-accumulating helper, and with the captured
+   inputs a mutant passing a prior MR of `$1234` survived: `$1234 < $10000`, so
+   it never carried into `MR1`. The test now computes MAME's rule in a helper and
+   *searches* for a `DM($003A)` where the two readings differ, then asserts the
+   implementation picks the assigning one; that mutant is now killed. The
+   same-search approach also supplies the `(RND)` tie vector.
+
+Two process notes, because all four errors were caught the same way. First, the
+arithmetic was right every time and only the *accounting* was wrong: a mutant
+that is equivalent for every captured input is invisible to an oracle that only
+uses captured inputs, so vectors outside the capture are not optional. Second,
+every one of these was found by reading the pinned MAME source rather than by
+running anything — the arithmetic check could not have caught the `MF` claim,
+because a zero register and an assumed-zero `MF` multiply identically. The first
+verification attempt at the mutants was itself wrong: eight "build-rejected"
+results were a missing `-I` path, i.e. the tool never compiled, so they measured
+nothing; re-running with the header copied under its real name killed eight of
+ten and exposed the surviving `$0230` mutant. Ten mutants are now killed and none
+survive.

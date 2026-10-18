@@ -221,6 +221,7 @@ add_executable(stunrun-native-shell
   ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/record_schedule.c
+  ../reproduction/adsp/control_word.c
   ../reproduction/adsp/som_source_select.c
   ../reproduction/adsp/som_source_table.c
   ../reproduction/adsp/som_transaction.c
@@ -554,6 +555,7 @@ add_test(NAME adsp-source-producer-slice-c
 # producer events.
 add_executable(stunrun-adsp-record-schedule-test
   ../reproduction/adsp/record_schedule.c
+  ../reproduction/adsp/control_word.c
   ../reproduction/adsp/som_selector_fixture.c
   ../reproduction/adsp/record_schedule_test.c)
 target_include_directories(stunrun-adsp-record-schedule-test PRIVATE
@@ -562,6 +564,19 @@ set_target_properties(stunrun-adsp-record-schedule-test PROPERTIES
   C_STANDARD 99 C_STANDARD_REQUIRED ON)
 add_test(NAME adsp-record-schedule-slice-c
   COMMAND stunrun-adsp-record-schedule-test)
+# Bounded ADSP $0214-$0237 control word: the MAC loop and the combine that turn
+# DM($0036)=$0002 into the $0030 the records carry. Asserts both DM writes
+# against the captured producer events; the $0238 callee that zeroes DM($003A)
+# is out of scope and DM($003A) is an input.
+add_executable(stunrun-adsp-control-word-test
+  ../reproduction/adsp/control_word.c
+  ../reproduction/adsp/control_word_test.c)
+target_include_directories(stunrun-adsp-control-word-test PRIVATE
+  ../reproduction/adsp)
+set_target_properties(stunrun-adsp-control-word-test PROPERTIES
+  C_STANDARD 99 C_STANDARD_REQUIRED ON)
+add_test(NAME adsp-control-word-slice-c
+  COMMAND stunrun-adsp-control-word-test)
 # Captured $01E8/$01B0 source-window selection: resolve two SIMBUF pointer
 # words and the sentinel-terminated point-index list into DM($0040..$0048).
 add_executable(stunrun-adsp-som-source-select-test
@@ -571,6 +586,7 @@ add_executable(stunrun-adsp-som-source-select-test
   ../reproduction/adsp/som_producer.c
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/record_schedule.c
+  ../reproduction/adsp/control_word.c
   ../reproduction/adsp/som_source_select.c
   ../reproduction/adsp/som_selector_fixture.c
   ../reproduction/adsp/som_source_table.c
@@ -599,6 +615,7 @@ add_executable(stunrun-adsp-som-view-test
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/som_selector_fixture.c
   ../reproduction/adsp/record_schedule.c
+  ../reproduction/adsp/control_word.c
   ../reproduction/adsp/som_source_select.c
   ../reproduction/adsp/som_source_table.c
   ../reproduction/adsp/som_transaction.c
@@ -625,6 +642,7 @@ add_executable(stunrun-adsp-som-view
   ../reproduction/adsp/som_record.c
   ../reproduction/adsp/som_selector_fixture.c
   ../reproduction/adsp/record_schedule.c
+  ../reproduction/adsp/control_word.c
   ../reproduction/adsp/som_source_select.c
   ../reproduction/adsp/som_source_table.c
   ../reproduction/adsp/som_transaction.c

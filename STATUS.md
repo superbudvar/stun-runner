@@ -139,6 +139,19 @@ its own recorded digest and requires the nine fixture records to appear at that
 stream's offsets, so a uniformly wrong record can no longer pass. A negative
 control corrupts a single side value. See findings §96.
 
+**ADSP control-word slice (`stun-runner-e4l`, 2026-10-18).**
+`reproduction/adsp/control_word.c` transcribes `$0214-$0237` and derives the
+`DM($0036) = $0030` the records carry from the `$0002` `$01A0` wrote, with the
+MAC loop's `$022C` value shown to be discarded by `$0253`. It needed evidence
+that did not exist, so a second capture was taken first (`d8d4e96`):
+`tools/capture-adsp-som-transaction --pm-pc-range` retains the six
+`PM($1019)-PM($101E)` operands, and the committed artifact is the same
+transaction as the earlier one with 54 extra PM reads. `DM($003A)` stays an
+input because `$0238-$0253` is out of scope. Review found and fixed a wrong
+claim that the multiply was by `MF`: MAME maps MAC Y field 3 to `m_core.zero`, so
+`MR` is zero by construction and `MF` is never read — see findings §99. CTest
+`adsp-control-word-slice-c`.
+
 **ADSP record schedule slice (`stun-runner-e4l`, 2026-10-18).**
 `reproduction/adsp/record_schedule.c` transcribes `$0174-$01A9` and now derives
 the nine record starts from the object-ROM pointer chain plus one measured
