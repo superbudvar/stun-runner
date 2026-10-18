@@ -15707,3 +15707,98 @@ A useful sanity check while doing that: the checkpoint's
 injecting the image directly, **not** from the ROM uploading it. With
 `prog-w=0` that is now confirmed rather than assumed, and it means the native
 model has never contained the ROM's own ADSP upload.
+
+## 110. The 68010 tracks MAME to frame ~327, then leaves a watchdog countdown 36 frames early
+
+The measurement §109.4 called for. Same input arm (`none`, deterministic on
+both sides), same frame numbers, compare the 68010 PC at frame boundaries.
+
+### 110.1 Where they agree
+
+`tools/mame-main-state-snapshot` (MAME side) against the shell's frame log
+(native side), frames 10-300:
+
+```text
+   50  native 0x00022418   MAME 0x00022418   exact
+  100  native 0x000209e2   MAME 0x000209e2   exact
+  200  native 0x000209e0   MAME 0x000209e0   exact
+  300  native 0x000209e0   MAME 0x000209e0   exact
+```
+
+Frames 150 and 250 read `0x209e0` vs `0x209e2` — the two halves of the same
+two-instruction loop, sampled at a different phase. **PC equality at a frame
+boundary is not a match test when the CPU is spinning**; what carries signal is
+which region the PC is in, and an *edge* such as leaving a loop.
+
+### 110.2 The edge
+
+Native is in the `0x0209E0` countdown through frame 326 and out at 327. MAME
+stays in it through frame 362 and out at 363. Sampling every frame from 322:
+
+```text
+frame   native        MAME
+ 326    0x000209e0    0x000209e0   loop
+ 330    0x0002172e    0x000209e2   loop
+ 335    0x00022730    0x000209e2   loop
+ 350    0x0002262c    0x000209e0   loop
+ 360    0x000226f8    0x000209e2   loop
+ 363       --         0x00021734    out
+```
+
+Over those 36 frames MAME is inside the loop at **every** sample while native is
+elsewhere at every one. That is the divergence: **36 frames.**
+
+### 110.3 What the loop is
+
+`tools/dis68k` over the de-interleaved main-CPU image:
+
+```text
+000209d6: bsr    $2053c
+000209da: move.l #$1a0a, D0
+000209e0: subq.l #1, D0
+000209e2: bne    $209e0
+000209e4: move.w D0, $608000.l
+000209ea: bsr    $209f2
+000209ec: bne    $209d6
+000209ee: bra    $206e4
+```
+
+Not a wait — a **down-counter of $1A0A iterations that then writes the
+watchdog.** `harddriv.cpp:626` maps `0x608000-0x60bfff` to
+`watchdog_timer_device::reset16_w`. So this is the board's periodic watchdog
+service, and the divergence is about when that service stops happening.
+
+### 110.4 The obvious explanation is measured and is not enough
+
+| | MAME | native |
+|---|---:|---:|
+| maincpu clock | 8 MHz (`MASTER_CLOCK/4`) | 8 MHz |
+| screen | `set_raw(48e6/12*4, 640*4, 0, 127*4, 417, 0, 384)` | — |
+| refresh | 16e6 / (640 x 417) = **59.952 Hz** | **59.50 Hz** |
+| cycles per frame | **133 433** | **134 454** |
+| IRQ5 period | `MASTER_CLOCK/16/16/16/16/2` = 244.14 Hz = **32 768 cyc** | **32 768 cyc** |
+
+Native is 0.76% fast, and its IRQ5 period matches exactly. 0.76% over 327
+frames is 2.5 frames of drift, not 36. **So neither the frame rate nor the
+periodic interrupt accounts for the divergence** — both are ruled out by
+measurement rather than left as assumptions.
+
+(An intermediate inference here was wrong and is worth recording: MAME's
+"380 frames in 5 seconds at 100%" reads as ~76 Hz and suggests a 28% skew. It
+is not — the elapsed-time figure is rounded, and the authoritative
+`set_raw` parameters give 59.952 Hz.)
+
+### 110.5 Not established
+
+- **What differs at the exit.** Both run identical code; something they read
+  disagrees. The ADSP windows are not it (§109: zero traffic). Candidates not
+  yet excluded: ADC12/ADC8 conversion timing, the ZRAM/sound board, or state
+  accumulated in main RAM during those 327 frames.
+- **Why native is 0.76% fast**, and whether fixing that alone closes anything.
+  It is worth fixing regardless — it is a real, measured skew — but §110.4 says
+  it is not sufficient.
+
+The next step is a first-divergence hunt on *state* rather than on PC: compare
+main RAM between the two machines at frame 320, when the PCs still agree, and
+find the first differing cell. That localises the cause to a store, which is a
+much smaller search than the PC timeline.

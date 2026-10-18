@@ -2156,6 +2156,15 @@ static int run_walk(void)
                            gsp_rtl_driver_is_halted(),
                            (unsigned)gsp_board_vram_nonzero_words(&g_gsp_rtl_board));
 #endif
+                    /* The 68010's own PC at the frame boundary. This is the
+                     * comparison point for finding where our CPU diverges from
+                     * MAME: same input arm (`none` is deterministic on both
+                     * sides), same frame number, compare PC. findings 109
+                     * showed the ADSP windows see zero traffic, so the
+                     * divergence has to be found on the CPU side. */
+                    printf(" 68010-pc=0x%06x 68010-cyc=%lu",
+                           (unsigned)musashi_cpu_get_pc(g_cpu),
+                           (unsigned long)musashi_cpu_total_cycles(g_cpu));
                     printf("\n");
                     fflush(stdout);
                 }
