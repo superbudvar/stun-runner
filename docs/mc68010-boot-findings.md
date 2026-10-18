@@ -15449,3 +15449,100 @@ read to conclude `ADSP-2100 DOES NOT RESPOND`?** It is not `DM($1FFF)` by the
 argument above. That is answerable by tracing the 68010's reads across the ADSP
 windows during a service run — the same shape as §106.3, and it names the exact
 word the ADSP has to produce.
+
+## 107. The whole 68010<->ADSP interface is in the pinned MAME source, and our model hard-codes the idle value
+
+§106.4 said the routine behind `ADSP-2100 DOES NOT RESPOND` could be found by
+tracing. It should not have needed tracing: the entire interface is spelled out
+in the pinned driver, and reading it takes two greps.
+
+### 107.1 What the 68010 can do to the ADSP
+
+`harddriv_state::hd68k_adsp_control_w` (harddriv_m.cpp:751) — **bit 3 of the
+offset is the value; the data word is ignored**:
+
+| offset & 7 | effect |
+|---|---|
+| 0, 1 | LEDs (no-op) |
+| 3 | SOM buffer bank switch, deferred to the scheduler |
+| 5 | ADSP `/BR` — asserts `INPUT_LINE_HALT` at the next instruction boundary |
+| 6 | ADSP `/HALT` — same halt mechanism |
+| 7 | ADSP reset |
+
+`hd68k_adsp_irq_state_r` (harddriv_m.cpp:827) is the status register the ROM
+polls:
+
+```cpp
+int result = 0xfffd;
+if (m_adsp_xflag)     result ^= 2;   /* bit 1, set by /XOUT  */
+if (m_adsp_irq_state) result ^= 1;   /* bit 0, set by /GINT  */
+```
+
+So it is `$FFFD` when the DSP is silent, `$FFFC` after **/GINT**, `$FFFF` after
+**/XOUT**. `hd68k_adsp_irq_clear_w` clears `m_adsp_irq_state`.
+
+### 107.2 What the DSP can do
+
+`hdadsp_special_w` (harddriv_m.cpp:868), reached from the ADSP's own program
+space via `map(0x2000, 0x2fff)` (harddriv.cpp:692):
+
+| PM | pin | effect |
+|---|---|---|
+| `$2001` | /SIMCLK | `m_adsp_sim_address = data` |
+| `$2002` | SOMLATCH | `som_memory[(bank^1)*0x2000 + (som_address++ & 0x1fff)] = data` |
+| `$2003` | /SOMCLK | `m_adsp_som_address = data` |
+| `$2005` | **/XOUT** | `m_adsp_xflag = data & 1` |
+| `$2006` | /GINT | `m_adsp_irq_state = 1` + `update_interrupts()` |
+| `$2007` | /MP | `m_adsp_eprom_base = 0x10000 * data` |
+
+### 107.3 The program never drives /XOUT
+
+Every special-register store in the 8192-word program image, by opcode:
+
+```text
+0x0092002a x15  $2002 SOMLATCH      0x00920020 x13  $2000
+0x0092007a x4   $2007 /MP           0x00920060 x2   $2006 /GINT
+0x0092003a x2   $2003 /SOMCLK       0x0092001a x2   $2001 /SIMCLK
+(plus single stores to $2002/$2001/$2007)
+```
+
+**`$2005` appears zero times.** `m_adsp_xflag` is therefore never set by this
+program, so the ROM cannot be checking /XOUT — the `$FFFF` status value is
+unreachable. The only status transition this program can cause is bit 0, via
+**/GINT**, which it writes twice: at PC `$004C` and `$00C1`. `$004C` is §95's
+`DM($2006) = AX0`, GINT value `$0045`.
+
+So the register the ROM polls goes `$FFFD` → `$FFFC`, and bit 0 clearing is the
+ADSP having answered.
+
+### 107.4 Our model hard-codes the silent value
+
+`musashi_cpu.c:2086`:
+
+```c
+case REGION_ADSP_IRQ:
+    /* hd68k_adsp_irq_state_r: 0xfffd, both flag bits clear while idle. */
+    return 0xFFFDu;
+```
+
+The comment reads MAME correctly and then implements the *idle* case only,
+forever. The ROM polls this register; bit 0 never clears; the poll times out;
+`ADSP-2100 DOES NOT RESPOND`. **That is the mechanism, and it is two lines of
+model, not an emulator.**
+
+Two further gaps sit behind it, both already tracked:
+
+- the ADSP interrupt is never wired to the 68010 (bead `stun-runner-4bp`), so
+  `update_interrupts()`'s IPL2 never fires in our model;
+- the ADSP itself does not execute, so nothing ever writes `/GINT`.
+
+### 107.5 Loose end, stated because §106.3 may be over-read
+
+§106.3 concluded the release is "one 16-bit store to `DM($1FFF)`". That holds
+for the **normal** arm (`f=1691`, `DM($1FFF)` `$FFFF`→`$0000`, ADSP at `$0525`
+by `f=1692`). The **service** arm, however, shows the ADSP leaving `$0014` at
+`f=4298-4300` (`pc=$00FE,$00FF,$0100`) with **no observed change to
+`DM($1FFF)`** — and `DM($1FFF)` is still `$FFFF` when that run's window ends at
+4300. So either the release has a second cause, or the service run releases
+later than the window measured. §106.3 should be read as scoped to the normal
+path until a run extending past ~4300 settles it.
