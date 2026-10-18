@@ -289,6 +289,11 @@ struct musashi_cpu {
     uint32_t adsp_irq_reads;
     uint32_t adsp_prog_reads;
     uint32_t adsp_prog_writes;
+    uint32_t zram_reads;
+    uint32_t zram_writes;
+    uint32_t zram_writes_gated;
+    uint8_t  m68k_zp1;
+    uint8_t  m68k_zp2;
     uint32_t adsp_dm_trigger_writes;
     uint32_t adsp_ctrl_bank_writes;
     uint32_t adsp_ctrl_reset_writes;
@@ -486,6 +491,11 @@ typedef enum {
     REGION_ADSP_PROG = 11,  /* 0x800000-0x807FFF: ADSP program RAM window */
     REGION_ADSP_IRQ  = 12,  /* 0x838000-0x83FFFF: ADSP interrupt state (read) */
     REGION_SOUNDRST  = 13,  /* 0x604000-0x607FFF: sound reset / nwr control */
+    /* 0xFF4000-0xFF4FFF: hd68k_zram_r/w (harddriv_m.cpp:519/533). Low byte
+     * is m_210e (EEPROM_2816 settings, required_device), high byte is m_200e
+     * (M48T02 timekeeper, required_device); writes are gated on
+     * m_m68k_zp1==0 && m_m68k_zp2==1. This region was UNMAPPED before. */
+    REGION_ZRAM      = 16,
     REGION_ADC_CTRL  = 14,  /* 0xB80000-0xBFFFFF: 12-bit ADC + ADC0809 control */
     REGION_ADC8      = 15,  /* 0xB00000-0xB7FFFF: ADC0809 data / WR2 latch */
     REGION_UNMAPPED  = -1,
@@ -532,6 +542,14 @@ static region_t route_address(unsigned int address, unsigned int *out_offset)
     /* Main RAM: 0xFF8000-0xFFFFFF (512 KiB), per multisync_68k_map's
      * map(0xff8000, 0xffffff).ram().  The 68010 drives a 24-bit bus, so this
      * is a plain 24-bit range test. */
+    /* ZRAM must be tested BEFORE main RAM's 0xFF8000 floor, and it is below
+     * it, so the order here is not load-bearing -- but it sits next to
+     * REGION_SOUNDRST in the driver and both are ZP-gated. */
+    if (address >= 0xFF4000u && address <= 0xFF4FFFu) {
+        *out_offset = address - 0xFF4000u;
+        return REGION_ZRAM;
+    }
+
     if (address >= 0xFF8000u) {
         *out_offset = address & (STUNRUN_MAIN_RAM_BYTES - 1u);
         return REGION_RAM;
@@ -2162,6 +2180,16 @@ unsigned int m68k_read_memory_16(unsigned int address)
         (void)stunrun_jsa_transport_read(s_cpu->jsa_latches, offset, 2u, &byte);
         return (uint16_t)(((uint16_t)byte << 8) | 0x00FFu);
     }
+    case REGION_ZRAM: {
+        /* hd68k_zram_r (harddriv_m.cpp:519): low byte from m_210e (the
+         * settings EEPROM, EEPROM_2816), high byte from m_200e (the M48T02
+         * timekeeper). Both are required_device, so this is real state and
+         * not a constant. We model neither device yet, so the honest answer
+         * is the all-ones value an unprogrammed pair reads as, and the access
+         * is counted so the region cannot be silently unmapped again. */
+        s_cpu->zram_reads++;
+        return 0xFFFFu;
+    }
     case REGION_ADSP_CTRL:
     case REGION_GSP_PAL:
         return 0xFFFF;
@@ -2387,6 +2415,17 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
                                   0xFFFFu, 16u);
         break;
     case REGION_SOUNDRST:
+        /* hd68k_nwr_w (harddriv_m.cpp:466): "bit 3 selects the value; data is
+         * ignored", and `offset &= 7` selects the function. 4 = ZP1,
+         * 5 = ZP2 -- these gate hd68k_zram_w. The boot routine's
+         * `clr.w $60400c` lands here: offset 0x0C, so sel 4 and val 1,
+         * i.e. ZP1 is ASSERTED by a write of zero (native/gsp_boot.h). */
+        {
+            unsigned nwr_sel = offset & 7u;
+            unsigned nwr_val = (offset >> 3u) & 1u;
+            if (nwr_sel == 4u)      s_cpu->m68k_zp1 = (uint8_t)nwr_val;
+            else if (nwr_sel == 5u) s_cpu->m68k_zp2 = (uint8_t)nwr_val;
+        }
         gsp_emit_reset_control_event(s_cpu, address, (uint16_t)value,
                                      0xFFFFu, 16u);
         break;
@@ -2466,6 +2505,15 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
         /* harddriv.cpp:4806 main_command_w (8-bit device split). */
         (void)stunrun_jsa_transport_write(s_cpu->jsa_latches, offset, 2u,
                                           (uint16_t)value);
+        break;
+    case REGION_ZRAM:
+        /* hd68k_zram_w (harddriv_m.cpp:533): the write only happens when
+         * m_m68k_zp1 == 0 && m_m68k_zp2 == 1. Counted either way, because
+         * "the ROM tried and the gate dropped it" and "the ROM never tried"
+         * are different facts. */
+        s_cpu->zram_writes++;
+        if (!(s_cpu->m68k_zp1 == 0u && s_cpu->m68k_zp2 == 1u))
+            s_cpu->zram_writes_gated++;
         break;
     case REGION_INPUT: case REGION_GSP_PAL:
     case REGION_ADSP_IRQ:
@@ -3489,6 +3537,11 @@ void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out)
     out->irq_reads   = s_cpu ? (unsigned long)s_cpu->adsp_irq_reads : 0ul;
     out->prog_reads  = s_cpu ? (unsigned long)s_cpu->adsp_prog_reads : 0ul;
     out->prog_writes = s_cpu ? (unsigned long)s_cpu->adsp_prog_writes : 0ul;
+    out->zram_reads  = s_cpu ? (unsigned long)s_cpu->zram_reads : 0ul;
+    out->zram_writes = s_cpu ? (unsigned long)s_cpu->zram_writes : 0ul;
+    out->zram_gated  = s_cpu ? (unsigned long)s_cpu->zram_writes_gated : 0ul;
+    out->zp1         = s_cpu ? (unsigned)s_cpu->m68k_zp1 : 0u;
+    out->zp2         = s_cpu ? (unsigned)s_cpu->m68k_zp2 : 0u;
 }
 
 void musashi_cpu_text_log_stats(musashi_text_log_stats_t *out)

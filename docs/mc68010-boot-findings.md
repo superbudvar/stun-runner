@@ -15802,3 +15802,80 @@ The next step is a first-divergence hunt on *state* rather than on PC: compare
 main RAM between the two machines at frame 320, when the PCs still agree, and
 find the first differing cell. That localises the cause to a store, which is a
 much smaller search than the PC timeline.
+
+## 111. The audio-board interface had the same two defects as the ADSP — and is also unused
+
+§110.5 listed "ZRAM/sound board" among the candidates for the frame-327
+divergence. Reading the driver settles it.
+
+### 111.1 Two real defects, found and fixed
+
+**ZRAM was unmapped.** `harddriv.cpp:604` maps `0xff4000-0xff4fff` to
+`hd68k_zram_r/w` (harddriv_m.cpp:519/533). Our `route_address()` had no case
+for it: it sits *below* the main-RAM floor at `0xff8000` and matched nothing, so
+the ROM read `$FFFF` from the settings EEPROM and the RTC.
+
+```cpp
+uint16_t hd68k_zram_r(...) {
+    if (ACCESSING_BITS_0_7)  data |= m_210e->read(space, offset);
+    if (ACCESSING_BITS_8_15) data |= m_200e->read(offset) << 8;
+}
+void hd68k_zram_w(...) {
+    if (m_m68k_zp1 == 0 && m_m68k_zp2 == 1) { /* m_210e / m_200e writes */ }
+}
+```
+
+`m_210e` is `EEPROM_2816` and `m_200e` is `M48T02` — both `required_device`
+(harddriv.h:322-323), i.e. the DIP settings EEPROM and the battery-backed
+timekeeper. Not constants. Now routed and counted.
+
+**The ZP1/ZP2 latch was missing.** `hd68k_nwr_w` (harddriv_m.cpp:466) uses the
+*same* encoding as the ADSP control register — "bit 3 selects the value; data is
+ignored", `offset &= 7` selects the function — and offsets 4/5 latch ZP1/ZP2,
+which are what gate `hd68k_zram_w`. Offsets 6/7 are /GSPRES and /MSPRES. Our
+model latched none of them. Now latched in the 16-bit arm, which is where a
+`clr.w $60400c` from the boot routine actually lands (`native/gsp_boot.h`
+already documented that this asserts ZP1 = 1).
+
+Also noted for completeness: `hd68k_sound_reset_r` calls `m_jsa->reset()` and
+returns `~0`.
+
+### 111.2 The measurement rules the audio board out
+
+Normal boot, 380 frames:
+
+```text
+render frame=380 hash=0x859B609D lit=343/122880 colours=1
+zram-r=0 zram-w=0 zram-gated=0 zp1=0 zp2=0
+```
+
+**Zero.** No ZRAM reads, no ZRAM writes, and ZP1/ZP2 never latched. So on the
+normal boot path the ROM never touches the audio-board interface at all —
+not even the `clr.w $60400c` that `gsp_boot.h` says the boot routine performs.
+
+Two consequences:
+
+1. **The audio board is not the frame-327 divergence.** §110's candidate list
+   loses an entry. Like the ADSP windows (§109), the region is unused, so
+   nothing about it can change behaviour.
+2. **§110.5's candidate list is now empty.** ADSP windows: zero traffic.
+   ZRAM / sound board: zero traffic. The 68010 runs MAME's ROM and agrees with
+   MAME's PC through frame 300, then leaves a watchdog countdown 36 frames
+   early — and neither of the two MMIO regions a game normally reads for
+   configuration is involved.
+
+That points at something the 68010 reads constantly instead: **main RAM**. The
+ROM writes and polls `$FF8000-$FFFFFF` throughout, and the state there after
+327 frames is what decides when the watchdog service stops. §110.5's proposed
+next step — compare main RAM between the two machines at frame 320 and find the
+first differing cell — is now the only remaining lead, and it is a good one: it
+converts a timing symptom into a single differing store.
+
+### 111.3 Standing note
+
+Both §109 and §111 found the same shape of defect: a region present in the
+driver and absent from `route_address()`, whose writes were silently dropped
+and whose reads returned a constant. Neither was caught by any test, and both
+were invisible in the run log — the counters added here are what make them
+visible next time. The pattern is common enough to be worth auditing the rest
+of `multisync_68k_map` against our route the same way.
