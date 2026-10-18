@@ -15363,3 +15363,89 @@ instrument produced 638 distinct PCs and 1678 transitions in the control arm:
 638-vs-6 is not a sampling artifact. The control is the reason this is
 evidence. Instruction-level coverage needs the fetch trace that
 `stun-runner-yuv` asks for and that does not exist yet.
+
+## 106. The ADSP handshake is one 16-bit write to DM($1FFF) — and our model stubs that whole window
+
+Follow-on to §105. §105 asked what releases the ADSP from `$0014` at frame 827.
+It is not 827, and the answer is much smaller than an emulator.
+
+### 106.1 Correction to §105's frame number
+
+The frame-827 burst was an excursion that **returned to the wait loop** — the
+§105.1 trace shows `f=833 pc=0014` between `f=832 pc=077F` and `f=834 pc=0577`,
+and §105.3's summary `final_pc=0014` for the no-input arm already implied the
+ADSP comes back. The real release is later. §105.4's conclusion is unaffected,
+but the frame number was wrong.
+
+### 106.2 The wait loop, read from the program image
+
+`tools/disasm-adsp fixtures/oracle/frame_600/frame_600_adsp_prog.bin`:
+
+```text
+0x0012  DM($1FE3) = AR
+0x0013  AR = DM($1FFF)
+0x0014  AR = NOT AR
+0x0015  IF EQ JUMP $0013
+0x0016  AR = $FFFF
+0x0017  DM($1FFF) = AR
+```
+
+`IF EQ` tests `AR == 0`, and `AR` is `NOT DM($1FFF)`. So `$0013-$0015` spins
+**while `DM($1FFF) == $FFFF`**, and `$0016-$0017` re-arms it by writing `$FFFF`
+back. The DSP is waiting for one 16-bit word in one data-memory location.
+
+### 106.3 The handshake, measured
+
+Watching the `:mainpcb:adsp_data` share at `$1FFF`, both arms:
+
+```text
+INPUT none
+  f=1     DM($1FFF)=0000  pc=0004
+  f=410   DM($1FFF)=FFFF  pc=0014     ADSP arms its own flag, enters the spin
+  f=1691  DM($1FFF)=0000  pc=0014     68010 clears it -- the release
+  f=1692  DM($1FFF)=FFFF  pc=0525     ADSP has already run on to $0525
+
+INPUT service
+  f=1     DM($1FFF)=0000  pc=0004
+  f=410   DM($1FFF)=FFFF  pc=0014     and nothing ever clears it
+```
+
+The whole release protocol is **one write: the 68010 stores `$0000` to ADSP
+data-memory `$1FFF`.** The ADSP then runs, and re-arms `$1FFF` when it is done.
+
+### 106.4 Our model stubs exactly that window
+
+`musashi_cpu.c`:
+
+- reads: `case REGION_ADSP_DATA: case REGION_ADSP_BUF: case REGION_ADSP_CTRL:
+  case REGION_GSP_PAL: return 0xFFFF;` — every ADSP data/buffer read returns
+  `$FFFF`, unconditionally.
+- writes: `REGION_ADSP_DATA`/`REGION_ADSP_BUF` fall into the
+  `/* TODO: wire to proper MMIO handlers */` group and are **dropped**.
+
+So the ROM's view of the DSP is fiction in both directions here. It cannot read
+`DM($1FFF)` (it always sees `$FFFF` — the *armed* value, the opposite of what
+the release needs), and its writes vanish. There is no ADSP program RAM either
+(`REGION_ADSP_PROG` reads a static image, and the checkpoint reports
+`adsp pc=0 astat=0`).
+
+Note the direction this points, because it is not the obvious one: the stub
+reports the DSP as *permanently armed*, while the symptom is the ROM concluding
+the DSP is *dead*. So the routine behind `ADSP-2100 DOES NOT RESPOND` is
+reading something other than `DM($1FFF)` — most likely a status word the 68010
+polls with a timeout. Our stub satisfies that poll instantly, if it polls at
+all, which is itself worth knowing.
+
+### 106.5 What this settles about the emulator decision
+
+It does not need to be an emulator. §104.4 asked whether the check needs a
+handshake or 35 seconds of sustained work; §106.3 answers it: the integration
+point is a **single 16-bit store to a known ADSP data-memory address**, plus
+enough ADSP state to satisfy whatever the ROM polls while deciding. That is a
+68010-side window to wire and one or two status words to model.
+
+The still-open piece, and it is the right next measurement: **what does the ROM
+read to conclude `ADSP-2100 DOES NOT RESPOND`?** It is not `DM($1FFF)` by the
+argument above. That is answerable by tracing the 68010's reads across the ADSP
+windows during a service run — the same shape as §106.3, and it names the exact
+word the ADSP has to produce.
