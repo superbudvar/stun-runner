@@ -14913,3 +14913,115 @@ are plausible but the bank attribution still does not reconcile, so the
 replay is **not** evidence and must not be quoted. The next step is to replay
 the bus stream with the corrected decode and the real `hd68k_gsp_io_w`
 auto-increment rule, and to state the bank timeline from that.
+
+## 102. There is no palette-decode bug: bank 0 is animated in MAME and frozen in ours
+
+Follow-on from §101. The question was "fix the colour". The answer is that
+colour is not where the fault is, and the measurements below say so.
+
+### 102.1 The palette decode is already correct
+
+Against MAME's title-path palette at the same frame:
+
+| bank | entries matching MAME exactly, frame 480 | frame 900 |
+|---|---:|---:|
+| 0 | 0 / 256 | 0 / 256 |
+| 1 | 256 / 256 | 256 / 256 |
+| 2 | 256 / 256 | 256 / 256 |
+| 3 | 256 / 256 | 256 / 256 |
+
+Three of four banks are **bit-perfect at both frames**. A wrong bank decode, a
+wrong `>>` shift, a wrong RGB channel order or a wrong byte order could not
+produce three bit-perfect banks out of four. §69's bank-decode fix stands and
+there is nothing further to fix in the decode.
+
+### 102.2 The fault is temporal, not spatial
+
+MAME's bank 0 is **animated**; ours is **frozen**:
+
+| | MAME 480 vs 900 | ours 480 vs 900 |
+|---|---:|---:|
+| bank 0 | **0 / 256** | 256 / 256 |
+| bank 1 | 256 / 256 | 256 / 256 |
+| bank 2 | 256 / 256 | 256 / 256 |
+| bank 3 | 256 / 256 | 256 / 256 |
+
+MAME rewrites all 256 entries of bank 0 between frame 480 and frame 900 while
+banks 1–3 stay fixed. That is the background gradient being redrawn. In our
+native run **every bank is static across 420 frames** — the same signature as
+the frozen picture (`lit=41094 colours=252`, identical at frames 480, 600, 900,
+1200 and 1800).
+
+MAME's bank 0 low plane is a red ramp (`lo` = `0x7300, 0x7f00, 0x8b00,
+0x9700, …`, red +12 per entry). Ours is neither that nor any earlier state of
+it:
+
+```text
+our bank0 vs MAME bank0:  frame 300 →  2/256
+                          frame 400 →  2/256
+                          frame 480 →  0/256
+                          frame 900 →  1/256
+```
+
+So ours is not "MAME, frozen at an earlier frame". It is a state MAME's bank 0
+never occupies.
+
+### 102.3 The GSP core contributes no palette at all
+
+The headless run (Verilated core idle) and the live run (core running) produce
+**identical palettes in all four banks**:
+
+```text
+bank0..bank3: headless vs live agree 256/256 → the GSP wrote nothing
+```
+
+So in our model the palette is written entirely by the 68010, and the core
+never emits a palette write. MAME's animated bank 0 is therefore written by
+something that does not run here — either the 68010 on a code path we never
+reach, or a GSP-local palette write our core never executes.
+
+### 102.4 Ruled out by checking, not assumption
+
+- **Not the palette address decode.** `>> 4` is correct: the map's offset unit
+  is one 16-bit access per `0x10` bit-address units. I expected `>> 3` by
+  analogy with the VRAM conversion in §34 and it is wrong to expect that.
+- **Not `REGION_GSP_PAL` being discarded.** `musashi_cpu.c` drops direct 68010
+  writes to `0xf5000000`/`0xf5800000`. Correct: those windows are in
+  `driver_gsp_map` (the GSP's space), not `multisync_68k_map`. The 68k reaches
+  the GSP only through `0xc00000-0xc03fff`.
+- **Not the `addr_shift` unit hazard in `gsp_rtl_main.cpp:891`.** That code does
+  `byte_addr = cycle_addr_o >> opt.addr_shift`, and `opt.addr_shift` defaults
+  to **0**, so the board receives bit addresses, which is what
+  `gsp_region()`, the VRAM `>> 3` and the palette `>> 4` all expect. Setting
+  `--addr-shift` would break all three at once; the default is correct.
+
+### 102.5 Where this leaves "fix the colour"
+
+Colour cannot be fixed in the palette path, because the palette path is right.
+The title screen's colours are missing because **the machine never runs the
+code that draws them**, and the same freeze produces the sheared image (§100.4).
+Both are one fault: the core is not at MAME's trajectory point, and the 68010
+is not at MAME's point in its own program either.
+
+That is the open item §39.6 item 3 already names, and it is the M5/gsvp
+work, not a patch. Any change that made bank 0 *look* right would be a
+fabricated expectation — the exact failure §80 describes.
+
+### 102.6 Not established
+
+- **Which writer paints bank 0 in MAME** — the 68010 or the GSP. The bus-log
+  replay in §101.4 was intended to answer this and its bank attribution does
+  not reconcile with the dump (it attributes writes only to two banks while all
+  four are populated), so it remains **not evidence**. The `gsp_bus_events.bin`
+  format needs one more pass: `gsp_host_reg()` yields
+  `TMS_HOST_DATA = 2` / `TMS_HOST_CONTROL = 3` (`musashi_cpu.c:929-932`), not
+  the other way round, and `address` is the window offset relative to
+  `0x00c00000`, so `gsp_bus_events.bin` is re-readable — but the auto-increment
+  rule in `hd68k_gsp_io_w` still has to be matched exactly before any bank
+  timeline is quoted.
+- **Whether the 68010 is blocked** on the GSP handoff. IPL2 asserts at frame
+  534 (`gsp-rtl intout edge frame=534`), and the gradient would plausibly
+  follow it. Untested.
+- **What the core is doing** when MAME's is drawing the gradient. §40.9
+  records the core reaching PC `$FFF40F90`; whether it ever executes the
+  palette-writing part of the uploaded program is open.
