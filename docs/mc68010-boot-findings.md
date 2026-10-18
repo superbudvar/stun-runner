@@ -16660,15 +16660,44 @@ whichever branch MAME takes at or before `$609c` that the native does not.
 
 `$60ac` (the branch the native does *not* take) is the ADSP board-test driver
 proper: `lea $5ff6.l,A1`, `D4 = D2 * $12`, `tst.w (A1,D4.w)`, `cmpi.w #$7,D2`,
-`movea.l ($6,A1,D4.w),A0` — a table of eight `$12`-byte test descriptors, i.e.
-the self-test menu. MAME plausibly goes there instead of `$0f94`.
+`movea.l ($6,A1,D4.w),A0` — a table of eight `$12`-byte descriptors.
 
-**Open.** Which read differs. `btst #$2, $a80001.l` is the last branch before
-the split and the native takes the `clear` arm; the native's own comment at
-`musashi_cpu.c:2090-2096` records that stubbing this port to `0xff` once sent
-the build down the *diagnostics* path at `$4dae`, so this port has already
-caused one wrong-turn. The next measurement is a PC-range count around
-`$609c`/`$60ac` on both machines, not another boundary sample.
+### 118.3.1 WITHDRAWN: `$60ac` is the program-ROM blank check, not the ADSP tests
+
+The sentence above called `$5ff6` "the self-test menu" and said MAME
+"plausibly goes there instead of `$0f94`". **Both are wrong**, and reading the
+table is what settles it. The eight descriptors walk eight `$10000`-word blocks
+at `$020000..$0e0000` summing each, and `$6288` leads to string 67
+`PROGRAM ROM OK`, 68 `BAD PROGRAM ROM IS BLANK BOX`, 69
+`ROMS AT 200R AND 210R`, 70 `CONTAIN THE SELF-TEST PROGRAM`. Descriptors 6 and
+7 carry enable word `$0000` and are disabled, which also makes
+`cmpi.w #$7,D2 / beq $6176` at `$60c0` dead code. Nothing to do with the ADSP.
+
+What the same reading *does* establish is more useful. **`$528c` repeats
+`$6086`'s gate verbatim:**
+
+```text
+$528c  btst #$5,$60c001.l / beq $529c / jmp $260.l
+$529c  btst #$2,$a80001.l / bne $52ac / jmp $0f94.l
+```
+
+and it sits between the ADSP verdict screen (`$527e` draws index 94) and the
+`$ff90xx` shared-RAM check (`$52ac`). The shape is: SELF-TEST not pressed ->
+leave at `$260`; pressed and START1 set -> continue the diagnostics; pressed
+and START1 clear -> `jmp $0f94`.
+
+**So `$0f94` is reachable with Service Mode on and taking it is correct.** The
+native is not falling out of the self-test at `$609c`; it is doing what the ROM
+does. The stall is inside `$0f94`, after the seven flag clears, in the `$1032`
+loop — and `$8036` is ROM ASCII (`41 54` = "AT"), non-zero, so the
+`beq $105a` is not the exit either.
+
+**Open.** Which instruction inside `$0f94` diverges. MAME reads
+`0x8000-0x80ff` 256 times, from `$60d8` and `$6138` — the two `add.w (A0)+,D0`
+summation loops of the program-ROM check just described — and never from
+`$1036`. So **MAME runs the ROM check and the native does not.** The next
+measurement is a PC-range count over `$0f94-$1100` on both machines, not
+another boundary sample.
 
 ### 118.4 Normal boot is a different machine entirely
 
@@ -16798,3 +16827,110 @@ because the C SOM producer already derives the captured words — was too
 generous: the producer covers the SOMLATCH output path and has nothing to say
 about the three handshakes above. And the producer is still never called from
 `shell.c`.
+
+## 120. The service-route divergence is one port bit: `$A80001` bit 2
+
+Measured on both sides, same question, same instrument. This is the first
+point where the native provably disagrees with the oracle on the `--service`
+path.
+
+### 120.1 The measurement
+
+`STUNRUN_CPU_WCOUNT`, read tap on `0xa80000-0xa80001`, `FROM=0x609c` (the
+`btst #$2,$a80001.l` itself), service arm, 4800 frames:
+
+```text
+STUNRUN_CPU_WCOUNT total=7 last_pc=0000609C addr=00A80000 data=FFFF
+STUNRUN_CPU_WCOUNT_HIST dir=read start=00A80000 total=8
+```
+
+**MAME reads `$a80001` = `$FFFF`.** Bit 2 is therefore set, `bne $60ac` is
+taken, and MAME goes into the program-ROM blank check — which is exactly where
+the `$60d8`/`$6138` summation loops that read `0x8000-0x80ff` come from
+(§118.3.1).
+
+The native returns **`$fff8`** at rest — `native/fake_ports.c:60`:
+
+```c
+ports->values[STUNRUN_PORT_MAIN_A800] = 0xFFF8;
+```
+
+Bit 2 clear, so `bne $60ac` is **not** taken and the native falls to
+`$60a6: jmp $0f94` — the ADSP handshake, which `$0f94`'s own analysis shows
+never returns on this ROM (§120.3). That is the stall in §118, and this is
+the instruction that chooses it.
+
+### 120.2 Why 0xFFFF is right
+
+`INPUT_PORTS_START(stunrun)` (harddriv.cpp:1122-1126):
+
+```c
+PORT_START("mainpcb:a80000")
+PORT_BIT( 0x0001, IP_ACTIVE_LOW, IPT_BUTTON1 )
+PORT_BIT( 0x0002, IP_ACTIVE_LOW, IPT_BUTTON2 )
+PORT_BIT( 0x0004, IP_ACTIVE_LOW, IPT_START1 )
+PORT_BIT( 0xfff8, IP_ACTIVE_LOW, IPT_UNUSED )
+```
+
+**Every bit is active-low** and the port's default is 0, so the value read
+back is all-ones. `0xfff8` is the *active-high* rest pattern: bits 3-15 set,
+the three real inputs clear. That is the right picture for a board where a
+pressed input reads 0, but this port is active-low, so "nothing pressed" must
+read **1**.
+
+The same file gets `IN0` right — `--service` sets `IN0=0xc7`, whose bit 5 is
+clear, which is what `PORT_SERVICE(0x20, IP_ACTIVE_LOW)` requires for *pressed*
+(§118.2). So the polarity convention was applied to `IN0` and not to `a80000`.
+That asymmetry is the bug.
+
+### 120.3 What $0f94 does once you are in it
+
+From the `$0f94` port (`boot_chain.c`), and independently checkable: `$801e`,
+`$8036`, `$8046`, `$8056`, `$8066`, `$8076`, `$8086` are absolute-short
+addresses inside `map(0x000000,0x0fffff).rom()`, so they are **ROM**. The
+bytes there are ASCII — `$801e`=`45 52` "ER", `$8036`=`41 54` "AT", `$8056`=
+`36 38` "68", `$8086`=`30 2e` "0." — because they sit inside the self-test
+message blob at `$8000`. **The ROM writes its flags on top of its own error
+text.**
+
+So `tst.w $8036.w` reads `0x4154`, never zero, and `beq $105a` is never taken.
+That makes `$8046`/`$8056` unreachable, collapses the loop to one arm, and
+means **`$0f94` never returns**. The same root cause makes `$514a`'s
+`cmpi.w #$5555` against `$8090`=`'*B'`=`0x422a` and `$5176`'s against
+`$8092`=`'UF'`=`0x5546` always fail. Not yet ported, recorded because it is
+the next thing a reader of `$801e` hits.
+
+**Caveat on the fix.** Whether the SP-338 board really decodes those addresses
+as ROM, or whether MAME's map is missing a window the real board has, is not
+settled by disassembly. What *is* settled is that the native and MAME disagree
+at `$609c`, and only one of them can be reproducing the oracle. Making them
+agree is measurable: after the change the native's PC histogram must gain
+`$60ac`/`$60d8` and lose the `$1032` re-entry, matching MAME's 8 reads at
+`$609c`. Until that before/after is recorded, `$0f94`'s apparent
+infinite loop is a *consequence* of the wrong port bit, not a second bug.
+
+### 120.4 Corrections the C ports forced
+
+Reading these as C caught three errors in §§117–118 that the disassembly had
+survived:
+
+- **`header[3]` is the character count, not a row count** (§117.1 called it a
+  row count). `text_draw.c`: the outer loop re-reads the next text byte each
+  pass. `$06c53`'s header is `01 0F DF 1E` and its text is
+  `PRESS*START*TO*BYPASS*SELFTEST` — **30 characters**, `header[3]` = `0x1e` =
+  30. §118.2 measured the drawer emitting exactly 30 characters from stub
+  `$5092`. Two independent instruments, same number.
+- **`*` is not a space.** `subi.b #$2a` makes `*` select glyph 0 at `$01fbc`,
+  whose 16 bytes are zero. ASCII space underflows to `$f6` and selects a real
+  glyph. §117.1's "`*` decodes to space" is close enough to mislead and wrong
+  enough to matter.
+- **The nest is 8 passes, not 7** — `move.w #$7` + `dbra` runs eight times,
+  and only the first 4 nibbles of each row carry data.
+- **`$b894` holds three `nop`, not four** (§117.2 listed four).
+
+> 🧠 **From Hindsight memory (Trace Geometry to Display-List Insertion / Dual GSP
+> Comparison Windows)** — GSP paint addresses of the form `$FF82xxxx`/`$FF81xxxx`
+> in this ROM are written straight to `$c00002` as display-list/VRAM targets, not
+> as 68010 addresses. That is what made the `$5ff6` `+$a`/`+$e` descriptor fields
+> readable as GSP destinations rather than code or data pointers, while the `+$6`
+> fields at `$020000..$0e0000` are 68010 ROM block bases for the summation.

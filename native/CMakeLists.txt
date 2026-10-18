@@ -361,6 +361,30 @@ add_executable(stunrun-maincpu-state-dispatch-test
 set_target_properties(stunrun-maincpu-state-dispatch-test PROPERTIES C_STANDARD 99)
 target_include_directories(stunrun-maincpu-state-dispatch-test PRIVATE ../reproduction/maincpu)
 add_test(NAME maincpu-state-dispatch-c COMMAND stunrun-maincpu-state-dispatch-test)
+add_executable(stunrun-maincpu-adsp-liveness-test
+  ../reproduction/maincpu/adsp_liveness.c
+  ../reproduction/maincpu/adsp_liveness_test.c)
+set_target_properties(stunrun-maincpu-adsp-liveness-test PROPERTIES C_STANDARD 99)
+target_include_directories(stunrun-maincpu-adsp-liveness-test PRIVATE ../reproduction/maincpu)
+add_test(NAME maincpu-adsp-liveness-c COMMAND stunrun-maincpu-adsp-liveness-test)
+add_executable(stunrun-maincpu-adsp-board-test-test
+  ../reproduction/maincpu/adsp_board_test.c
+  ../reproduction/maincpu/adsp_board_test_test.c)
+set_target_properties(stunrun-maincpu-adsp-board-test-test PROPERTIES C_STANDARD 99)
+target_include_directories(stunrun-maincpu-adsp-board-test-test PRIVATE ../reproduction/maincpu)
+add_test(NAME maincpu-adsp-board-test-c COMMAND stunrun-maincpu-adsp-board-test-test)
+add_executable(stunrun-maincpu-text-draw-test
+  ../reproduction/maincpu/text_draw.c
+  ../reproduction/maincpu/text_draw_test.c)
+set_target_properties(stunrun-maincpu-text-draw-test PROPERTIES C_STANDARD 99)
+target_include_directories(stunrun-maincpu-text-draw-test PRIVATE ../reproduction/maincpu)
+add_test(NAME maincpu-text-draw-c COMMAND stunrun-maincpu-text-draw-test)
+add_executable(stunrun-maincpu-boot-chain-test
+  ../reproduction/maincpu/boot_chain.c
+  ../reproduction/maincpu/boot_chain_test.c)
+set_target_properties(stunrun-maincpu-boot-chain-test PROPERTIES C_STANDARD 99)
+target_include_directories(stunrun-maincpu-boot-chain-test PRIVATE ../reproduction/maincpu)
+add_test(NAME maincpu-boot-chain-c COMMAND stunrun-maincpu-boot-chain-test)
 add_executable(stunrun-render-test render.c render_test.c)
 set_target_properties(stunrun-render-test PROPERTIES C_STANDARD 99)
 add_test(NAME native-render-boundary-c COMMAND stunrun-render-test)
