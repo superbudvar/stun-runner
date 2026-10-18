@@ -15144,3 +15144,102 @@ passed for the wrong reason — recurring in a new place. The frame-log
 instrument in §103.1 is the cheap guard; a regression test that runs the live
 path and fails when `is_halted()` is true after the GSP has been released would
 be the real one, and does not exist yet.
+
+## 104. The ROM's own self-test says the ADSP is missing — and it is the only difference
+
+The service-mode self-test is a ROM-authored acceptance test. It is also the
+cheapest discriminator this project has, because the game grades our model and
+prints the result.
+
+### 104.1 What MAME shows
+
+Fresh oracle capture, `--input service`, 5200 frames, targets
+3900/4200/4500/4800/5100 (`stunrun-gsp-state-snapshot`, `md12-fixed`,
+`55956f2b…`, `--input none` schedule not used; provenance recorded in the run's
+`result.json`). Frames 4500 and 5100 are byte-identical on screen:
+
+```text
+OPERATOR MENU
+PROGRAM ROM OK
+PROGRAM RAM OK
+BAD GSP VRAM
+GSP COLOR RAM OK
+ADSP TEST: 35 SECS - 3 MINS
+```
+
+Two things to read carefully:
+
+- **`BAD GSP VRAM` appears in the oracle too.** It is not our defect. It is
+  consistent with the VRAM test screen already characterised in §30.3/§69.
+- **`ADSP TEST: 35 SECS - 3 MINS` is a countdown**, not a status line. The ROM
+  only enters a *timed* ADSP self-test if the DSP answers its handshake. So in
+  MAME the ADSP-2100 responds and the test is under way.
+
+### 104.2 What we show
+
+Native, `./run.sh --service`, captured by the shell's own
+`STUNRUN_CAPTURE_FRAME` (not a window grab):
+
+```text
+frame 3893  lit=402  colours=1  vram_nz=307
+frame 3894  lit=631  colours=1  vram_nz=457   <- the message
+...  stable, unchanged, through frame 12415
+render frame=12415 hash=0x239C6F3D lit=631/122880 colours=1
+```
+
+`frame_3983.png` is `ADSP-2100 DOES NOT RESPOND` in red on black. Stable hash
+and `lit=`/`colours=` from ~3894 to 12415: the machine parks on the ROM's
+verdict and never leaves.
+
+**We never reach `GSP COLOR RAM OK`.** The ROM's sequence is ROM check → RAM
+check → GSP VRAM → colour RAM → ADSP. The oracle walks all of it. We divert to
+the ADSP error screen before the colour-RAM line.
+
+### 104.3 Correction to a claim made earlier in this session
+
+I wrote that the oracle "never reached the ADSP test", and that MAME's silence
+was therefore consistent with it not having got there yet. **That was
+backwards.** The oracle does reach and pass it; *we* are the side that never
+gets to the colour-RAM screen. The distinction matters — it is the difference
+between "MAME hasn't got there" and "MAME passes and we fail", and only the
+second one is evidence about our model.
+
+### 104.4 What this settles, and what it does not
+
+Settled: **the absent ADSP-2100 is real, is visible to the original ROM, and
+is the one material difference between our machine and the oracle at this
+point in the sequence.** Nothing else on that menu differs.
+
+This also supplies a candidate explanation for §102, which had no mechanism
+behind it. If the ROM detects a dead DSP and branches accordingly, a machine
+that does so would stop submitting display-list work — which is exactly the
+observed symptom: the GSP core plateauing at `0xfff40f50` with `vram_nz`
+pinned, and a palette frozen where MAME's animates. **One cause, several
+symptoms.** It is a candidate, not a proof: the link from the service-mode
+branch to the normal-play display-list submission has not been traced.
+
+Not settled:
+
+- **Whether the 35-second ADSP test is a single handshake or sustained work.**
+  The countdown implies the ROM waits and re-checks; whether it requires the
+  DSP to keep producing SOM records for 35 seconds, or only to answer once, is
+  unknown and decides how much of the ADSP actually has to be emulated.
+- **`BAD GSP VRAM` in the oracle is unexplained** and predates this thread. It
+  is a GSP-VRAM problem visible in MAME itself and should not be confused with
+  our colour findings.
+- Frame numbers are comparable between native and oracle **only before the
+  divergence**. Once one side takes the ADSP-error branch the sequences walk
+  apart, so "native 3983 vs oracle 3000" is not a 983-frame lag to chase.
+
+### 104.5 A cheap acceptance gate
+
+`STUNRUN_CAPTURE_FRAME` on a service run gives a pass/fail with no MAME
+required: reaching the `ADSP TEST: 35 SECS - 3 MINS` countdown is the target,
+`ADSP-2100 DOES NOT RESPOND` is the failure. That is a better criterion than a
+pixel diff, because it is the original code grading our model.
+
+Caveat for whoever wires this up: `STUNRUN_CAPTURE_FRAME=N` writes one PNG and
+the shell then **keeps running** unless `STUNRUN_FRAMES=N` is also given.
+`STUNRUN_CAPTURE_ALL=1` does not dump every frame despite the comment at
+`shell.c:2697` — it writes a single PNG at loop exit, so it needs a bounded
+`STUNRUN_FRAMES` too.
