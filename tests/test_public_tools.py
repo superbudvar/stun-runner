@@ -2177,6 +2177,156 @@ class AdspSomFixtureCheckTests(unittest.TestCase):
         self.assertIn("missing", r.stderr)
 
 
+class AdspObjectRomWordsTests(unittest.TestCase):
+    """tools/read-adsp-object-rom-words must read lanes, not invent words.
+
+    This tool supplies the object-ROM words the bounded ADSP slices take as
+    INPUTS. If it composes lanes wrongly it silently feeds every downstream
+    slice a plausible wrong number, so the cases below drive it with synthetic
+    lanes whose values are chosen to be impossible to confuse: each word is
+    distinct, the bank stride is exercised, and the /MP=1 base is checked. The
+    real ROMs are commercial and absent from the public suite; on this machine
+    the same tool reports the nine frame-551 pointer-chain words as
+    $999D,$99A2,$99A7,$99AC,$99B1,$99B6,$99BB,$99C0,$99C5 with
+    `verified_pointer_chain_words: 9`.
+    """
+
+    TOOL = ROOT / "tools" / "read-adsp-object-rom-words"
+
+    def setUp(self):
+        self.directory = pathlib.Path(tempfile.mkdtemp(prefix="stunrun-objrom-"))
+        self.addCleanup(shutil.rmtree, self.directory, ignore_errors=True)
+        # Six 64 KiB lanes: offsets 0,1 are bank 0's high/low bytes, and so on.
+        self.lanes = []
+        for lane in range(6):
+            data = bytearray(65536)
+            for offset in range(65536):
+                # Distinct per (bank, offset) and per lane, so any lane swap,
+                # bank-stride error or byte-order error changes the answer.
+                data[offset] = (offset * 7 + lane * 13 + 1) & 0xFF
+            self.lanes.append(bytes(data))
+            (self.directory / f"lane{lane}").write_bytes(bytes(data))
+        self.offsets = [0, 1, 0x20000, 0x20001, 0x40000, 0x40001]
+        self.write_manifest()
+
+    def write_manifest(self):
+        entries = [dict(filename=f"lane{lane}", region="mainpcb:user1",
+                        offset=offset, size=65536,
+                        sha1=hashlib.sha1(self.lanes[lane]).hexdigest())
+                   for lane, offset in enumerate(self.offsets)]
+        self.manifest = self.directory / "stunrun.manifest.json"
+        self.manifest.write_text(json.dumps({"roms": entries}))
+
+    def run_tool(self, *args, tool=None):
+        return subprocess.run(
+            [sys.executable, str(tool or self.TOOL), str(self.directory), *args],
+            capture_output=True, text=True)
+
+    def expected(self, word_index):
+        bank, offset = word_index >> 16, word_index & 0xFFFF
+        return self.lanes[2 * bank][offset] * 256 + self.lanes[2 * bank + 1][offset]
+
+    def test_reads_the_mp1_bank_with_the_high_and_low_lanes_interleaved(self):
+        result = self.run_tool("--index", "0x9989", "--index", "0x0000", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["schema"], "stunrun-adsp-object-rom-words-v1")
+        self.assertEqual(payload["word_count"], 0x30000)
+        self.assertEqual(payload["status"], "ok")
+        words = {entry["sim_address"]: entry["value"] for entry in payload["words"]}
+        # /MP=1 adds the $10000 bank base to the SIM address.
+        self.assertEqual(words[0x9989], self.expected(0x19989))
+        self.assertEqual(words[0x0000], self.expected(0x10000))
+
+    def test_a_capture_that_disagrees_with_the_rom_is_reported_not_hidden(self):
+        # Point word 0x19989 at a value the capture contradicts, and give the
+        # capture a $017B/$01A7 pair the tool must cross-check. A tool that
+        # trusted its own reading would report ok here.
+        def event(seq, pc, address, data):
+            return {"seq": seq, "frame": 1, "cpu": "adsp", "access": "W",
+                    "address": address, "data": data, "mask": 0xFFFF,
+                    "pc": pc, "host_bank": 1}
+        capture = self.directory / "capture.json"
+        capture.write_text(json.dumps({"transaction": {"producer_events": [
+            event(1, 0x017B, 0x2001, 0x9989), event(2, 0x01A7, 0x2001, 0x1234)]}}))
+        result = self.run_tool("--index", "0x9989",
+                               "--verify-capture", str(capture), "--json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("the capture latched start", result.stderr)
+        self.assertEqual(json.loads(result.stderr)["verified_pointer_chain_words"], 1)
+
+    def test_a_verification_that_checked_nothing_fails_rather_than_passing(self):
+        # Requesting only a word the capture's pointer chain does not cover must
+        # not produce a green "ok": that would be a control that cannot fail.
+        def event(seq, pc, address, data):
+            return {"seq": seq, "frame": 1, "cpu": "adsp", "access": "W",
+                    "address": address, "data": data, "mask": 0xFFFF,
+                    "pc": pc, "host_bank": 1}
+        capture = self.directory / "capture.json"
+        capture.write_text(json.dumps({"transaction": {"producer_events": [
+            event(1, 0x017B, 0x2001, 0x1234), event(2, 0x01A7, 0x2001, 0x999D)]}}))
+        result = self.run_tool("--index", "0x9989",
+                               "--verify-capture", str(capture), "--json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("proved nothing", result.stderr)
+
+    def test_a_sparse_image_that_disagrees_with_the_rom_is_reported(self):
+        sparse = self.directory / "sparse.c"
+        correct = self.expected(0x19989)
+        coefficient = self.expected(0x1208C)
+        sparse.write_text(
+            "static const uint16_t USER1[0x199ca] = {\n"
+            f"    [0x19989u] = 0x{correct:04X}u,\n"
+            f"    [0x1208cu] = 0x{coefficient:04X}u,\n"
+            "};\n")
+        good = self.run_tool("--verify-fixture", str(sparse), "--json")
+        self.assertEqual(good.returncode, 0, good.stderr)
+        payload = json.loads(good.stdout)
+        self.assertEqual(payload["fixture_addresses_checked"], 2)
+
+        # One address, one wrong value: the committed sparse images must be
+        # re-readable from the ROM, so a transcription slip has to fail here.
+        sparse.write_text(
+            "static const uint16_t USER1[0x199ca] = {\n"
+            f"    [0x19989u] = 0x{(correct ^ 1) & 0xFFFF:04X}u,\n"
+            "};\n")
+        bad = self.run_tool("--verify-fixture", str(sparse), "--json")
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("but the ROM holds", bad.stderr)
+
+        # And an image with nothing in it must not report a clean pass.
+        sparse.write_text("static const uint16_t USER1[0x199ca] = {0};\n")
+        empty = self.run_tool("--verify-fixture", str(sparse), "--json")
+        self.assertNotEqual(empty.returncode, 0)
+        self.assertIn("nothing was checked", empty.stderr)
+
+    def test_rejects_a_short_lane_a_bad_sha1_and_an_out_of_range_index(self):
+        short = self.lanes[1][:-1]
+        (self.directory / "lane1").write_bytes(short)
+        self.lanes[1] = short
+        self.write_manifest()
+        result = self.run_tool("--index", "0x0000")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("wrong-sized", result.stderr)
+
+        # Restore the length but keep a manifest sha1 that no longer matches:
+        # a reader that skipped verification would happily return words here.
+        self.lanes[1] = self.lanes[1] + b"\x00"
+        (self.directory / "lane1").write_bytes(self.lanes[1])
+        self.write_manifest()
+        entries = json.loads(self.manifest.read_text())
+        entries["roms"][1]["sha1"] = "0" * 40
+        self.manifest.write_text(json.dumps(entries))
+        result = self.run_tool("--index", "0x0000")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("manifest sha1", result.stderr)
+
+        self.write_manifest()
+        result = self.run_tool("--index", "0x10000")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("outside", result.stderr)
+
+
 # The MAME-launcher discovery and checks live in tests/mame_launch_guards.py
 # so tests/test_mame_trace_wrapper.py can use the same ones; see that module
 # for what the guard does and does not cover.

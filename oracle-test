@@ -8,6 +8,16 @@ if [[ -z "${STUNRUN_ROMPATH:-}" ]]; then
 fi
 
 "$repo_dir/tools/check-roms" "$STUNRUN_ROMPATH"
+# The sparse object-ROM words the ADSP slices take as inputs must still be
+# readable from the ROM they came from. This is the ROM-required counterpart of
+# the ROM-free CTests: it re-reads the lanes and re-verifies every populated
+# address in the committed sparse image, plus the nine frame-551 pointer-chain
+# words against the words the capture latched.
+"$repo_dir/tools/read-adsp-object-rom-words" "$STUNRUN_ROMPATH" \
+    --verify-fixture "$repo_dir/reproduction/adsp/som_selector_fixture.c" \
+    --verify-capture \
+    "$repo_dir/reference/experiments/stunrun/adsp-som-pm-reads-f551/run-1/result.json" \
+    --index 0x9989 --json >/dev/null
 output=${STUNRUN_ORACLE_OUTPUT:-/tmp/stunrun-oracle-test}
 rm -rf "$output"
 mkdir -p "$output"

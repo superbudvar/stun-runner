@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""Read selected 16-bit words from the ADSP-2100 object ROM (mainpcb:user1).
+
+Question this answers: what are the words the ADSP sees at given SIMBUF/object
+addresses? The bounded SOM slices need a handful of object-ROM words as
+INPUTS -- the `/MP=1` selector stream, the reciprocal coefficients, and the
+stride-2 record pointer chain -- and those inputs must come from the ROM rather
+than from a capture of what the ADSP did with them, or the "derivation" is
+circular. This tool is the only committed way to obtain them.
+
+Addressing. `mainpcb:user1` is six 64 KiB byte lanes in
+roms/stunrun.manifest.json: offsets 0, 1, 131072, 131073, 262144, 262145. The
+even offsets are the high-byte lanes and the odd ones the low-byte lanes, in
+bank order, so a SIM address with `/MP=1` (bank base $10000) is word index
+`sim_address + 0x10000`:
+
+    bank    = index >> 16
+    lane_hi = lane[2 * bank]
+    lane_lo = lane[2 * bank + 1]
+    value   = lane_hi[offset] * 256 + lane_lo[offset]
+
+That mapping is not assumed here: `tools/check-adsp-object-rom-reader` (and the
+`--verify-capture` option) compare it against words the pinned MAME build
+actually read, so a wrong lane order or a wrong bank stride fails loudly.
+
+What it gets wrong: it reports only what is in the ROM lanes. It cannot say
+what a word MEANS, whether the ADSP would ever read a given address, or
+whether a word the ADSP read came from these lanes at all. A zero here is a
+real ROM zero, not a missing word -- there is no sparse image.
+
+Requires the commercial ROMs, so it is not part of the ROM-free public suite.
+Run it through `oracle-test` or by hand.
+"""
+
+import argparse
+import hashlib
+import json
+import pathlib
+import re
+import sys
+
+LANE_SIZE = 65536
+LANE_COUNT = 6
+WORD_COUNT = (LANE_COUNT // 2) * LANE_SIZE  # 0x30000 words, 384 KiB of ROM
+MP1_BANK_WORDS = 0x10000
+
+
+def parse_index(text: str) -> int:
+    value = int(text, 0)
+    if not 0 <= value < WORD_COUNT:
+        raise argparse.ArgumentTypeError(
+            f"word index {value:#x} is outside the {WORD_COUNT:#x}-word object ROM")
+    return value
+
+
+def load_lanes(rompath: pathlib.Path, manifest: pathlib.Path) -> list[bytes]:
+    entries = json.loads(manifest.read_text(encoding="utf-8"))["roms"]
+    wanted = sorted(
+        (entry for entry in entries if entry["region"] == "mainpcb:user1"),
+        key=lambda entry: entry["offset"])
+    if len(wanted) != LANE_COUNT:
+        raise SystemExit(f"expected {LANE_COUNT} mainpcb:user1 lanes, "
+                         f"manifest lists {len(wanted)}")
+    lanes = []
+    for entry in wanted:
+        if entry["size"] != LANE_SIZE:
+            raise SystemExit(f"lane {entry['filename']} is not {LANE_SIZE} bytes "
+                             f"(manifest says {entry['size']}); the word mapping "
+                             "below assumes 64 KiB lanes and would invent data")
+        path = rompath / entry["filename"]
+        if not path.is_file():
+            path = rompath / "stunrun" / entry["filename"]
+        if not path.is_file():
+            raise SystemExit(f"missing ROM lane: {entry['filename']} (looked in "
+                             f"{rompath} and {rompath / 'stunrun'})")
+        data = path.read_bytes()
+        if len(data) != LANE_SIZE:
+            raise SystemExit(f"wrong-sized lane {path}: {len(data)} bytes, "
+                             f"expected {LANE_SIZE}")
+        if hashlib.sha1(data).hexdigest() != entry["sha1"]:
+            raise SystemExit(f"lane {path} does not match its manifest sha1; "
+                             "refusing to read words out of an unknown image")
+        lanes.append(data)
+    return lanes
+
+
+def word(lanes: list[bytes], index: int) -> int:
+    bank, offset = index >> 16, index & 0xFFFF
+    return lanes[2 * bank][offset] * 256 + lanes[2 * bank + 1][offset]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("rompath", type=pathlib.Path,
+                        help="directory holding the ROM files, or their parent")
+    parser.add_argument("--manifest", type=pathlib.Path)
+    parser.add_argument("--index", type=parse_index, action="append", default=[],
+                        metavar="SIM_ADDR",
+                        help="SIM address to read (repeatable); the /MP=1 bank "
+                             "base $10000 is added")
+    parser.add_argument("--word-index", type=parse_index, action="append",
+                        default=[], metavar="N",
+                        help="absolute object-ROM word index, bank base already "
+                             "included (repeatable)")
+    parser.add_argument("--verify-capture", type=pathlib.Path,
+                        help="capture result.json whose transaction.som_words / "
+                             "producer_events must agree with the ROM words "
+                             "read; refuses to report success on disagreement")
+    parser.add_argument("--verify-fixture", type=pathlib.Path,
+                        metavar="SPARSE_C",
+                        help="sparse C word image (designated initializers) whose "
+                             "populated addresses must match the ROM; reports "
+                             "the count checked so an empty match set cannot "
+                             "pass silently")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    manifest = args.manifest or args.rompath / "stunrun.manifest.json"
+    if not manifest.is_file():
+        raise SystemExit(f"manifest not found: {manifest}")
+    lanes = load_lanes(args.rompath, manifest)
+
+    wanted: list[int] = []
+    for address in args.index:
+        if not 0 <= address < MP1_BANK_WORDS:
+            raise SystemExit(f"SIM address {address:#06x} is outside the "
+                             f"$0000-${MP1_BANK_WORDS - 1:#06x} /MP=1 bank")
+        wanted.append(address + MP1_BANK_WORDS)
+    wanted.extend(args.word_index)
+    seen: list[int] = []
+    for index in wanted:
+        if index not in seen:
+            seen.append(index)
+
+    words = [{"sim_address": index - MP1_BANK_WORDS, "word_index": index,
+              "value": word(lanes, index), "value_hex": f"0x{word(lanes, index):04X}"}
+             for index in seen]
+
+    summary = {
+        "schema": "stunrun-adsp-object-rom-words-v1",
+        "rom_manifest": str(manifest),
+        "rom_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        "region": "mainpcb:user1",
+        "lane_count": LANE_COUNT,
+        "lane_sha256": [hashlib.sha256(lane).hexdigest() for lane in lanes],
+        "word_count": WORD_COUNT,
+        "mp1_bank_words": MP1_BANK_WORDS,
+        "words": words,
+    }
+
+    failures: list[str] = []
+    if args.verify_fixture is not None:
+        # A sparse committed image is a transcription. Check every populated
+        # address against the lanes, and require that there was something to
+        # check: an image with no designators would otherwise "pass".
+        text = args.verify_fixture.read_text(encoding="utf-8")
+        populated = re.findall(
+            r"\[0[xX]([0-9a-fA-F]+)u?\]\s*=\s*0[xX]([0-9a-fA-F]+)u", text)
+        summary["fixture"] = str(args.verify_fixture)
+        summary["fixture_addresses_checked"] = len(populated)
+        if not populated:
+            failures.append(f"{args.verify_fixture} has no designated "
+                            "initializers; nothing was checked")
+        for address_hex, value_hex in populated:
+            index = int(address_hex, 16)
+            if index >= WORD_COUNT:
+                failures.append(f"fixture address {index:#x} is outside the "
+                                f"{WORD_COUNT:#x}-word object ROM")
+                continue
+            want = word(lanes, index)
+            got = int(value_hex, 16)
+            if want != got:
+                failures.append(
+                    f"fixture word {index:#07x} is {got:#06x} but the ROM holds "
+                    f"{want:#06x}")
+        summary["fixture_words"] = len(populated)
+
+    if args.verify_capture is not None:
+        capture = json.loads(args.verify_capture.read_text(encoding="utf-8"))
+        # The bounded frame-551 capture latches DM($2001) with each record's
+        # SIMBUF start; that word is AX1, read from DM($2000) at $017F, i.e. the
+        # object-ROM word at the address DM($0034) held when $017B latched it.
+        events = capture["transaction"]["producer_events"]
+        latched = [(e["seq"], e["data"]) for e in events
+                   if e["pc"] == 0x017B and e["access"] == "W"]
+        starts = [(e["seq"], e["data"]) for e in events
+                  if e["pc"] == 0x01A7 and e["access"] == "W"]
+        by_index = {entry["word_index"]: entry["value"] for entry in words}
+        checked = 0
+        for (seq_latch, pointer), (_, start) in zip(latched, starts):
+            index = pointer + MP1_BANK_WORDS
+            if index not in by_index:
+                continue
+            checked += 1
+            if by_index[index] != start:
+                failures.append(
+                    f"pointer {pointer:#06x}: ROM word {by_index[index]:#06x} but the "
+                    f"capture latched start {start:#06x} (seq {seq_latch})")
+        summary["verified_pointer_chain_words"] = checked
+        if checked == 0:
+            failures.append("no pointer-chain word in the request was covered by "
+                            "the capture; the mapping check proved nothing")
+
+    summary["checks_failed"] = failures
+    summary["status"] = "FAILED" if failures else "ok"
+    if failures:
+        print(json.dumps(summary, indent=2) if args.json else
+              f"read-adsp-object-rom-words: {len(failures)} problem(s)\n  "
+              + "\n  ".join(failures), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(summary, indent=2))
+    else:
+        for entry in words:
+            print(f"{entry['sim_address']:#06x} (word {entry['word_index']:#07x}): "
+                  f"{entry['value_hex']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
