@@ -106,6 +106,10 @@ typedef struct musashi_cpu_adsp_io {
     unsigned long irq_reads;       /* polls of the status register */
     unsigned long prog_reads;      /* 0x800000-0x807FFF reads */
     unsigned long prog_writes;     /* 0x800000-0x807FFF writes */
+    unsigned long watchdog;         /* 0x608000-0x60BFFF service kicks */
+    unsigned long soundrst16;       /* 0x604000-0x607FFF 16-bit writes */
+    unsigned long soundrst32;       /* 0x604000-0x607FFF 32-bit writes */
+    unsigned long watchdog32;       /* 0x608000-0x60BFFF 32-bit writes */
     unsigned long rom_tail;         /* reads in 0x0C0000-0x0FFFFF */
     unsigned long zram_reads;      /* 0xFF4000-0xFF4FFF reads */
     unsigned long zram_writes;     /* 0xFF4000-0xFF4FFF writes attempted */

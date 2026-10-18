@@ -290,6 +290,10 @@ struct musashi_cpu {
     uint32_t adsp_prog_reads;
     uint32_t adsp_prog_writes;
     uint32_t rom_tail_reads;
+    uint32_t watchdog_writes;
+    uint32_t soundrst16_writes;
+    uint32_t soundrst32_writes;
+    uint32_t watchdog32_writes;
     uint32_t zram_reads;
     uint32_t zram_writes;
     uint32_t zram_writes_gated;
@@ -497,6 +501,12 @@ typedef enum {
      * (M48T02 timekeeper, required_device); writes are gated on
      * m_m68k_zp1==0 && m_m68k_zp2==1. This region was UNMAPPED before. */
     REGION_ZRAM      = 16,
+    /* 0x608000-0x60BFFF: harddriv.cpp:603 maps this write-only to the
+     * watchdog, watchdog_timer_device::reset16_w. The $0209E0 countdown ends
+     * with `move.w D0,$608000.l`, so this window is where the board's
+     * periodic service is counted. It was UNROUTED, so every service was
+     * silently dropped and the pass rate was unmeasurable. */
+    REGION_WATCHDOG  = 17,
     REGION_ADC_CTRL  = 14,  /* 0xB80000-0xBFFFFF: 12-bit ADC + ADC0809 control */
     REGION_ADC8      = 15,  /* 0xB00000-0xB7FFFF: ADC0809 data / WR2 latch */
     REGION_UNMAPPED  = -1,
@@ -531,6 +541,11 @@ static region_t route_address(unsigned int address, unsigned int *out_offset)
     if (address >= 0x604000u && address <= 0x607FFFu) {
         *out_offset = address;
         return REGION_SOUNDRST;
+    }
+
+    if (address >= 0x608000u && address <= 0x60BFFFu) {
+        *out_offset = address;
+        return REGION_WATCHDOG;
     }
 
     /* harddriv.cpp:602 maps the whole 1 MiB region, not just the 0xC0000 that
@@ -2447,6 +2462,7 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
             if (nwr_sel == 4u)      s_cpu->m68k_zp1 = (uint8_t)nwr_val;
             else if (nwr_sel == 5u) s_cpu->m68k_zp2 = (uint8_t)nwr_val;
         }
+        s_cpu->soundrst16_writes++;
         gsp_emit_reset_control_event(s_cpu, address, (uint16_t)value,
                                      0xFFFFu, 16u);
         break;
@@ -2532,6 +2548,14 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
         (void)stunrun_jsa_transport_write(s_cpu->jsa_latches, offset, 2u,
                                           (uint16_t)value);
         break;
+    case REGION_WATCHDOG:
+        /* watchdog_timer_device::reset16_w (harddriv.cpp:603). Write-only in
+         * the driver; a READ here is an unmapped access and stays 0xffff in
+         * the read arm. MAME arms the timer for 3 s and soft-resets on
+         * expiry; whether that ever fires is a separate question, so this
+         * counts the kicks and leaves the reset behaviour open. */
+        s_cpu->watchdog_writes++;
+        break;
     case REGION_ZRAM:
         /* hd68k_zram_w (harddriv_m.cpp:533): the write only happens when
          * m_m68k_zp1 == 0 && m_m68k_zp2 == 1. Counted either way, because
@@ -2597,10 +2621,14 @@ void m68k_write_memory_32(unsigned int address, unsigned int value)
         /* harddriv.cpp:4806 main_command_w (8-bit device split). */
         (void)stunrun_jsa_transport_write(s_cpu->jsa_latches, offset, 4u, value);
         break;
+    case REGION_WATCHDOG:
+        s_cpu->watchdog32_writes++;
+        break;
     case REGION_ADSP_CTRL:
         /* Dropped by the model; observed as two 16-bit events, high half
          * first at the lower address, which is both the real bus order and
          * what gsp_emit_reset_control_event() does for /GSPRES. */
+        s_cpu->soundrst32_writes++;
         adsp_write_note(address, (uint16_t)(value >> 16), 16u);
         adsp_write_note(address + 2u, (uint16_t)value, 16u);
         break;
@@ -3563,6 +3591,11 @@ void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out)
     out->irq_reads   = s_cpu ? (unsigned long)s_cpu->adsp_irq_reads : 0ul;
     out->prog_reads  = s_cpu ? (unsigned long)s_cpu->adsp_prog_reads : 0ul;
     out->prog_writes = s_cpu ? (unsigned long)s_cpu->adsp_prog_writes : 0ul;
+    out->watchdog     = s_cpu ? (unsigned long)s_cpu->watchdog_writes : 0ul;
+    out->watchdog32   = s_cpu ? (unsigned long)s_cpu->watchdog32_writes : 0ul;
+    out->soundrst32   = s_cpu ? (unsigned long)s_cpu->soundrst32_writes : 0ul;
+    out->soundrst16   = s_cpu ? (unsigned long)s_cpu->soundrst16_writes : 0ul;
+    out->watchdog     = s_cpu ? (unsigned long)s_cpu->watchdog_writes : 0ul;
     out->rom_tail     = s_cpu ? (unsigned long)s_cpu->rom_tail_reads : 0ul;
     out->zram_reads  = s_cpu ? (unsigned long)s_cpu->zram_reads : 0ul;
     out->zram_writes = s_cpu ? (unsigned long)s_cpu->zram_writes : 0ul;

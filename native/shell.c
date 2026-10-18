@@ -2800,12 +2800,13 @@ static int run_walk(void)
                    "ctrl-reset=%lu ctrl-halt=%lu som-bank=%u xflag=%u irq=%u "
                    "irq-polls=%lu prog-r=%lu prog-w=%lu\n"
                    "           zram-r=%lu zram-w=%lu zram-gated=%lu zp1=%u zp2=%u\n"
-                   "           rom-tail-r=%lu\n",
+                   "           rom-tail-r=%lu watchdog-w=%lu watchdog32=%lu soundrst16=%lu soundrst32=%lu\n",
                    aio.dm_trigger, aio.ctrl_bank, aio.ctrl_reset,
                    aio.ctrl_halt, aio.som_bank, aio.xflag, aio.irq_state,
                    aio.irq_reads, aio.prog_reads, aio.prog_writes,
                    aio.zram_reads, aio.zram_writes, aio.zram_gated,
-                   aio.zp1, aio.zp2, aio.rom_tail);
+                   aio.zp1, aio.zp2, aio.rom_tail, aio.watchdog, aio.watchdog32,
+                   aio.soundrst16, aio.soundrst32);
         }
 
         printf("shell: sound-dispatch stats frames=%llu commands=%llu "

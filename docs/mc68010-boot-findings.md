@@ -16072,3 +16072,95 @@ modified at 16:00:11-16:01:18 by the concurrent map audit (which is §112, and
 which changes no behaviour on this path). The agent re-ran against the rebuilt
 binary and got a **byte-identical** `main_ram.bin` and PC log. The result is
 attributable to `80bd114` and is unaffected.
+
+## 114. Counting the watchdog: the window was unrouted, and the result contradicts the PC log
+
+§113.5 named the cheapest next measurement: sampling once per frame cannot count
+how many times the `$0209E0` pass runs, so count it.
+
+### 114.1 What was needed first: the window was not wired
+
+`harddriv.cpp:603` maps `0x608000-0x60bfff` write-only to the watchdog
+(`watchdog_timer_device::reset16_w`). Our `route_address()` had **no case for
+it at all**, so every `move.w D0,$608000` — the store that ends each pass — was
+silently dropped, and the pass rate was not merely unmeasured, it was
+unreachable. Now routed and counted, in both the 16- and 32-bit arms.
+
+`hd68k_sound_reset_r`'s neighbours were already routed but uncounted; ZP1/ZP2
+latching (§111.1) is now instrumented too, so the whole `0x604000-0x60bfff`
+window can be watched.
+
+### 114.2 The measurement: zero, in every width
+
+Normal boot, 320 frames:
+
+```text
+render frame=320 hash=0x7D611DC5 lit=0/122880 colours=0
+rom-tail-r=0 watchdog-w=0 watchdog32=0 soundrst16=0 soundrst32=0
+```
+
+**The 68010 writes nothing to `0x604000-0x60bfff` at all** — not the watchdog,
+not the ZP1/ZP2 latches, in either arm, over 320 frames — while making
+**780,315** 16-bit writes to the GSP host port in the same run.
+
+That positive control is the load-bearing part: `gsp_writes` is incremented in
+the same 16-bit arm through the same `route_address()` dispatch, so the
+counters can fire and are not merely unreachable. "Zero" is a measurement here,
+not an absent instrument.
+
+This also settles a loose end from §111.1. `native/gsp_boot.h` documents the
+boot routine's `clr.w $60400c` / `clr.w $60401c` (ZP1) and `clr.w $608000`
+(watchdog) as things the boot *does*. In our model it does none of them.
+
+### 114.3 An unresolved contradiction — recorded, not explained away
+
+§110.3's disassembly of the loop is **confirmed against MAME's own listing**
+(`tools/mame-listings`, `maincpu-68010.lst`), which matches it byte for byte:
+
+```text
+0209D6: bsr     $2053c
+0209DA: move.l  #$1a0a, D0
+0209E0: subq.l  #1, D0
+0209E2: bne     $209e0
+0209E4: move.w  D0, $608000.l
+0209EA: bsr     $209f2
+0209EC: bne     $209d6
+```
+
+(I briefly suspected `/tmp/maincpu_flat1m.bin` was stale — it predates the
+`c3450ac` ROM-interleave fix by four days. It is not, at this address; the
+listing agrees.)
+
+So the countdown's exit store is real, and if the CPU ever leaves that loop it
+must execute it. But `watchdog-w=0` says it never does, while the §110.2 PC log
+shows the PC leaving `0x209E0` at frame 327 and sitting at `0x226xx`,
+`0x2172e`, `0x234c0` and others for the following 25 frames. Both cannot be
+true of the same machine.
+
+**Not resolved.** The candidate explanations are not separated by anything
+measured so far:
+
+- the PC samples are boundary artefacts and the CPU never actually leaves the
+  loop (in which case what §110.2 called an "edge" is a sampling coincidence,
+  and §110's framing collapses further);
+- the loop exits through a path that does not store to `$608000`;
+- `move.w D0,$608000.l` is being dispatched somewhere unmodelled.
+
+`m68k_write_memory_32_pd` is **not** the answer — it delegates to
+`m68k_write_memory_16` for both halves, and both arms are counted.
+
+The cheapest thing that would settle it: a **counting** tap on the `0209DA`
+entry itself (PC watchpoint) rather than a frame-boundary PC sample, so the
+number of passes is known on both machines instead of inferred. That is the
+measurement §113.5 asked for and it has not been done.
+
+### 114.4 What is safe to carry forward
+
+- §112's and §113's corrections stand (the cycle budget is identical; the PC
+  agreement was overclaimed).
+- The 35-byte RAM diff and the 6-frame counter lag stand.
+- The address-map audit stands: every region it found wrong is one the CPU does
+  not touch.
+- **§110.2's divergence frames should be treated as provisional** until the
+  pass count is measured, because §114.3 shows the evidence they rest on is
+  internally inconsistent.
