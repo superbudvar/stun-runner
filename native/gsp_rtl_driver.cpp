@@ -490,8 +490,29 @@ static uint64_t run_gsp(uint64_t gsp_cycles)
                 idle_limit = (e != NULL) ? (unsigned)strtoul(e, NULL, 0) : 20000u;
                 idle_limit_read = 1;
             }
+            /* On idle exit, BREAK WITHOUT LATCHING s_gsp_halted.
+             *
+             * The comment above says "the exit is deliberately NOT latched"
+             * and "the core resumes at the top of the next one". The code did
+             * the opposite: this line set the sticky flag, and
+             * gsp_rtl_driver_step() (line ~735) returns 0 immediately when
+             * s_gsp_halted is set, so run_gsp() was never entered again, so
+             * nothing inside it could ever clear the flag again. One quiet
+             * moment -- which the comment above correctly calls "an ordinary
+             * moment in the middle of running a list, not a halt" -- stopped
+             * the GSP permanently.
+             *
+             * Measured 2026-10-18 (findings 103): with the latch, the core
+             * executes frames ~350-396 and then freezes -- gsp-pc pinned at
+             * 0xfff42e60 and vram_nz pinned at 84,325 for the rest of a 900
+             * frame run, with halted=1 on every sample. Without it, halted=0
+             * on every sample and the PC keeps advancing.
+             *
+             * This flag is for genuine halt (boot STOP, replay seeding, an
+             * explicit host HLT); an idle-budget exit is a scheduling choice
+             * about how many cycles to clock THIS frame, not a statement
+             * about the core's state. */
             if (idle_limit != 0u && idle_line && ticked >= idle_limit) {
-                s_gsp_halted = true;
                 break;
             }
         }

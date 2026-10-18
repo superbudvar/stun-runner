@@ -2135,8 +2135,28 @@ static int run_walk(void)
                 if (g_frame_log != 0u && (frame % g_frame_log) == 0u) {
                     unsigned lit = 0u, colours = 0u;
                     stunrun_render_content_stats(&renderer, &lit, &colours);
-                    printf("frame-log f=%u lit=%u colours=%u\n",
+                    printf("frame-log f=%u lit=%u colours=%u",
                            frame, lit, colours);
+#ifdef STUNRUN_GSP_RTL
+                    /* The core's own PC, sampled at the frame boundary.
+                     *
+                     * lit=/colours= alone cannot tell "the core is drawing"
+                     * from "the core is parked in a loop": both look identical
+                     * while the framebuffer is static.  findings 102 shows
+                     * exactly that failure -- our picture is frozen while
+                     * MAME's GSP runs 2-3.4M ops per 100 frames
+                     * (STUNRUN_GSP_OPLOG_OUT).  PC over time separates the two:
+                     * a moving PC means executing, a constant one means a
+                     * loop, and a PC in an upload region means halted.
+                     *
+                     * No cost when the frame log is off: it is inside the
+                     * existing g_frame_log branch. */
+                    printf(" gsp-pc=0x%08x halted=%d vram_nz=%u",
+                           (unsigned)gsp_rtl_driver_get_pc(),
+                           gsp_rtl_driver_is_halted(),
+                           (unsigned)gsp_board_vram_nonzero_words(&g_gsp_rtl_board));
+#endif
+                    printf("\n");
                     fflush(stdout);
                 }
 #ifdef STUNRUN_GSP_GL_SCANOUT

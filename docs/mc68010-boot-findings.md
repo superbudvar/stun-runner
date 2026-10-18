@@ -15025,3 +15025,122 @@ fabricated expectation — the exact failure §80 describes.
 - **What the core is doing** when MAME's is drawing the gradient. §40.9
   records the core reaching PC `$FFF40F90`; whether it ever executes the
   palette-writing part of the uploaded program is open.
+
+## 103. A scheduling exit was latched into a permanent halt — and it was not the freeze's cause
+
+Follow-on to §102. `lit=`/`colours=` cannot tell "drawing" from "parked", so
+the frame log now samples the core's own PC and halt flag.
+
+### 103.1 The instrument
+
+`STUNRUN_FRAME_LOG` now prints, alongside `lit=`/`colours=`:
+
+```text
+frame-log f=396 lit=40731 colours=252 gsp-pc=0xfff42e60 halted=1 vram_nz=84668
+```
+
+It costs nothing when the frame log is off (it is inside the existing branch).
+`vram_nz` is `gsp_board_vram_nonzero_words()`, the same number the terminal
+summary reports as "board vram nonzero words".
+
+### 103.2 The defect: an idle-budget exit set a flag that gates stepping
+
+`run_gsp()` exits early when the core has been silent for `STUNRUN_GSP_IDLE_CYCLES`
+(default 20000) cycles. It did so by setting the sticky `s_gsp_halted` — and
+`gsp_rtl_driver_step()` returns 0 immediately when that flag is set:
+
+```cpp
+uint64_t gsp_rtl_driver_step(uint64_t gsp_cycles)
+{
+    if (!s_init_done || s_gsp_halted) return 0;
+    return run_gsp(gsp_cycles);
+}
+```
+
+`run_gsp()` is the only thing that clears the flag (line ~449, on host
+traffic). So the sequence was: one quiet moment → flag set → `step()` returns 0
+forever → `run_gsp()` never entered → nothing can clear it. The comment block
+directly above the exit says the opposite:
+
+> "The exit is deliberately NOT latched. … Exiting early for THIS frame costs
+> nothing: the core resumes at the top of the next one, which is all it needed
+> to make progress. The two mistakes were independent and both had to go."
+
+The second half describes intent; the code did the opposite. It also quotes the
+same 20000-cycle threshold as "an ordinary moment in the middle of running a
+list, not a halt" — and then treats it as one.
+
+Measured, before the fix, sampling every frame:
+
+```text
+f=394 gsp-pc=0xfff4a410 halted=1 vram_nz=84015
+f=395 gsp-pc=0xfff4a3f0 halted=1 vram_nz=84426
+f=396 gsp-pc=0xfff42e60 halted=1 vram_nz=84668
+f=397 … f=419   gsp-pc=0xfff42e60 halted=1 vram_nz=84325   (identical)
+```
+
+The core executes frames ~350–396 and then stops for good. With the latch
+removed, `halted=0` on every sample and the PC keeps moving.
+
+### 103.3 What the fix does NOT do
+
+It does not change the picture. Frame 900 after the fix:
+
+```text
+render frame=900 hash=0xFC1E2F7B mode=live-gsp-share lit=41094/122880 colours=252
+```
+
+— byte-identical to the pre-fix hash, and identical `lit=`/`colours=` at frames
+400 through 900. The core plateaus at the same place either way, so the latch
+was masking the state rather than causing it. **Do not read this as progress on
+the colour.** §103.2 is a correctness fix to a real deadlock and to a
+now-inaccurate `is_halted()`; §102's conclusion is untouched.
+
+### 103.4 What the core is actually doing
+
+From frame 600 the core is at rest: `vram_nz` pinned at 84,787 and the PC
+inside a ~0x50-byte window.
+
+```text
+f=600 gsp-pc=0xfff40f50 vram_nz=84787
+f=700 gsp-pc=0xfff40f50 vram_nz=84787
+f=800 gsp-pc=0xfff40f50 vram_nz=84787
+f=900 gsp-pc=0xfff40f50 vram_nz=84787
+```
+
+With `STUNRUN_GSP_IDLE_CYCLES=0` (never exit early) the PC still only ranges
+`0xfff40f50`–`0xfff40fa0`. So it is not the cycle budget; the core genuinely
+stops doing work.
+
+MAME's GSP over the same window (`STUNRUN_GSP_OPLOG_OUT`, 100-frame windows):
+
+```text
+frame=605 ops=3393271     frame=805 ops=3398499
+frame=705 ops=3386556     frame=905 ops=2858059
+```
+
+with hot PC buckets `fff40000:1457955 fff41000:545950`. MAME's GSP is executing
+~3.4M instructions per 100 frames; ours is not touching VRAM at all.
+
+**Not established.** Whether our core is in a host-wait loop or has run off the
+end of the program. A circumstantial point, not a conclusion: MAME's own GSP
+is also seen near `pc=fff40f80`/`fff40f90` in the `GSPREG` lines at these
+frames, so that address is plausibly a legitimate wait point rather than a trap
+— but MAME is executing 3.4M ops while sitting there and we are not, and we
+have no per-op rate for our core to compare. The next measurement is a fetch
+trace of the RTL core equivalent to `STUNRUN_GSP_FETCH_OUT`, so the two cores
+can be compared op-for-op over the same window.
+
+### 103.5 A test-coverage failure worth recording
+
+Every test passed while the core was frozen from frame 396 onward: 416 Python
+tests and 68 CTest targets, green, with the GSP permanently halted and the
+picture frozen. Nothing in the suite asserts that the core is still executing
+at the end of a live run, and `core_halted_now` was printed in the terminal
+summary where nobody read it as `1`.
+
+This is the failure mode AGENTS.md already warns about — a green suite that
+passed for the wrong reason — recurring in a new place. The frame-log
+instrument in §103.1 is the cheap guard; a regression test that runs the live
+path and fails when `is_halted()` is true after the GSP has been released would
+be the real one, and does not exist yet.
