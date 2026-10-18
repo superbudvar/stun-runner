@@ -106,6 +106,7 @@ typedef struct musashi_cpu_adsp_io {
     unsigned long irq_reads;       /* polls of the status register */
     unsigned long prog_reads;      /* 0x800000-0x807FFF reads */
     unsigned long prog_writes;     /* 0x800000-0x807FFF writes */
+    unsigned long rom_tail;         /* reads in 0x0C0000-0x0FFFFF */
     unsigned long zram_reads;      /* 0xFF4000-0xFF4FFF reads */
     unsigned long zram_writes;     /* 0xFF4000-0xFF4FFF writes attempted */
     unsigned long zram_gated;      /* of those, ones ZP1/ZP2 dropped */

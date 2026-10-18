@@ -289,6 +289,7 @@ struct musashi_cpu {
     uint32_t adsp_irq_reads;
     uint32_t adsp_prog_reads;
     uint32_t adsp_prog_writes;
+    uint32_t rom_tail_reads;
     uint32_t zram_reads;
     uint32_t zram_writes;
     uint32_t zram_writes_gated;
@@ -532,7 +533,10 @@ static region_t route_address(unsigned int address, unsigned int *out_offset)
         return REGION_SOUNDRST;
     }
 
-    if (address < MUSASHI_ROM_TOTAL_SIZE) {
+    /* harddriv.cpp:602 maps the whole 1 MiB region, not just the 0xC0000 that
+     * is populated. Routing only the populated part made 0x0C0000-0x0FFFFF
+     * fall through to unmapped and read 0xFFFF where the board reads 0. */
+    if (address < 0x100000u) {
         /* Banked ROM window: 0x000000-0x0BFFFF (6 × 128KB = 768KB).
          * The bank index is implicit in the high bits of the address. */
         *out_offset = address;
@@ -641,23 +645,33 @@ static region_t route_address(unsigned int address, unsigned int *out_offset)
  * (all below 0x10000) worked while the main loop's flag words at $801e /
  * $8036 / $8046 / $8056 -- real ROM constants 0x4552 / 0x4154 / 0x4255 /
  * 0x3638 -- read as 0 and the game never left its idle poll at 0x1032. */
-static uint8_t rom_read_byte(const musashi_cpu_t *cpu, uint32_t addr)
+static uint8_t rom_read_byte(musashi_cpu_t *cpu, uint32_t addr)
 {
     unsigned bank = addr / MUSASHI_ROM_BANK_SIZE;
     unsigned off  = addr % MUSASHI_ROM_BANK_SIZE;
-    if (bank >= MUSASHI_NUM_ROM_BANKS)
-        return 0xFFu;               /* map.unmap_value_high() */
+    if (bank >= MUSASHI_NUM_ROM_BANKS) {
+        /* harddriv.cpp:2127 declares ROM_REGION(0x100000, "mainpcb:maincpu")
+         * and harddriv.cpp:602 maps map(0x000000, 0x0fffff).rom() over ALL of
+         * it, but only 0xC0000 is populated (6 banks of 128 KiB). So
+         * 0x0C0000-0x0FFFFF is a MAPPED read of an unpopulated region, which
+         * is 0 -- not an unmapped read, which would be 0xffff via
+         * unmap_value_high(). This used to return 0xFF and used not to be
+         * routed here at all (the router stopped at MUSASHI_ROM_TOTAL_SIZE),
+         * so the ROM read $FFFF where the board reads $0000. See findings 112. */
+        cpu->rom_tail_reads++;
+        return 0x00u;
+    }
     return cpu->rom_banks[bank][off];
 }
 
-static uint16_t rom_read_word(const musashi_cpu_t *cpu, uint32_t addr)
+static uint16_t rom_read_word(musashi_cpu_t *cpu, uint32_t addr)
 {
     uint8_t even = rom_read_byte(cpu, addr);
     uint8_t odd  = rom_read_byte(cpu, addr + 1);
     return (uint16_t)((even << 8) | odd);
 }
 
-static uint32_t rom_read_long(const musashi_cpu_t *cpu, uint32_t addr)
+static uint32_t rom_read_long(musashi_cpu_t *cpu, uint32_t addr)
 {
     uint16_t hi = rom_read_word(cpu, addr);
     uint16_t lo = rom_read_word(cpu, addr + 2);
@@ -2259,7 +2273,14 @@ static unsigned int read_memory_32_impl(unsigned int address)
         return (uint32_t)s_cpu->adsp_pgm_ram[offset >> 1] << 16 |
                (uint32_t)s_cpu->adsp_pgm_ram[(offset + 2) >> 1];
     case REGION_ADSP_IRQ:
-        return 0xFFFDFFFDu;
+        /* Same compose, not a constant: see the 16-bit arm. G14. */
+        {
+            uint16_t v = 0xFFFDu;
+            if (s_cpu->adsp_xflag)     v ^= 2u;
+            if (s_cpu->adsp_irq_state) v ^= 1u;
+            s_cpu->adsp_irq_reads++;
+            return (uint32_t)v | ((uint32_t)v << 16);
+        }
     case REGION_SOUNDRST:
         return 0xFFFFFFFFu;
     case REGION_SOUND: {
@@ -2472,6 +2493,11 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
          * rather than pretended. */
         unsigned sel = offset & 7u;
         unsigned val = (offset >> 3u) & 1u;
+        /* The 8- and 32-bit arms both log here; the 16-bit one did not, so a
+         * normal `move.w` to 0x818000 was invisible while an 8-bit write to
+         * the same window was logged. The 68010 is a 16-bit bus, which made
+         * the observer dead exactly where the traffic is. G12. */
+        adsp_write_note(address, (uint16_t)value, 16u);
         if (sel == 3u) {
             s_cpu->adsp_som_bank = (uint8_t)val;
             s_cpu->adsp_ctrl_bank_writes++;
@@ -3537,6 +3563,7 @@ void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out)
     out->irq_reads   = s_cpu ? (unsigned long)s_cpu->adsp_irq_reads : 0ul;
     out->prog_reads  = s_cpu ? (unsigned long)s_cpu->adsp_prog_reads : 0ul;
     out->prog_writes = s_cpu ? (unsigned long)s_cpu->adsp_prog_writes : 0ul;
+    out->rom_tail     = s_cpu ? (unsigned long)s_cpu->rom_tail_reads : 0ul;
     out->zram_reads  = s_cpu ? (unsigned long)s_cpu->zram_reads : 0ul;
     out->zram_writes = s_cpu ? (unsigned long)s_cpu->zram_writes : 0ul;
     out->zram_gated  = s_cpu ? (unsigned long)s_cpu->zram_writes_gated : 0ul;

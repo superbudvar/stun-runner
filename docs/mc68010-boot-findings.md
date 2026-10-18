@@ -15879,3 +15879,92 @@ and whose reads returned a constant. Neither was caught by any test, and both
 were invisible in the run log — the counters added here are what make them
 visible next time. The pattern is common enough to be worth auditing the rest
 of `multisync_68k_map` against our route the same way.
+
+## 112. A full audit of the 68k map against ours: one real defect, and it is unreachable
+
+§111.3 proposed auditing `multisync_68k_map` against our `route_address()`
+because the same defect shape had appeared twice. Done. 21 MAME map entries
+tabulated against three read arms and three write arms each.
+
+**Board first**, because it is easy to read the wrong map: `stunrun_machine` ->
+`STUNRUN_BOARD` -> `multisync_nomsp` -> **`multisync_68k_map`** at
+`harddriv.cpp:1543`. `driver_68k_map` is installed at `:1464` and then
+overridden; reading it instead would give the wrong answers. `init_stunrun()`
+calls `init_multisync(0)` so the 0x400000/0x408000 wheel handlers do not apply,
+plus `init_adsp()`. The slapstic is removed at `:1866`.
+
+Also established before judging anything: unmapped reads return `0xFFFF`
+(`unmap_value_high()` -> `m_unmap = ~0`), which is exactly native's
+`REGION_UNMAPPED` default and must **not** be "fixed".
+
+### 112.1 The one real live defect: the unpopulated ROM tail
+
+`harddriv.cpp:2127` declares `ROM_REGION(0x100000, "mainpcb:maincpu")` and
+`:602` maps `map(0x000000, 0x0fffff).rom()` over **all of it** — but only
+`0xC0000` is populated, by 6 banks of 128 KiB.
+
+Native routed only `address < MUSASHI_ROM_TOTAL_SIZE` (which is exactly
+`0xC0000`), so `0x0C0000-0x0FFFFF` fell through to unmapped and read
+**`0xFFFF` where the board reads `0x0000`** — a mapped read of an unpopulated
+region, not an unmapped one. And `rom_read_byte()` independently returned
+`0xFF` above the last bank, justified in a comment as
+`map.unmap_value_high()`, which is the wrong justification for the wrong case.
+
+Both halves are fixed: the router now covers the full 1 MiB, and
+`rom_read_byte()` returns `0x00` for the tail.
+
+**Reachability: zero.** `rom-tail-r=0` over a 380-frame run. So this is a real
+defect, now matching the board, but it is **not** the frame-327 divergence and
+the frame-380 render hash is unchanged by it (`0x859B609D`).
+
+### 112.2 Two more of the same shape, in code written today
+
+- **32-bit ADSP status read returned a hardcoded `0xFFFDFFFD`** — the exact
+  bug §109 fixed in the 16-bit arm, left behind in the 32-bit one. Correct
+  only while both flags are clear. Now composed the same way.
+- **The 16-bit ADSP control arm never called `adsp_write_note()`**, while the
+  8- and 32-bit arms did. The 68010 is a 16-bit bus, so the `kind=adsp-control`
+  observer line was dead exactly where the traffic is — a `move.w` to
+  `0x818000` logged nothing while an 8-bit write to the same window logged.
+  This was introduced by §109 and the audit caught it within the hour.
+- **ZRAM has cases only in the 16-bit arms.** The 8- and 32-bit arms fall to
+  the default, so the values coincide but `zram_reads`/`zram_writes` cannot see
+  accesses through those widths — counters that exist precisely to prove the
+  region is wired could be bypassed.
+
+The common thread with §109 and §111 is worth stating: **an observer or a
+counter placed in the wrong arm is worse than none**, because it looks like
+coverage.
+
+### 112.3 Present but currently inert — do not "fix" speculatively
+
+Watchdog (MAME arms it for 3 s and soft-resets; ours absent) · JSA reset
+side-effect on `hd68k_sound_reset_r` · JSA response low lane `| 0x00FF` where
+MAME's 8-bit-on-16-bit split returns the byte twice · **nothing anywhere calls
+`musashi_cpu_clear_irq(.., 4)`, so the IPL4 /LINKIRQ ack is missing** ·
+`hd68k_adsp_irq_clear_w` absent · 32-bit MMIO reads generally absent.
+
+### 112.4 Provably inert
+
+- `0xC04000-0xC07FFF`: no MSP on this board and MAME returns `0xffff`, which is
+  identical to native's unmapped default.
+- `0xA00000-0xA7FFFF`: its only outputs are `m_sel_select` — whose sole consumer
+  writes variables nothing reads back — and a bookkeeping tally that does not
+  feed an ioport. The credit path is IN0 bits 6/7, already modelled.
+- `0xFF8000-0xFFFFFF` is correctly **32 KiB**: `0xFFFFFF - 0xFF8000 + 1 = 0x8000`.
+  The `& 0x7FFF` is exact, not a wrap bug. Worth writing down because it looks
+  like one.
+
+### 112.5 The next instrument
+
+The **MC68681 DUART at `0xFF0000-0xFF001F`** (`:613`) — the only fully absent
+`required_device`, with a wired IPL6 and `umask16(0xff00)`. One MAME
+watchpoint run settles whether the game touches it at all.
+
+### 112.6 What this did to the divergence hunt
+
+Not narrowed. §110.5's candidate list is still empty: ADSP windows zero, ZRAM
+zero, ROM tail zero. Every MMIO region the audit found wrong is one the 68010
+does not use on this path. The main-RAM comparison (running in parallel) is
+now the only live lead, and the instrument audit's contribution is negative
+information: **the divergence is not in the address map.**
