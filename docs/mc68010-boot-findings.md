@@ -14786,3 +14786,130 @@ strength of an instrument never shown to be able to fail. The
   is expected — the fixture is from `normal-frames-1-600`, not the title
   checkpoint — but it means the comparison above is against a *fixture* oracle,
   not a checkpoint-verified one.
+
+## 101. The palette shares were reachable all along — §81's "needs a C++ observer" was a wrong key
+
+This is a refutation of §81 and of the KNOWN LIMITATION comment that sat in
+`mame/lua/gsp-vram-dump.lua` until this session. Not a ROM or MAME defect: the
+share lookup used the wrong name.
+
+### 101.1 The defect
+
+`gsp-vram-dump.lua` looked the palette up as:
+
+```lua
+local lo_share = machine.memory.shares[':gsp_palram_lo']
+local hi_share = machine.memory.shares[':gsp_palram_hi']
+```
+
+`harddriv.cpp:399-400` declares them on the **mainpcb device**:
+
+```cpp
+m_gsp_paletteram_lo(*this, "gsp_palram_lo", 1024*2, ENDIANNESS_LITTLE),
+m_gsp_paletteram_hi(*this, "gsp_palram_hi", 1024*2, ENDIANNESS_LITTLE),
+```
+
+so a `memory_share_creator` bound to that device gets the machine tag in its
+Lua key. Enumerating `machine.memory.shares` on the pinned build returns
+exactly:
+
+```text
+:mainpcb:adsp_data        :mainpcb:adsp_pgm_memory
+:mainpcb:gsp_control_hi   :mainpcb:gsp_control_lo
+:mainpcb:gsp_palram_hi    :mainpcb:gsp_palram_lo   :mainpcb:gsp_vram
+```
+
+There is no untagged `:gsp_palram_lo`. Both lookups returned nil, the `else`
+branch fired, and every palette dump printed:
+
+```text
+M1_GSP_PALETTE unavailable shares -- VRAM dumped without palette
+```
+
+§81 read that as "the palette is declared as address_space MEMBERS, not memory
+shares, so Lua cannot reach the backing store" and concluded the palette needed
+a C++ observer in the driver. Every palette dump produced since has been
+missing as a result, including the one that would have answered the bank-0
+question below.
+
+### 101.2 The fix, and its verification
+
+The lookup now tries the tagged name first and falls back to the untagged one,
+so it keeps working if a build ever does expose it untagged. The KNOWN
+LIMITATION comment is narrowed to what is actually true: *if* the shares are
+absent, the `0xf5000000` window can only reach 256 entries at whatever bank
+`m_gfx_palettebank` holds, so a window dump would be plausible and wrong.
+
+Verification is a byte comparison against evidence captured by the **other**
+instrument — the C++ `STUNRUN-DUMP` share hook, not the code being fixed:
+
+```bash
+STUNRUN_GSP_DUMP_PALETTE=1 tools/mame-gsp-vram-dump roms OUT \
+  --frames 620 --target 600 --input service --mame /mnt/build/mame-ref/mame --nothrottle
+```
+
+```text
+gsp_pal_lo.bin  committed c8d3aae8734a933d…  new c8d3aae8734a933d…  IDENTICAL
+gsp_pal_hi.bin  committed f8acac5413e09848…  new f8acac5413e09848…  IDENTICAL
+```
+
+Both digests match `metadata.json`'s recorded `palette.lo_sha256` /
+`palette.hi_sha256` in
+`reference/experiments/stunrun/gsp-direct-share-frame600-service/`. Two
+independent code paths, one byte stream. §81's conclusion is withdrawn.
+
+### 101.3 What the now-capturable palette shows: three banks exact, bank 0 absent
+
+With MAME's palette capturable on the **title** path at an arbitrary frame,
+the comparison §69 could not make is available. §69 measured "75.4% / 77.3%
+byte agreement", reproducible at `1546/2048` lo and `1550/2048` hi. That
+percentage is real but it hides the shape, and §69 also compared a normal-boot
+native capture against a *service-mode* MAME capture — the §80.5 two-machine
+mistake. Redone properly, on the same path at the same frame (480, and again at
+900):
+
+| bank | entries matching MAME exactly |
+|---|---:|
+| 0 | **0 / 256** |
+| 1 | 256 / 256 |
+| 2 | 256 / 256 |
+| 3 | 256 / 256 |
+
+Three of four banks are bit-perfect. Bank 0 is wrong in every entry, at both
+frames, so this is not a trajectory offset (§39.6 item 3) and not the
+palette-bank decode fixed in §69.
+
+MAME's bank 0 holds the title screen's actual colours — a red ramp in the
+low plane, `lo` running `0x7300, 0x7f00, 0x8b00, 0x9700, …` (red +12 per
+entry, green and blue zero), which is the background gradient. **216 of those
+256 values appear nowhere in our palette at all**, in any bank. They are not
+misrouted; they were never written.
+
+### 101.4 What is ruled out, and what is not
+
+Ruled out by checking rather than assuming:
+
+- **Not the palette address decode.** `gsp_palette_index()` uses `off >> 4` and
+  `gsp_board_palette_index()` uses `addr >> 4`. That is right: the map's offset
+  unit is one 16-bit access per `0x10` bit-address units, and both then mask to
+  8 bits exactly as MAME's `offset & 0xff` does. I first suspected `>> 4`
+  should be `>> 3` (by analogy with the VRAM `>> 3`) and it does not.
+- **Not the dropped `REGION_GSP_PAL` write path.** `musashi_cpu.c` discards
+  direct 68010 writes to `0xf5000000`/`0xf5800000` (empty `break` in the
+  8/16/32-bit handlers). That is **correct**: those windows are in
+  `driver_gsp_map`, the GSP's own address space, not in `multisync_68k_map`.
+  The 68010 reaches the palette only through `0xc00000-0xc03fff`, and dropping
+  the region matches the driver.
+- **Not §81's observer problem** — see §101.1/§101.2.
+
+**Not established.** Where bank 0's writes go, or why they are missing. A
+first replay of `gsp_bus_events.bin` attributed palette writes only to banks 0
+and 3 (1024 each, 256 distinct entries) and none to banks 1/2 — which cannot
+be right, since banks 1–3 are populated and bit-exact. That replay used the
+wrong register decode: `gsp_host_reg()` yields `TMS_HOST_DATA = 2`, not 3
+(`musashi_cpu.c:929-932`), and `gsp_bus_events.bin`'s `address` field is the
+window offset relative to `0x00c00000`. With that corrected the write counts
+are plausible but the bank attribution still does not reconcile, so the
+replay is **not** evidence and must not be quoted. The next step is to replay
+the bus stream with the corrected decode and the real `hd68k_gsp_io_w`
+auto-increment rule, and to state the bank timeline from that.

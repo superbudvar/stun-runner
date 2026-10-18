@@ -199,8 +199,23 @@ emu.register_frame_done(function()
         -- so the window can only ever reach 256 entries at whatever bank the
         -- driver currently holds, and reading it for pen N>255 is not possible
         -- without driving the bank register.  gsp_render.py wants all 1024.
-        local lo_share = machine.memory.shares[':gsp_palram_lo']
-        local hi_share = machine.memory.shares[':gsp_palram_hi']
+        -- The share name carries the MACHINE TAG.  harddriv.cpp:399-400 declares
+        --   m_gsp_paletteram_lo(*this, "gsp_palram_lo", 1024*2, LITTLE)
+        -- on the mainpcb device, so the Lua key is ':mainpcb:gsp_palram_lo',
+        -- not ':gsp_palram_lo'.  Enumerating machine.memory.shares on the
+        -- pinned build returns exactly:
+        --   :mainpcb:adsp_data :mainpcb:adsp_pgm_memory
+        --   :mainpcb:gsp_control_hi :mainpcb:gsp_control_lo
+        --   :mainpcb:gsp_palram_hi :mainpcb:gsp_palram_lo :mainpcb:gsp_vram
+        -- The untagged key finds nothing, which is what made this tap print
+        -- "M1_GSP_PALETTE unavailable shares" and sent findings section 81 to
+        -- conclude the palette needed a C++ observer.  It does not.  Verified
+        -- 2026-10-18: with the tagged key the dump below reproduces
+        -- tools/mame-gsp-state-snapshot's service capture.  See section 101.
+        local lo_share = machine.memory.shares[':mainpcb:gsp_palram_lo']
+                          or machine.memory.shares[':gsp_palram_lo']
+        local hi_share = machine.memory.shares[':mainpcb:gsp_palram_hi']
+                          or machine.memory.shares[':gsp_palram_hi']
         if lo_share and hi_share then
             local PENS = 1024
             local function dump_pal(path, share)
@@ -218,16 +233,13 @@ emu.register_frame_done(function()
             dump_pal(out_path:gsub('gsp_vram%.bin$', 'gsp_pal_lo.bin'), lo_share)
             dump_pal(out_path:gsub('gsp_vram%.bin$', 'gsp_pal_hi.bin'), hi_share)
         else
-            -- KNOWN LIMITATION, recorded rather than papered over.  harddriv.cpp
-            -- 399-400 declares the palette as address_space MEMBERS
-            -- (m_gsp_paletteram_lo/hi), not memory shares, so Lua cannot reach
-            -- the backing store and the 0xf5000000 window cannot address entry
-            -- 256+ without driving m_gfx_palettebank.  Dumping through the
-            -- window instead produces a plausible-looking but WRONG palette,
-            -- which is worse than not dumping one.  Getting the real thing
-            -- needs a small C++ observer in the driver; until then a dumpdir
-            -- carries VRAM only and must be paired with a palette from the same
-            -- capture moment.  See findings section 81.
+            -- Real limitation, now narrower than it was.  Only if the shares
+            -- are genuinely absent from machine.memory.shares does this fire:
+            -- the 0xf5000000 window can then only ever reach 256 entries at
+            -- whatever bank m_gfx_palettebank currently holds, so dumping
+            -- through the window instead would produce a plausible-looking
+            -- but WRONG palette, which is worse than not dumping one.
+            -- Before the machine-tag fix above this branch fired on every run.
             print('M1_GSP_PALETTE unavailable shares -- VRAM dumped without palette')
             local _unused = cpu_space
         end
