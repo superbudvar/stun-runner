@@ -2147,6 +2147,30 @@ class AdspSomFixtureCheckTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("outside the six-word ring", r.stderr)
 
+    def test_rejects_a_record_word_that_the_capture_never_latched(self):
+        # The old documented limitation was that a UNIFORMLY wrong record passed
+        # every internal identity. Corrupt a word that no other identity covers:
+        # a side value inside a span, keeping the terminator, the control word,
+        # and every pass-2 ring value intact.
+        r = self._corrupted("0x6DB8, 0xFFFF, 0xCCDA, 0xFFFD,",
+                            "0x6DB8, 0xFFFF, 0xCCDB, 0xFFFD,")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("does not match the captured SOMLATCH words", r.stderr)
+
+    def test_json_reports_the_captured_stream_digest(self):
+        capture = ROOT / "reference/experiments/stunrun/adsp-som-transaction-f551/result.json"
+        words = [word["value"] for word in
+                 json.loads(capture.read_text())["transaction"]["som_words"]]
+        expected = hashlib.sha256(
+            b"".join(word.to_bytes(2, "big") for word in words)).hexdigest()
+        r = subprocess.run([str(ROOT / "tools" / self.TOOL), "--json",
+                            str(self.FIXTURE)],
+                           cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        payload = json.loads(r.stdout)
+        self.assertEqual(payload["captured_words"], 146)
+        self.assertEqual(payload["captured_stream_sha256"], expected)
+
     def test_rejects_a_missing_file(self):
         r = self.run_tool(ROOT / "reproduction" / "adsp" / "does-not-exist.c")
         self.assertNotEqual(r.returncode, 0)

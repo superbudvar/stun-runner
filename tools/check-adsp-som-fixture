@@ -25,15 +25,21 @@ What it checks, and what it cannot:
   * Each record's 16 expected words end with the $FFFF $FFFF terminator, and
     the four header words are at fixed positions.
 
-What it CANNOT check, and this is the important limitation: it cannot tell you
-whether a record word is the RIGHT $FFFF-terminated record. Expected words come
-from the same human transcription as the rest of the fixture, so a uniformly
-wrong record passes every identity here. Only re-deriving them from
-reference/experiments/stunrun/adsp-som-transaction-f551/result.json would catch
-that, and that is a different question -- it means parsing 4009 producer
-events. Until someone writes that, the honest statement is: these are checked
-for INTERNAL consistency and against the independently transcribed findings
-table, not against the capture.
+It also cross-checks the record words against the committed oracle capture:
+
+  * the flattened big-endian word stream of
+    reference/experiments/stunrun/adsp-som-transaction-f551/result.json
+    (transaction.som_words) hashes to the digest that capture's own metadata
+    records, so the reference stream is verified, not assumed.
+  * its two prologue words are zero and the nine EXPECTED rows appear, in
+    order, at the capture's own record offsets. That answers the question the
+    earlier version of this tool documented as unanswerable: a uniformly wrong
+    record can no longer pass, because the words are compared with the words the
+    pinned MAME run latched.
+
+What it still cannot check: whether the capture itself means anything beyond
+one bounded transaction, and whether any given SOMLATCH word carries a game-level
+meaning. Both are UNKNOWN in the findings, not verified here.
 """
 
 import argparse
@@ -41,6 +47,7 @@ import hashlib
 import json
 import pathlib
 import re
+import struct
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -67,6 +74,10 @@ RECORDS = 9
 DM_BASE = 0x0030
 DM_WORDS = 22
 REC_WORDS = 16
+# Two $0000 latches at PCs $0035/$0039 precede the records; the capture's own
+# metadata records the same layout under derived_record_layout.
+PROLOGUE_WORDS = 2
+TOTAL_SOM_WORDS = PROLOGUE_WORDS + RECORDS * REC_WORDS
 PM_N0_SLOT = 0x1036
 PM_FIRST = 0x1037
 PM_COUNT = 64
@@ -182,6 +193,37 @@ def main() -> int:
                 "records latch them equal, so a mismatch means a transcription "
                 "slip" % (index, words[1], words[2]))
 
+    capture_path = ROOT / "reference/experiments/stunrun/adsp-som-transaction-f551/result.json"
+    capture_meta_path = ROOT / "reference/experiments/stunrun/adsp-som-transaction-f551/metadata.json"
+    captured_digest = None
+    if not capture_path.is_file():
+        failures.append("missing oracle capture %s; the record cross-check "
+                        "cannot run" % capture_path.relative_to(ROOT))
+    else:
+        capture = json.loads(capture_path.read_text(encoding="utf-8"))
+        captured_words = [word["value"] for word in capture["transaction"]["som_words"]]
+        require(len(captured_words) == TOTAL_SOM_WORDS,
+                "capture holds %d SOMLATCH words, expected %d"
+                % (len(captured_words), TOTAL_SOM_WORDS))
+        require(captured_words[:PROLOGUE_WORDS] == [0, 0],
+                "capture prologue words %s are not both zero"
+                % [hex(value) for value in captured_words[:PROLOGUE_WORDS]])
+        for index in range(min(len(expected), RECORDS)):
+            offset = PROLOGUE_WORDS + index * REC_WORDS
+            require(captured_words[offset:offset + REC_WORDS] == expected[index],
+                    "record %d does not match the captured SOMLATCH words at "
+                    "offset %d" % (index, offset))
+        digest = hashlib.sha256(b"".join(struct.pack(">H", value)
+                                         for value in captured_words)).hexdigest()
+        captured_digest = digest
+        if capture_meta_path.is_file():
+            recorded = json.loads(capture_meta_path.read_text(encoding="utf-8"))
+            recorded_digest = recorded.get("observed_transaction", {}).get(
+                "som_stream_sha256_big_endian_words")
+            require(recorded_digest == digest,
+                    "capture stream digest %s does not match the digest %s "
+                    "recorded in its metadata" % (digest, recorded_digest))
+
     summary = {
         "schema": "stunrun-adsp-som-fixture-check-v1",
         "target": str(target.relative_to(ROOT)) if target.is_relative_to(ROOT) else str(target),
@@ -193,6 +235,8 @@ def main() -> int:
         "pm_last": "0x%04X" % program[-1][0] if program else None,
         "cntr": CNTR,
         "ring_length": RING_LEN,
+        "captured_words": TOTAL_SOM_WORDS,
+        "captured_stream_sha256": captured_digest,
         "checks_failed": failures,
         "fixture_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
     }
