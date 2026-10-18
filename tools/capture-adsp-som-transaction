@@ -96,6 +96,11 @@ def main() -> int:
                         help="capture the 68010 ferry this many frames after GINT")
     parser.add_argument("--max-events", type=int, default=50000)
     parser.add_argument("--timeout", type=float, default=180.0)
+    # Opt-in only, defaulting to none. The committed frame-551 evidence arm is
+    # power-on/no-input; scripted input is nondeterministic at this machine's
+    # frame-48 boundary (findings 70, bead stun-runner-0p0), so it must never
+    # be reachable by accident. The arm is recorded in result.json.
+    parser.add_argument("--input", choices=("none", "service"), default="none")
     parser.add_argument(
         "--nvram-seed", type=pathlib.Path,
         help="copy this NVRAM root (containing stunrun/) into a disposable per-run directory")
@@ -144,6 +149,7 @@ def main() -> int:
         "STUNRUN_ADSP_TX_LAST": str(last_frame),
         "STUNRUN_ADSP_TX_POST_FRAMES": str(args.post_frames),
         "STUNRUN_ADSP_TX_MAX_EVENTS": str(args.max_events),
+        "STUNRUN_ADSP_TX_INPUT": args.input,
         "SDL_VIDEODRIVER": os.environ.get("SDL_VIDEODRIVER", "dummy"),
     }
     def run_capture(nvram_directory: pathlib.Path | None = None):
@@ -291,7 +297,9 @@ def main() -> int:
     mame_sha256 = sha256(mame)
     result = {
         "schema": "stunrun-adsp-som-transaction/v1",
-        "input": "none",
+        # The ACTUAL arm, not a constant. This used to hardcode "none", which
+        # would have labelled a scripted service capture as power-on evidence.
+        "input": args.input,
         "start_condition": "power_on",
         "devices": {"adsp": ":mainpcb:adsp", "maincpu": ":mainpcb:maincpu"},
         "transaction_start_frame": int(tx_start_frame),

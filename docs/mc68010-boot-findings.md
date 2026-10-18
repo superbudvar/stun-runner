@@ -15280,3 +15280,86 @@ the shell then **keeps running** unless `STUNRUN_FRAMES=N` is also given.
 `STUNRUN_CAPTURE_ALL=1` does not dump every frame despite the comment at
 `shell.c:2697` — it writes a single PNG at loop exit, so it needs a bounded
 `STUNRUN_FRAMES` too.
+
+## 105. The ADSP is not first invoked at the check — it waits at `$0014`, and service mode never releases it
+
+Follow-on to §104.6. Question: is the service-mode ADSP check the DSP's first
+invocation, which would make it the cheapest possible thing to satisfy?
+
+**No.** The ADSP is already executing long before the check, on both paths, and
+the two arms diverge somewhere else entirely.
+
+### 105.1 The instrument
+
+`mame/lua/adsppc.lua` (promoted from a scratch script): samples
+`machine.devices[':mainpcb:adsp'].state['PC']` and `ASTAT` once per frame via
+`emu.register_frame_done`, applies an optional Service Mode schedule, and
+reports every frame-boundary PC transition. `--input none|service`.
+
+### 105.2 Both arms
+
+```text
+INPUT none     frames=4300 distinct_pcs=638  pc_transitions=1678  final_pc=0014 final_astat=20
+INPUT service  frames=4300 distinct_pcs=  6  pc_transitions=   6  final_pc=0100 final_astat=00
+```
+
+Identical for the first 410 frames in both:
+
+```text
+f=1     pc=0004   astat=00      reset
+f=396   pc=011B   astat=00
+f=410   pc=0014   astat=00      and then it waits
+```
+
+**The check is not the first invocation.** The DSP runs from power-on, reaches
+`$0014` by frame 410 in both arms, and the ROM's ADSP check does not happen
+until roughly frame 4000. Whatever the check asks for, the ADSP has been
+running for 3600 frames by then.
+
+### 105.3 The divergence is at frame 827, and it is a wait state
+
+On the normal path the ADSP leaves `$0014` at frame 827 and stays busy:
+
+```text
+f=827 pc=0509   f=828 pc=05CE   f=829 pc=0636   f=830 pc=0227
+f=831 pc=021B   f=832 pc=077F   f=833 pc=0014   f=834 pc=0577
+f=835 pc=01A3   f=836 pc=07DB   f=837 pc=02A6   f=838 pc=015C
+f=839 pc=0258   f=840 pc=04C3   f=841 pc=05E3
+```
+
+That range (`$04C3`, `$0509`, `$0577`, `$05CE`, `$0636`, `$07DB`) is the same
+neighbourhood as the transcribed SOM producer — §98's record walk is `$0174`,
+§94's clamp is `$04FE-$050D`, §99's control word is `$0214-$0237`, and the
+frame-551 capture's outer loop is `$04B2`. **The activity that starts at frame
+827 is the geometry pipeline, and in service mode it never starts.**
+
+`$0014` is therefore a wait state, not an idle DSP: the normal path sits there
+from frame 410 to 827 as well. Something between frames 410 and 827 releases
+it on the normal path, and in service mode nothing ever does.
+
+### 105.4 What this means for the emulator decision
+
+The scope question from §104.4 ("one handshake, or 35 seconds of sustained
+work?") is now partly answered in the other direction: **the ADSP is not idle
+when the check runs.** It has been at `$0014` since frame 410 and, on the
+normal path, that same state is what it returns to between work bursts. So the
+check is very unlikely to be satisfied by a stub that only resets — whatever
+it reads is state the DSP is expected to be *holding*, not something it must
+newly produce in 35 seconds.
+
+Still unknown, and now the sharpest question in the ADSP thread: **what
+releases the ADSP from `$0014` at frame 827 on the normal path?** It is almost
+certainly a 68010 handshake — a write into one of the ADSP windows, or a
+control-word poke — and if so it is one small routine, not an emulator. That
+is the next thing to read, and it can be read rather than emulated.
+
+### 105.5 Limitation, stated because it bounds the claim
+
+The PC is sampled **once per frame**. The ADSP runs at 8 MHz against a 60 Hz
+video clock — roughly 130,000 instructions per frame — so this samples about
+one point in 130,000 and cannot prove a PC was *never* visited between samples.
+What it does establish is the size of the difference, because the same
+instrument produced 638 distinct PCs and 1678 transitions in the control arm:
+638-vs-6 is not a sampling artifact. The control is the reason this is
+evidence. Instruction-level coverage needs the fetch trace that
+`stun-runner-yuv` asks for and that does not exist yet.

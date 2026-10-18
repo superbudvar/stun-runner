@@ -1,5 +1,10 @@
 -- Bounded same-run ADSP SOMLATCH->GINT capture plus the 68010 ferry afterward.
--- Input is deliberately fixed to none; this avoids scripted-input evidence arms.
+-- Input defaults to none; every other arm is opt-in. The no-input default is
+-- deliberate -- scripted input is nondeterministic at this machine's frame-48
+-- boundary (findings section 70, bead stun-runner-0p0) and must never be able
+-- to contaminate the committed frame-551 evidence arm by accident. The tool
+-- records the arm in result.json so a service capture can never be mistaken
+-- for that one.
 
 local machine = manager.machine
 local first_frame = tonumber(os.getenv('STUNRUN_ADSP_TX_FIRST') or '1')
@@ -173,10 +178,38 @@ local function install_taps()
     print('M1_ADSP_TX_TAPS_INSTALLED frame=' .. frame)
 end
 
+local input_mode = os.getenv('STUNRUN_ADSP_TX_INPUT') or 'none'
+-- Service schedule, copied from mame/lua/gsp-vram-dump.lua so both taps agree
+-- on what "service" means. Pressing Service Mode is what puts the game into
+-- the self-test, which is where the ROM performs its ADSP check.
+local input_events = input_mode == 'service' and {
+    {frame = 60, port = ':mainpcb:IN0', field = 'Service Mode', action = 'press'},
+    {frame = 120, port = ':mainpcb:IN0', field = 'Service Mode', action = 'release'}
+} or {}
+local next_input_event = 1
+
+local function apply_input_event(event)
+    local port = manager.machine.ioport.ports[event.port]
+    assert(port ~= nil, 'unknown input port: ' .. event.port)
+    local f = port.fields[event.field]
+    assert(f ~= nil, 'unknown input field: ' .. event.port .. '/' .. event.field)
+    if event.action == 'press' then f:set_value(1)
+    elseif event.action == 'release' then f:set_value(0)
+    else f:set_value(event.value) end
+    print('M1_ADSP_TX_INPUT frame=' .. frame .. ' port=' .. event.port ..
+          ' field=' .. event.field .. ' action=' .. event.action)
+end
+
 emu.register_frame_done(function()
     frame = frame + 1
+    while next_input_event <= #input_events and
+          input_events[next_input_event].frame <= frame do
+        apply_input_event(input_events[next_input_event])
+        next_input_event = next_input_event + 1
+    end
     if frame == 1 and not installed then install_taps() end
     if frame >= last_frame then
+        print('M1_ADSP_TX_INPUT_MODE ' .. input_mode)
         print(string.format(
             'M1_ADSP_TX_DONE frames=%d events=%d truncated=%s bank_events=%d tx_start_frame=%s tx_start_seq=%s tx_end_frame=%s tx_end_seq=%s records=%d',
             frame, events, tostring(truncated), bank_events,
