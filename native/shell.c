@@ -2847,13 +2847,13 @@ static int run_walk(void)
         if (g_cpu) musashi_cpu_adsp_io(&aio_snap);
         printf("shell: adsp-io dm$1fff-triggers=%lu ctrl-bank=%lu "
                "ctrl-reset=%lu ctrl-halt=%lu som-bank=%u xflag=%u irq=%u "
-               "irq-polls=%lu prog-r=%lu prog-w=%lu\n"
+               "irq-polls=%lu prog-r=%lu prog-w=%lu dm-r=%lu som-r=%lu\n"
                "           zram-r=%lu zram-w=%lu zram-gated=%lu zp1=%u zp2=%u\n"
                "           rom-tail-r=%lu watchdog-w=%lu watchdog32=%lu soundrst16=%lu soundrst32=%lu\n",
                aio_snap.dm_trigger, aio_snap.ctrl_bank, aio_snap.ctrl_reset,
                aio_snap.ctrl_halt, aio_snap.som_bank, aio_snap.xflag,
                aio_snap.irq_state, aio_snap.irq_reads, aio_snap.prog_reads,
-               aio_snap.prog_writes,
+               aio_snap.prog_writes, aio_snap.data_reads, aio_snap.som_reads,
                aio_snap.zram_reads, aio_snap.zram_writes, aio_snap.zram_gated,
                aio_snap.zp1, aio_snap.zp2, aio_snap.rom_tail,
                aio_snap.watchdog, aio_snap.watchdog32, aio_snap.soundrst16,

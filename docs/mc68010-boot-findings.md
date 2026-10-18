@@ -16319,3 +16319,69 @@ identified — at least not on the frame we chose. Two readings remain open: the
 probe fires too early or too late for the check that is actually running, or
 the ROM reads something else entirely. The next step is to sweep the probe
 frame rather than guess one, which is cheap and can only be informative.
+
+## 116. The probe sweep would have been a waste: the status register is never read
+
+§115.4 proposed sweeping `STUNRUN_ADSP_PROBE_GINT` across frames. Before
+spending that, the existing counter answers the question the sweep was for.
+
+### 116.1 A gap in my own instrumentation
+
+`REGION_ADSP_DATA` and `REGION_ADSP_BUF` were **implemented without read
+counters**, while the program window and the status register had them. So
+"prog-r=0, irq-polls=0" was a complete answer for those two windows and silence
+for the two most plausible ones. The most likely place for the ROM to look for
+a DSP and find nothing is the SOMLATCH ferry — `som_memory`, filled by the
+DSP's `$2002` pin and read by the 68010 through `hd68k_adsp_buffer_r` — and we
+had no visibility into it at all.
+
+Both now counted (`dm-r`, `som-r`).
+
+### 116.2 Every ADSP window, read and write, on both paths
+
+```text
+SERVICE, 4300 frames
+dm$1fff-triggers=0 ctrl-bank=0 ctrl-reset=0 ctrl-halt=0 som-bank=0
+xflag=0 irq=0 irq-polls=0 prog-r=0 prog-w=0 dm-r=0 som-r=0
+zp1=1 rom-tail-r=0 watchdog-w=7029 soundrst16=4
+
+NORMAL, 320 frames
+dm$1fff-triggers=0 ctrl-bank=0 ctrl-reset=0 ctrl-halt=0 som-bank=0
+xflag=0 irq=0 irq-polls=0 prog-r=0 prog-w=0 dm-r=0 som-r=0
+zp1=1 watchdog-w=1259 soundrst16=742
+```
+
+**Zero on all six maps, reads and writes, on both paths** — while the same
+dispatch records 1259 watchdog writes, 742 sound-reset writes and `zp1=1` in
+the normal run. §115.2 already established that `watchdog-w=1259` matches
+MAME's `1263` over the same window and frames, so this is a live, calibrated
+instrument.
+
+### 116.3 So the sweep is answered, not run
+
+`irq-polls=0` means `hd68k_adsp_irq_state_r` is **never read**. The `/GINT`
+probe flag is therefore unread by construction, and no probe frame — not 100,
+not 4298, not the self-test window — can change what the ROM sees. The §115.4
+null is now explained rather than merely recorded.
+
+This also corrects §107.4's inference. The status register *was* mis-wired
+(hard-coded to the idle `$FFFD`), so the fix was correct; but the conclusion
+drawn from it — "the ROM polls that register to decide the DSP is alive" — is
+**wrong**. Our ROM never polls it. Withdrawing that.
+
+### 116.4 What is left, and it is a static question
+
+Our 68010 reaches `ADSP-2100 DOES NOT RESPOND` without ever touching the DSP
+interface. Three readings remain:
+
+1. The verdict comes from the ROM's own internal state or timeout, with no
+   DSP-window access involved.
+2. It is produced by the **GSP**, not the 68010 — the GSP has its own
+   host-port view and could be doing the check.
+3. The 68010 diverged earlier and takes a fallback branch that prints this.
+
+All three are answerable **without emulation and without more probes**: find the
+string in the ROM, disassemble what references it, and read the code that
+chooses between the `ADSP TEST: 35 SECS - 3 MINS` path and the error path. That
+is `tools/dis68k` over the de-interleaved main-CPU image — the same instrument
+that settled §110.3's disassembly — and it is the next thing to do.

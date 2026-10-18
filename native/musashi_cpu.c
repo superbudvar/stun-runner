@@ -287,6 +287,8 @@ struct musashi_cpu {
      * previously every one of these writes was silently dropped and nothing
      * said so (findings 107.4). */
     uint32_t adsp_irq_reads;
+    uint32_t adsp_data_reads;
+    uint32_t adsp_som_reads;
     uint32_t adsp_prog_reads;
     uint32_t adsp_prog_writes;
     uint32_t rom_tail_reads;
@@ -2195,10 +2197,21 @@ unsigned int m68k_read_memory_16(unsigned int address)
         }
     case REGION_ADSP_DATA:
         /* hd68k_adsp_data_r (harddriv_m.cpp:651): a bare indexed read. */
+        s_cpu->adsp_data_reads++;
         return s_cpu->adsp_dm[offset & (MUSASHI_ADSP_DM_WORDS - 1u)];
     case REGION_ADSP_BUF:
         /* hd68k_adsp_buffer_r (harddriv_m.cpp:680):
-         * som_memory[m_m68k_adsp_buffer_bank * 0x2000 + offset]. */
+         * som_memory[m_m68k_adsp_buffer_bank * 0x2000 + offset].
+         *
+         * Counted because this is the most plausible place the ROM would look
+         * for the DSP and find nothing: SOMLATCH records are ferried here by
+         * the DSP's $2002 pin, and our model has never had a DSP to write
+         * them. If the ROM polls here, that is a read counter we had no
+         * visibility into at all -- REGION_ADSP_DATA and REGION_ADSP_BUF were
+         * implemented without read counters while the prog window and the
+         * status register had them, so "the 68010 never touches the ADSP"
+         * (findings 109/115) was undercounted on exactly this path. */
+        s_cpu->adsp_som_reads++;
         return s_cpu->adsp_som[((unsigned)s_cpu->adsp_som_bank * 0x2000u +
                                 offset) & (MUSASHI_ADSP_SOM_WORDS - 1u)];
     case REGION_SOUNDRST:
@@ -3595,6 +3608,8 @@ void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out)
     out->xflag       = s_cpu ? (unsigned)s_cpu->adsp_xflag : 0u;
     out->irq_state   = s_cpu ? (unsigned)s_cpu->adsp_irq_state : 0u;
     out->irq_reads   = s_cpu ? (unsigned long)s_cpu->adsp_irq_reads : 0ul;
+    out->data_reads  = s_cpu ? (unsigned long)s_cpu->adsp_data_reads : 0ul;
+    out->som_reads   = s_cpu ? (unsigned long)s_cpu->adsp_som_reads : 0ul;
     out->prog_reads  = s_cpu ? (unsigned long)s_cpu->adsp_prog_reads : 0ul;
     out->prog_writes = s_cpu ? (unsigned long)s_cpu->adsp_prog_writes : 0ul;
     out->watchdog     = s_cpu ? (unsigned long)s_cpu->watchdog_writes : 0ul;

@@ -104,6 +104,8 @@ typedef struct musashi_cpu_adsp_io {
     unsigned      xflag;           /* hd68k_adsp_irq_state_r bit 1 */
     unsigned      irq_state;       /* hd68k_adsp_irq_state_r bit 0 */
     unsigned long irq_reads;       /* polls of the status register */
+    unsigned long data_reads;      /* 0x808000-0x80BFFF reads */
+    unsigned long som_reads;       /* 0x810000-0x813FFF reads (the SOMLATCH ferry) */
     unsigned long prog_reads;      /* 0x800000-0x807FFF reads */
     unsigned long prog_writes;     /* 0x800000-0x807FFF writes */
     unsigned long watchdog;         /* 0x608000-0x60BFFF service kicks */
