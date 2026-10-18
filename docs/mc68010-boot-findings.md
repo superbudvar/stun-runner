@@ -15968,3 +15968,107 @@ zero, ROM tail zero. Every MMIO region the audit found wrong is one the 68010
 does not use on this path. The main-RAM comparison (running in parallel) is
 now the only live lead, and the instrument audit's contribution is negative
 information: **the divergence is not in the address map.**
+
+## 113. The cycle budget was never the difference; §110.4's numbers were wrong, and the RAM diff is 35 bytes
+
+A parallel investigation compared main RAM between the two machines at frame
+320. It corrected two of my own measurements and replaced a third with a real
+number. Both corrections are recorded rather than quietly folded in.
+
+### 113.1 Correction: the per-frame cycle budget is IDENTICAL, not 0.76% apart
+
+§110.4 claimed native runs 134,454 cycles/frame at 59.50 Hz against MAME's
+133,433 at 59.952 Hz, a 0.76% skew. **All three numbers were wrong.**
+
+MAME's frame period, measured over 1000 frames with `emu.time()`:
+
+```text
+PERIOD frames=1000 span_secs=16.610800000 per_frame=0.0166108 hz=60.2018
+```
+
+At the 8 MHz maincpu clock that is **132,886 cycles/frame** — and native's
+granted budget is `MUSASHI_FRAME_CYCLES = 132886`. **The budgets are the same.**
+
+The 134,454 in the frame log is cycles *executed*, not cycles *granted*: the
+fixed-size chunk loop overshoots by ~6.2 cycles per chunk, so native executes
+**1.18% more CPU per frame than its own budget allows**, and therefore 1.18%
+more than MAME does.
+
+Where my 133,433 came from: I computed 16e6/(640x417) from
+`set_raw(HARDDRIV_GSP_CLOCK/12*4, 160*4, 0, 127*4, 417, 0, 384)`. The
+arithmetic is right and the answer is wrong — the measured period is 0.4%
+shorter than the config implies. **A config constant is not a measurement.**
+
+The 1.18% overshoot is real and worth fixing on its own: `MUSASHI_FRAME_CYCLES`
+is supposed to bound the frame's work, and a loop that overshoots its own
+budget is a bug regardless of the oracle.
+
+### 113.2 Correction: "the PCs track exactly" was overclaimed
+
+§110.1 presented frames 50/100/200/300 as "where they agree". They do agree —
+but only those four. Over a 420-frame PC log the match rate is **154/420
+(36.7%)**, first disagreement at frame **2**, and the agreement at 50/100/200/300
+is luck of sampling inside a three-instruction loop. Even a ±2 tolerance gives
+only 62-66%.
+
+So **a PC-at-frame-boundary series cannot establish frame alignment here**, and
+§110's framing of it as a tracking comparison was wrong. The load-bearing
+observation in §110.2 — an *edge*, the exit from the `$0209E0` countdown — is
+unaffected, and was independently confirmed (exit 327 native / 363 MAME).
+
+### 113.3 What the RAM comparison found
+
+Both sides cover the same 32 KiB (`0xFF8000-0xFFFFFF` is 32 KiB — §112.4),
+verified rather than assumed, and the instrument was checked for the ability to
+fail: flipping one bit took the count 35 -> 36 and moved the lowest address to
+`0xFF8000`.
+
+At frame 320: **35 of 32768 bytes differ (0.107%)**, lowest `0xFF9492`, highest
+`0xFFFF29`, stable over 18 runs. Two clusters:
+
+| cluster | bytes | what it is |
+|---|---:|---|
+| `0xFF9492-0xFF94C5` | 26 | a live 16-bit counter plus a 0x34-byte record buffer, written by the **same PCs on both sides** |
+| `0xFFFEE1-0xFFFF29` | 9 | the 68010 SSP |
+
+`0xFF9492/93` is a 16-bit counter: native 261 writes, MAME 268; at frame 320
+MAME holds 257 and native 253. **Native started the counter 6 frames later**
+(frame 88 vs 94).
+
+The first difference anywhere is at frame 32, 3 bytes at `0xFFBFFA/B/F` — but
+it is transient (identical again at 48 and 64), native reaching it at 35 and
+clearing at 40, MAME holding at 32 and clearing by 48. That is a **3-frame phase
+offset, not a state divergence.** Persistent divergence begins between frames
+64 and 88.
+
+### 113.4 What this does and does not explain
+
+The `$0209E0` countdown **dwell** is 233 frames native against 275 MAME
+(entry 94 vs 88, exit 327 vs 363 — both confirmed). The 1.18% execution
+overshoot accounts for roughly 3 of the 42-frame difference; **~39 frames are
+still unexplained.**
+
+The useful correlation: **the 6-frame entry lag into the countdown matches the
+6-frame lag of the `0xFF9492` counter exactly.** Something delays native by six
+frames, and the counter and the countdown both inherit it.
+
+### 113.5 Not established
+
+- What causes the 6-frame lag. It is not main-RAM state — RAM is identical at
+  frames 48 and 64, and the lag shows up between 64 and 88.
+- Whether the 35 differing bytes are causal or merely a consequence.
+- How many `209da..209e4` passes each machine makes. Sampling once per frame
+  cannot answer this; it needs a **counting** tap, which the agent named as the
+  cheapest next measurement and which is the right instrument.
+- `0xFFFF26`: native's last writer is `$02093E` (0x6DAA), MAME's is `$0207E0`
+  (0x0000). Not yet disassembled.
+- ±1 frame-counter alignment between the two instruments. Bounded, and it does
+  not change the 35.
+
+### 113.6 Attribution note
+
+The comparison captured native dumps at 15:52-16:00:05; `native/` was then
+modified at 16:00:11-16:01:18 by the concurrent map audit (which is §112, and
+which changes no behaviour on this path). The agent re-ran against the rebuilt
+binary and got a **byte-identical** `main_ram.bin` and PC log. The result is
+attributable to `80bd114` and is unaffected.
