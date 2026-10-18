@@ -258,6 +258,42 @@ struct musashi_cpu {
     uint32_t *pc_hist;
     uint16_t *adsp_pgm_ram;   /* 0x800000-0x807FFF window, MUSASHI_ADSP_PGM_WORDS */
 
+    /* ADSP-2100 data memory and SOM output memory, per findings 107/108.
+     *
+     * `adsp_dm` is the 68010's window onto the DSP's data memory
+     * (0x808000-0x80BFFF, 8192 words). MAME's hd68k_adsp_data_r/w
+     * (harddriv_m.cpp:651) is a plain indexed access with no bank and no
+     * transform, so the window offset IS the DM word index -- which is what
+     * makes $1FFF the last word, matching MAME's own comment that "any write
+     * to $1FFF is taken to be a trigger".
+     *
+     * `adsp_som` is the ADSP's output memory (0x810000-0x813FFF), read through
+     * hd68k_adsp_buffer_r (harddriv_m.cpp:680) as
+     * `som_memory[buffer_bank * 0x2000 + offset]`. 0x8000 bytes = 0x4000
+     * words, four banks of 0x2000. This is the SOMLATCH ferry: the DSP writes
+     * here through its $2002 pin and the 68010 reads it back here. Nothing
+     * else in the driver reads it -- the GSP does not (findings 108.1).
+     *
+     * `adsp_xflag`/`adsp_irq_state` back hd68k_adsp_irq_state_r
+     * (harddriv_m.cpp:827): $FFFD silent, $FFFC after /GINT, $FFFF after
+     * /XOUT. The program image never drives /XOUT, so $FFFF is unreachable. */
+    uint16_t *adsp_dm;
+    uint16_t *adsp_som;
+    uint8_t  adsp_som_bank;
+    uint8_t  adsp_xflag;
+    uint8_t  adsp_irq_state;
+    /* Observation counters for the ADSP board interface. These exist so a run
+     * log can show that the 68010 actually drives the windows the ROM needs --
+     * previously every one of these writes was silently dropped and nothing
+     * said so (findings 107.4). */
+    uint32_t adsp_irq_reads;
+    uint32_t adsp_prog_reads;
+    uint32_t adsp_prog_writes;
+    uint32_t adsp_dm_trigger_writes;
+    uint32_t adsp_ctrl_bank_writes;
+    uint32_t adsp_ctrl_reset_writes;
+    uint32_t adsp_ctrl_halt_writes;
+
     /* Video dot clock, used to drive the /HSYNCB and /VSYNCB bits that
      * hd68k_port0_r() derives from the screen rather than from the port.
      * The GSP pixel clock is 10 MHz against the 8 MHz 68010, so we keep the
@@ -630,6 +666,11 @@ musashi_cpu_t *musashi_cpu_create(void)
     cpu->gsp_ctrl_lo   = calloc(1, 0x100);
     cpu->gsp_ctrl_hi   = calloc(1, 0x100);
     cpu->adsp_pgm_ram  = calloc(MUSASHI_ADSP_PGM_WORDS, sizeof(uint16_t));
+    cpu->adsp_dm       = calloc(MUSASHI_ADSP_DM_WORDS, sizeof(uint16_t));
+    cpu->adsp_som      = calloc(MUSASHI_ADSP_SOM_WORDS, sizeof(uint16_t));
+    cpu->adsp_som_bank = 0;
+    cpu->adsp_xflag    = 0;
+    cpu->adsp_irq_state = 0;
     cpu->gsp_wlog     = calloc(MUSASHI_GSP_WLOG_CAP,
                                sizeof(musashi_gsp_write_t));
     cpu->gsp_bus_log  = calloc(MUSASHI_GSP_BUS_LOG_INITIAL,
@@ -670,7 +711,8 @@ musashi_cpu_t *musashi_cpu_create(void)
 
     if (!cpu->gsp_vram || !cpu->gsp_vram_2bpp || !cpu->gsp_pal_lo ||
         !cpu->gsp_pal_hi || !cpu->gsp_ctrl_lo || !cpu->gsp_ctrl_hi ||
-        !cpu->gsp_wlog || !cpu->adsp_pgm_ram || !cpu->gsp_bus_log ||
+        !cpu->gsp_wlog || !cpu->adsp_pgm_ram || !cpu->adsp_dm ||
+        !cpu->adsp_som || !cpu->gsp_bus_log ||
         (g_pc_hist_enabled && !cpu->pc_hist)) {
         musashi_cpu_destroy(cpu);
         return NULL;
@@ -693,6 +735,8 @@ void musashi_cpu_destroy(musashi_cpu_t *cpu)
     free(cpu->gsp_wlog);
     free(cpu->gsp_bus_log);
     free(cpu->adsp_pgm_ram);
+    free(cpu->adsp_dm);
+    free(cpu->adsp_som);
     free(cpu->pc_hist);
     free(cpu);
 }
@@ -2082,9 +2126,34 @@ unsigned int m68k_read_memory_16(unsigned int address)
         return 0xFFFF;
     }
     case REGION_ADSP_PROG:
+        s_cpu->adsp_prog_reads++;
         return s_cpu->adsp_pgm_ram[offset >> 1];
     case REGION_ADSP_IRQ:
-        return 0xFFFDu;
+        /* hd68k_adsp_irq_state_r (harddriv_m.cpp:827):
+         *   0xfffd, ^2 if m_adsp_xflag, ^1 if m_adsp_irq_state.
+         * This used to `return 0xFFFDu` unconditionally, which is the *idle*
+         * case only -- and the ROM polls this register to decide whether the
+         * DSP is alive, so it could only ever answer "ADSP-2100 DOES NOT
+         * RESPOND". See findings 107.4. */
+        {
+            uint16_t v = 0xFFFDu;
+            if (s_cpu->adsp_xflag)     v ^= 2u;
+            if (s_cpu->adsp_irq_state) v ^= 1u;
+            /* The ROM decides whether the DSP is alive by POLLING this
+             * register, so reads are the traffic that matters and the writes
+             * that matter (the $2000 windows) are all zero. Counted here
+             * because otherwise a poll loop is invisible in the run log. */
+            s_cpu->adsp_irq_reads++;
+            return v;
+        }
+    case REGION_ADSP_DATA:
+        /* hd68k_adsp_data_r (harddriv_m.cpp:651): a bare indexed read. */
+        return s_cpu->adsp_dm[offset & (MUSASHI_ADSP_DM_WORDS - 1u)];
+    case REGION_ADSP_BUF:
+        /* hd68k_adsp_buffer_r (harddriv_m.cpp:680):
+         * som_memory[m_m68k_adsp_buffer_bank * 0x2000 + offset]. */
+        return s_cpu->adsp_som[((unsigned)s_cpu->adsp_som_bank * 0x2000u +
+                                offset) & (MUSASHI_ADSP_SOM_WORDS - 1u)];
     case REGION_SOUNDRST:
         return 0xFFFFu;
     case REGION_SOUND: {
@@ -2093,7 +2162,6 @@ unsigned int m68k_read_memory_16(unsigned int address)
         (void)stunrun_jsa_transport_read(s_cpu->jsa_latches, offset, 2u, &byte);
         return (uint16_t)(((uint16_t)byte << 8) | 0x00FFu);
     }
-    case REGION_ADSP_DATA: case REGION_ADSP_BUF:
     case REGION_ADSP_CTRL:
     case REGION_GSP_PAL:
         return 0xFFFF;
@@ -2332,12 +2400,56 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
          * zeroing of the CPU's interrupt level. */
         musashi_cpu_clear_irq(s_cpu, 5);
         break;
+    case REGION_ADSP_DATA: {
+        /* hd68k_adsp_data_w (harddriv_m.cpp:657): COMBINE_DATA with no
+         * mem_mask, i.e. a plain store. The window offset IS the DM word
+         * index.
+         *
+         * MAME then adds, on offset == 0x1fff:
+         *   machine().scheduler().synchronize();
+         *   m_adsp->signal_interrupt_trigger();
+         * A write to $1FFF IS the release trigger, and it kicks the DSP
+         * rather than relying on the DSP noticing its own DM -- which is
+         * what closes findings 107.5. There is no DSP to kick yet, so the
+         * write is recorded and the trigger counted; the shell prints it so
+         * the address is visible in a run log. */
+        unsigned dm = offset & (MUSASHI_ADSP_DM_WORDS - 1u);
+        s_cpu->adsp_dm[dm] = (uint16_t)value;
+        if (dm == 0x1FFFu)
+            s_cpu->adsp_dm_trigger_writes++;
+        break;
+    }
+    case REGION_ADSP_BUF:
+        /* hd68k_adsp_buffer_w (harddriv_m.cpp:687): COMBINE_DATA into
+         * som_memory[bank * 0x2000 + offset]. This is the SOMLATCH ferry. */
+        s_cpu->adsp_som[((unsigned)s_cpu->adsp_som_bank * 0x2000u + offset) &
+                        (MUSASHI_ADSP_SOM_WORDS - 1u)] = (uint16_t)value;
+        break;
+    case REGION_ADSP_CTRL: {
+        /* hd68k_adsp_control_w (harddriv_m.cpp:751): "bit 3 selects the value;
+         * data is ignored", and `offset &= 7` selects the function.
+         * 0/1 LEDs (no-op) · 3 buffer bank · 5 /BR · 6 /HALT · 7 reset.
+         * Only the bank is stateful without a DSP, so the rest are counted
+         * rather than pretended. */
+        unsigned sel = offset & 7u;
+        unsigned val = (offset >> 3u) & 1u;
+        if (sel == 3u) {
+            s_cpu->adsp_som_bank = (uint8_t)val;
+            s_cpu->adsp_ctrl_bank_writes++;
+        } else if (sel == 7u) {
+            s_cpu->adsp_ctrl_reset_writes++;
+        } else if (sel == 5u || sel == 6u) {
+            s_cpu->adsp_ctrl_halt_writes++;
+        }
+        break;
+    }
     case REGION_ADSP_PROG:
         /* The main loop's handshake: it counts itself up in this RAM
          * (0x1000-0x10a6 reads $801e and the $8036/$8046/$8056 flags) and then
          * calls the GSP message writer at 0x238e.  Until this window was real
          * RAM it aliased the 1 MiB ROM and the poll could never advance. */
         s_cpu->adsp_pgm_ram[offset >> 1] = (uint16_t)value;
+        s_cpu->adsp_prog_writes++;
         break;
     case REGION_ADC_CTRL:
         /* hd68k_adc_control_w(): a 16-bit write is a full m_adc_control
@@ -2355,11 +2467,6 @@ void m68k_write_memory_16(unsigned int address, unsigned int value)
         (void)stunrun_jsa_transport_write(s_cpu->jsa_latches, offset, 2u,
                                           (uint16_t)value);
         break;
-    case REGION_ADSP_CTRL:
-        /* Dropped by the model; observed.  See the 8-bit arm above. */
-        adsp_write_note(address, (uint16_t)value, 16u);
-        break;
-    case REGION_ADSP_DATA: case REGION_ADSP_BUF:
     case REGION_INPUT: case REGION_GSP_PAL:
     case REGION_ADSP_IRQ:
         break;
@@ -3367,6 +3474,21 @@ unsigned musashi_cpu_text_log_enable(musashi_cpu_t *cpu)
 void musashi_cpu_text_log_disable(void)
 {
     g_text_log_enabled = 0;
+}
+
+void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out)
+{
+    if (out == NULL) return;
+    out->dm_trigger  = s_cpu ? (unsigned long)s_cpu->adsp_dm_trigger_writes : 0ul;
+    out->ctrl_bank   = s_cpu ? (unsigned long)s_cpu->adsp_ctrl_bank_writes : 0ul;
+    out->ctrl_reset  = s_cpu ? (unsigned long)s_cpu->adsp_ctrl_reset_writes : 0ul;
+    out->ctrl_halt   = s_cpu ? (unsigned long)s_cpu->adsp_ctrl_halt_writes : 0ul;
+    out->som_bank    = s_cpu ? (unsigned)s_cpu->adsp_som_bank : 0u;
+    out->xflag       = s_cpu ? (unsigned)s_cpu->adsp_xflag : 0u;
+    out->irq_state   = s_cpu ? (unsigned)s_cpu->adsp_irq_state : 0u;
+    out->irq_reads   = s_cpu ? (unsigned long)s_cpu->adsp_irq_reads : 0ul;
+    out->prog_reads  = s_cpu ? (unsigned long)s_cpu->adsp_prog_reads : 0ul;
+    out->prog_writes = s_cpu ? (unsigned long)s_cpu->adsp_prog_writes : 0ul;
 }
 
 void musashi_cpu_text_log_stats(musashi_text_log_stats_t *out)

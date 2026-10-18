@@ -77,6 +77,39 @@ struct stunrun_jsa_latches;
  * harddriv.cpp:4822-4824 installs hd68k_adsp_program_r/w there.  32 KiB. */
 #define MUSASHI_ADSP_PGM_WORDS 0x4000u
 
+/* ADSP data memory through the 68010's 0x808000-0x80BFFF window.
+ * harddriv.cpp:4826/4848 install hd68k_adsp_data_r/w there.  16 KiB, and
+ * hd68k_adsp_data_r is a bare `m_adsp_data_memory[offset]`, so the window
+ * offset IS the DM word index -- $1FFF is the last word, which is why MAME
+ * can key its release trigger on that address (harddriv_m.cpp:662). */
+#define MUSASHI_ADSP_DM_WORDS 0x2000u
+
+/* ADSP output memory through the 68010's 0x810000-0x813FFF window.
+ * harddriv.cpp:4830 installs hd68k_adsp_buffer_r/w, which indexes
+ * `som_memory[bank * 0x2000 + offset]`.  harddriv.h:386 declares
+ * m_som_memory as uint16_t[0x8000/2] = 0x4000 words: four banks of 0x2000. */
+#define MUSASHI_ADSP_SOM_WORDS 0x4000u
+
+/* Observation counters for the ADSP board interface (findings 107/108).
+ * These were silently dropped before, so a run log could not tell "the ROM
+ * never touched the DSP windows" from "we discarded the write". `dm_trigger`
+ * counts writes to DM($1FFF), which MAME treats as the DSP release trigger
+ * (harddriv_m.cpp:657-668). Zeros are a real observation, not a stub. */
+typedef struct musashi_cpu_adsp_io {
+    unsigned long dm_trigger;      /* writes to DM($1FFF) */
+    unsigned long ctrl_bank;       /* hd68k_adsp_control_w offset&7 == 3 */
+    unsigned long ctrl_reset;      /* offset&7 == 7 */
+    unsigned long ctrl_halt;       /* offset&7 == 5 (/BR) or 6 (/HALT) */
+    unsigned      som_bank;        /* current SOM output-memory bank */
+    unsigned      xflag;           /* hd68k_adsp_irq_state_r bit 1 */
+    unsigned      irq_state;       /* hd68k_adsp_irq_state_r bit 0 */
+    unsigned long irq_reads;       /* polls of the status register */
+    unsigned long prog_reads;      /* 0x800000-0x807FFF reads */
+    unsigned long prog_writes;     /* 0x800000-0x807FFF writes */
+} musashi_cpu_adsp_io_t;
+
+void musashi_cpu_adsp_io(musashi_cpu_adsp_io_t *out);
+
 /* ── Frame pacing ──
  *
  * Cycles of 8 MHz MC68010 time per displayed frame.  The multisync screen is

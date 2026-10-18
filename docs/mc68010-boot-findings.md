@@ -15624,3 +15624,86 @@ What is *not* on this list, and used to be: the interface itself. Before §107
 the shape of the ADSP<->68010 contract was unknown; it is now read directly off
 the driver, so item 1 is bounded by "`$004C` executes" rather than "figure out
 what an ADSP has to do".
+
+## 109. The ADSP interface is now wired, and it changes nothing — because the 68010 never touches it
+
+Implemented §107/§108's contract and measured the impact. The result is
+negative, and more useful than a positive one would have been.
+
+### 109.1 What was implemented
+
+In `musashi_cpu.c`, mirroring the pinned driver:
+
+| window | handler mirrored | what it was |
+|---|---|---|
+| `0x808000-0x80BFFF` data | `hd68k_adsp_data_r/w` :651 | dropped writes, reads returned `0xFFFF` |
+| `0x810000-0x813FFF` buffer | `hd68k_adsp_buffer_r/w` :680 | dropped |
+| `0x818000-0x81801F` control | `hd68k_adsp_control_w` :751 | dropped; now decodes `offset&7` and switches the SOM bank on 3 |
+| `0x838000-0x83FFFF` status | `hd68k_adsp_irq_state_r` :827 | **hard-coded `0xFFFD`**, the idle case only |
+
+All six MAME map addresses were checked against ours first — program `0x800000`,
+data `0x808000`, buffer `0x810000`, control `0x818000`, irq-clear `0x818060`,
+status `0x838000` — and they already matched. Nothing was mis-routed.
+
+New state: `adsp_dm[0x2000]`, `adsp_som[0x4000]`, `adsp_som_bank`,
+`adsp_xflag`, `adsp_irq_state`, plus observation counters surfaced as
+`shell: adsp-io …`. The status register now computes `$FFFD ^ 2 / ^ 1` rather
+than returning the idle constant.
+
+### 109.2 The measurement, and it is all zeros
+
+Normal boot, 900 frames:
+
+```text
+render frame=900 hash=0xFC1E2F7B lit=41094/122880 colours=252
+adsp-io dm$1fff-triggers=0 ctrl-bank=0 ctrl-reset=0 ctrl-halt=0
+         som-bank=0 xflag=0 irq=0 irq-polls=0 prog-r=0 prog-w=0
+```
+
+Service mode, 4300 frames — the run that reaches `ADSP-2100 DOES NOT RESPOND`:
+
+```text
+render frame=4300 hash=0x7D611DC5 lit=0/122880 colours=0
+adsp-io dm$1fff-triggers=0 ctrl-bank=0 ctrl-reset=0 ctrl-halt=0
+         som-bank=0 xflag=0 irq=0 irq-polls=0 prog-r=0 prog-w=0
+```
+
+The render hashes are **unchanged** from before the change
+(`0xFC1E2F7B` / `0x7D611DC5`). And the 68010 makes **zero accesses to every ADSP
+window** — not one read, not one write, program RAM included.
+
+### 109.3 What this rules in and out
+
+**Ruled out:** that the missing ADSP is a "we dropped the writes" defect. It is
+not. The interface is now faithful and the traffic is genuinely zero, so nothing
+downstream of these windows can matter until the 68010 starts using them.
+
+**Ruled out:** that the ROM decides the DSP is dead by polling a window we had
+stubbed. It never gets there — our ROM makes no such access at all, yet still
+prints `ADSP-2100 DOES NOT RESPOND`. So either the decision comes from the ROM's
+own internal state or timeout, or the message is reached by a fallback path.
+
+**The real blocker moves.** Our 68010 diverges from the oracle *before* it ever
+reaches the ADSP code. That reframes the priority: wiring the DSP interface is
+necessary and now done, but it cannot help until the 68010's own execution lines
+up. The service-mode divergence documented in §104.3 is the same thing seen from
+the self-test's side.
+
+This also retires a worry from §102. The frozen picture and frozen palette were
+attributed to "the ROM branches when it detects a dead DSP". That hypothesis now
+looks wrong or at least premature: the ROM never talks to the DSP at all, so it
+is not reacting to a DSP check failing. **§102.5's candidate is withdrawn.**
+
+### 109.4 The next measurement, and it is not more DSP work
+
+Find the first PC at which our 68010 diverges from MAME's. The tooling exists —
+the native PC histogram (`g_pc_hist_enabled`) and the bounded trace window — and
+§40's findings already established how to compare register state at a frame
+boundary. Everything ADSP-side is now bounded to "`$004C` executes"; everything
+68010-side is unbounded and is the actual constraint.
+
+A useful sanity check while doing that: the checkpoint's
+`adsp_program nonzero_words: 130` comes from `reproduction/adsp/adsp_init_image.c`
+injecting the image directly, **not** from the ROM uploading it. With
+`prog-w=0` that is now confirmed rather than assumed, and it means the native
+model has never contained the ROM's own ADSP upload.

@@ -2779,6 +2779,22 @@ static int run_walk(void)
         g_mc68010_active = false;
     }
     if (g_sound_dispatch_active) {
+        /* ADSP board interface, findings 107/108. Every one of these was
+         * silently dropped before, so a run log could not distinguish "the
+         * ROM never touched the DSP windows" from "we discarded it".
+         * `dm$1fff` is the release trigger MAME keys on
+         * (harddriv_m.cpp:657-668). */
+        {
+            musashi_cpu_adsp_io_t aio;
+            musashi_cpu_adsp_io(&aio);
+            printf("shell: adsp-io dm$1fff-triggers=%lu ctrl-bank=%lu "
+                   "ctrl-reset=%lu ctrl-halt=%lu som-bank=%u xflag=%u irq=%u "
+                   "irq-polls=%lu prog-r=%lu prog-w=%lu\n",
+                   aio.dm_trigger, aio.ctrl_bank, aio.ctrl_reset,
+                   aio.ctrl_halt, aio.som_bank, aio.xflag, aio.irq_state,
+                   aio.irq_reads, aio.prog_reads, aio.prog_writes);
+        }
+
         printf("shell: sound-dispatch stats frames=%llu commands=%llu "
                "oki-bytes=%llu samples-enqueued=%llu sample-rate=%u\n",
                (unsigned long long)g_sound_dispatch.frames_dispatched,
