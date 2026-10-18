@@ -16691,3 +16691,110 @@ window and the status register, but it is now sharper: the native never even
 reaches the code that *starts* the ADSP handshake, because it is one screen
 behind. The §117 table (1 vs 319,298 writes) is a symptom three stages
 downstream of the actual divergence.
+
+## 119. $B916 is not a checksum routine; the six compared words are DM data
+
+Corrects §117.2, which called `$B916` "the third subroutine" and attributed the
+`$17/$18/$19/$20/$21/$22` comparisons to ROM checksums. Both attributions are
+wrong, and the difference matters: the constants are **values the ADSP program
+writes into data RAM**, so passing the gate requires the DSP to run.
+
+### 119.1 What $B916 actually does
+
+```text
+$B916: clr.w  $818060.l        ; clear ADSP IRQ
+$B91C: bsr    $b1e8            ; restart the DSP
+$B920: clr.w  $81800a.l
+$B926: move.w #$a,   $808002.l ; DM index 0x0A
+$B92E: move.w #$2,   $808000.l
+$B936: clr.w  $80800c.l        ; six scratch words...
+$B93C: clr.w  $80800e.l
+$B942: clr.w  $808010.l
+$B948: clr.w  $808012.l
+$B94E: clr.w  $808014.l
+$B954: clr.w  $808016.l        ; ...cleared
+$B95A: clr.w  $81801a.l
+$B960: move.l #$7530, D3       ; 30000-iteration timeout
+$B966: subq.l #1, D3 ; beq $b9ac
+$B96C: clr.w  $608000.l
+$B972: btst   #0, $838001.l    ; poll ADSP IRQ
+$B97A: bne    $b966
+$B97C: clr.w  $81800a.l
+$B982: move.w $80800c.l, D0    ; read them back into D0..D5
+$B988: move.w $80800e.l, D1
+$B98E: move.w $808010.l, D2
+$B994: move.w $808012.l, D3
+$B99A: move.w $808014.l, D4
+$B9A0: move.w $808016.l, D5
+$B9A6: move.w #$5555, D7
+$B9AC: clr.w  D7               ; timeout
+```
+
+It zeroes six DM words, restarts the DSP, waits for the DSP to raise its IRQ,
+then reads those same six words back. `$5224`-`$527A` compares them against
+`0x18, 0x21, 0x19, 0x20, 0x17, 0x22`. Those are therefore **the six constants
+the ADSP program itself writes** — a DSP identity handshake, not a checksum
+over ROM.
+
+§117.2 also said `$B864` and `$B8B4` were "liveness tests" without reading
+them, and `$B8B4`'s `move.w #$1770,D3` (6000) vs `$B916`'s `$7530` (30000)
+is a timeout budget, not an iteration count to copy.
+
+Where §117.2's "ADSP ROM checksum" reading came from: the ROM genuinely has an
+`ADSP ROM CHECKSUMS` screen with chip patterns `ADSP 9K:…17.2L` through
+`ADSP 10H:…22.1H` at string indices `0xeb`-`0xf1`, and the digits `17`-`22` in
+those patterns are what made the `$17`-`$22` constants look like checksums.
+They are a different screen entirely. Confusing the two was my error.
+
+### 119.2 The three gates, corrected
+
+| routine | what it requires of the DSP |
+|---|---|
+| `$B864` | copy `DM[6]` -> `DM[$0A]`; the 68010 writes `$1234` and reads it back |
+| `$B8B4` | assert its IRQ (`$838001` bit 0) within 6000 polls |
+| `$B916` | assert its IRQ within 30000 polls, **and** write six specific words into `DM[$0C..$16]` |
+
+All three return `$5555` in D7 on success and 0 on failure.
+
+### 119.3 $B228: the 68010 installs the DSP program itself
+
+`$B1E8`, called by all three, calls `$B228`:
+
+```text
+$B228: lea   $ae70.l, A0
+$B22E: move.w (A0)+, D6          ; word count
+$B230: lea   $800000.l, A1       ; ADSP program window
+$B236: clr.l D0
+$B238: move.b (A0)+, D0 ; swap
+$B23C: move.b (A0)+, D0
+$B23E: lsl.w #8, D0
+$B240: move.b (A0)+, D0
+$B242: move.l D0, (A1)+
+$B244: subq.w #1, D6 ; bne $b236
+```
+
+**The ADSP-2100 program is a 24-bit-per-word image stored in the main ROM at
+`$AE70`, and the 68010 writes it into the DSP's program RAM at `0x800000`.**
+So the ROM ships the DSP's own firmware and installs it at boot; nothing
+downloaded is needed from outside.
+
+This closes the loop with what the repo already has: STATUS.md M2 records a
+"fixed-origin ADSP replacement image" built from that same download, and
+`fixtures/oracle/frame_600/frame_600_adsp_prog.bin` is a 32768-byte
+(8192-word) image consistent with it. The bytes at `$AE70` in the main ROM are
+the authoritative copy of the program the DSP is supposed to be running.
+
+**Consequence for the port.** Passing the self-test needs three observable
+behaviours from the DSP, not a full CPU:
+
+1. `DM[6] -> DM[$0A]` copy (what the `$B864` loopback checks),
+2. `/GINT` assertion after a restart (both IRQ gates),
+3. six magic words in `DM[$0C..$16]` after a restart (the `$B916` handshake).
+
+All three are properties of the **program at `$AE70`**, so the honest options
+are to execute that program, or to model exactly what it does to data RAM.
+Either way §107's framing — that an ADSP emulator is probably not needed
+because the C SOM producer already derives the captured words — was too
+generous: the producer covers the SOMLATCH output path and has nothing to say
+about the three handshakes above. And the producer is still never called from
+`shell.c`.
